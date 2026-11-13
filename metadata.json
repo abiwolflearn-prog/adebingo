@@ -1,0 +1,6 @@
+{
+  "name": "ADEYBINGO — Telegram Bingo Mini App",
+  "description": "Amharic-first interactive Telegram Bingo Mini App with 1–600 cards per room, 3D ball caller, live lobby countdown, and multi-card play.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

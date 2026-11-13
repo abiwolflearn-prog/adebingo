@@ -1,0 +1,624 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // =========================================================================
+    // GLOBAL SAFETY NET (Default-Deny Catch-All)
+    // =========================================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // PRIMITIVE HELPERS
+    // =========================================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'abelbimrew868@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidCardPathId(cardId) {
+      return cardId is string && cardId.size() >= 1 && cardId.size() <= 3 && cardId.matches('^([1-9]|[1-9][0-9]|[1-5][0-9][0-9]|600)$');
+    }
+
+    // =========================================================================
+    // ENTITY VALIDATION BLUEPRINTS (Anti-Update-Gap)
+    // =========================================================================
+    function isValidUserPublicProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'telegramUserId',
+          'displayName',
+          'username',
+          'language',
+          'phoneVerified',
+          'demoBalanceEtb',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'telegramUserId',
+          'displayName',
+          'username',
+          'language',
+          'phoneVerified',
+          'demoBalanceEtb',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == userId && data.uid == request.auth.uid &&
+        data.telegramUserId is string && data.telegramUserId.size() >= 1 && data.telegramUserId.size() <= 64 && data.telegramUserId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 64 &&
+        data.language is string && data.language.size() == 2 && (data.language == 'am' || data.language == 'en') &&
+        data.phoneVerified is bool &&
+        data.demoBalanceEtb is number && data.demoBalanceEtb >= 0 && data.demoBalanceEtb <= 100000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTelegramAccountBinding(data, telegramUserId) {
+      return data.keys().hasAll([
+          'telegramUserId',
+          'uid',
+          'boundAt'
+        ]) &&
+        data.keys().hasOnly([
+          'telegramUserId',
+          'uid',
+          'boundAt'
+        ]) &&
+        data.telegramUserId is string && data.telegramUserId.size() >= 1 && data.telegramUserId.size() <= 64 &&
+        data.telegramUserId == telegramUserId && data.telegramUserId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == request.auth.uid &&
+        data.boundAt is timestamp;
+    }
+
+    function isValidUserPrivateContact(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'phoneNumber',
+          'phoneVerified',
+          'verificationMethod',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'phoneNumber',
+          'phoneVerified',
+          'verificationMethod',
+          'updatedAt'
+        ]) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == userId && data.uid == request.auth.uid &&
+        data.phoneNumber is string && data.phoneNumber.size() >= 9 && data.phoneNumber.size() <= 16 && data.phoneNumber.matches('^\\+?[0-9]{9,15}$') &&
+        data.phoneVerified is bool &&
+        data.verificationMethod is string && data.verificationMethod.size() <= 32 &&
+        (data.verificationMethod == 'telegram_contact' || data.verificationMethod == 'sms_otp_demo') &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidGameRoom(data, roomId) {
+      return data.keys().hasAll([
+          'roomId',
+          'nameAm',
+          'nameEn',
+          'cardPrice',
+          'maxCardsPerRoom',
+          'maxCardsPerPlayer',
+          'minPlayers',
+          'countdownSeconds',
+          'activePlayersCount',
+          'reservedCardsCount',
+          'status',
+          'currentGameId',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'roomId',
+          'nameAm',
+          'nameEn',
+          'cardPrice',
+          'maxCardsPerRoom',
+          'maxCardsPerPlayer',
+          'minPlayers',
+          'countdownSeconds',
+          'activePlayersCount',
+          'reservedCardsCount',
+          'status',
+          'currentGameId',
+          'updatedAt'
+        ]) &&
+        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 64 && data.roomId == roomId &&
+        data.nameAm is string && data.nameAm.size() >= 1 && data.nameAm.size() <= 100 &&
+        data.nameEn is string && data.nameEn.size() >= 1 && data.nameEn.size() <= 100 &&
+        data.cardPrice is int && data.cardPrice >= 5 && data.cardPrice <= 100 &&
+        data.maxCardsPerRoom is int && data.maxCardsPerRoom == 600 &&
+        data.maxCardsPerPlayer is int && data.maxCardsPerPlayer == 4 &&
+        data.minPlayers is int && data.minPlayers == 3 &&
+        data.countdownSeconds is int && data.countdownSeconds >= 0 && data.countdownSeconds <= 60 &&
+        data.activePlayersCount is int && data.activePlayersCount >= 0 && data.activePlayersCount <= 600 &&
+        data.reservedCardsCount is int && data.reservedCardsCount >= 0 && data.reservedCardsCount <= 600 &&
+        data.status is string && data.status.size() <= 16 &&
+        (data.status == 'waiting' || data.status == 'countdown' || data.status == 'live' || data.status == 'completed') &&
+        data.currentGameId is string && data.currentGameId.size() >= 1 && data.currentGameId.size() <= 64 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRoomPlayerState(data, roomId, playerId) {
+      return data.keys().hasAll([
+          'playerId',
+          'roomId',
+          'displayName',
+          'telegramUserId',
+          'cardIds',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'playerId',
+          'roomId',
+          'displayName',
+          'telegramUserId',
+          'cardIds',
+          'updatedAt'
+        ]) &&
+        data.playerId is string && data.playerId.size() >= 1 && data.playerId.size() <= 128 &&
+        data.playerId == playerId && data.playerId == request.auth.uid &&
+        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 64 && data.roomId == roomId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        data.telegramUserId is string && data.telegramUserId.size() >= 1 && data.telegramUserId.size() <= 64 &&
+        data.cardIds is list && data.cardIds.size() >= 1 && data.cardIds.size() <= 4 &&
+        data.cardIds[0] is int && data.cardIds[0] >= 1 && data.cardIds[0] <= 600 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRoomCardReservation(data, roomId) {
+      return data.keys().hasAll([
+          'cardId',
+          'roomId',
+          'ownerId',
+          'ownerName',
+          'serial',
+          'reservedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'cardId',
+          'roomId',
+          'ownerId',
+          'ownerName',
+          'serial',
+          'reservedAt'
+        ]) &&
+        data.cardId is int && data.cardId >= 1 && data.cardId <= 600 &&
+        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 64 && data.roomId == roomId &&
+        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId == request.auth.uid &&
+        data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 80 &&
+        data.serial is string && data.serial.size() == 7 && data.serial.matches('^ADB-[0-9]{3}$') &&
+        data.reservedAt is timestamp;
+    }
+
+    function isValidBingoGameSession(data, gameId) {
+      return data.keys().hasAll([
+          'gameId',
+          'roomId',
+          'hostUid',
+          'status',
+          'calledNumbers',
+          'latestBall',
+          'winnerUid',
+          'winnerName',
+          'winningCardId',
+          'winningPattern',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'gameId',
+          'roomId',
+          'hostUid',
+          'status',
+          'calledNumbers',
+          'latestBall',
+          'winnerUid',
+          'winnerName',
+          'winningCardId',
+          'winningPattern',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.gameId is string && data.gameId.size() >= 1 && data.gameId.size() <= 64 && data.gameId == gameId &&
+        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 64 &&
+        data.hostUid is string && data.hostUid.size() >= 1 && data.hostUid.size() <= 128 &&
+        data.status is string && data.status.size() <= 16 &&
+        (data.status == 'countdown' || data.status == 'live' || data.status == 'completed') &&
+        data.calledNumbers is list && data.calledNumbers.size() >= 1 && data.calledNumbers.size() <= 75 &&
+        data.calledNumbers[0] is int && data.calledNumbers[0] >= 1 && data.calledNumbers[0] <= 75 &&
+        data.latestBall is int && data.latestBall >= 1 && data.latestBall <= 75 &&
+        data.winnerUid is string && data.winnerUid.size() <= 128 &&
+        data.winnerName is string && data.winnerName.size() <= 80 &&
+        data.winningCardId is int && data.winningCardId >= 0 && data.winningCardId <= 600 &&
+        data.winningPattern is string && data.winningPattern.size() <= 64 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDemoTransaction(data, transactionId) {
+      return data.keys().hasAll([
+          'transactionId',
+          'userId',
+          'type',
+          'amountEtb',
+          'status',
+          'description',
+          'reference',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'transactionId',
+          'userId',
+          'type',
+          'amountEtb',
+          'status',
+          'description',
+          'reference',
+          'createdAt'
+        ]) &&
+        data.transactionId is string && data.transactionId.size() >= 1 && data.transactionId.size() <= 64 && data.transactionId == transactionId &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId == request.auth.uid &&
+        data.type is string && data.type.size() <= 24 &&
+        (data.type == 'deposit_demo' || data.type == 'withdraw_demo' || data.type == 'card_entry' || data.type == 'bingo_win' || data.type == 'referral_bonus') &&
+        data.amountEtb is number && data.amountEtb >= -5000 && data.amountEtb <= 5000 &&
+        data.status is string && data.status.size() <= 24 &&
+        (data.status == 'demo_completed' || data.status == 'demo_pending') &&
+        data.description is string && data.description.size() >= 1 && data.description.size() <= 160 &&
+        data.reference is string && data.reference.size() >= 3 && data.reference.size() <= 64 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidReferralRecord(data, referralId) {
+      return data.keys().hasAll([
+          'referralId',
+          'inviterUid',
+          'friendName',
+          'friendHandle',
+          'inviterBonusEtb',
+          'inviteeBonusEtb',
+          'status',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'referralId',
+          'inviterUid',
+          'friendName',
+          'friendHandle',
+          'inviterBonusEtb',
+          'inviteeBonusEtb',
+          'status',
+          'createdAt'
+        ]) &&
+        data.referralId is string && data.referralId.size() >= 1 && data.referralId.size() <= 64 && data.referralId == referralId &&
+        data.inviterUid is string && data.inviterUid.size() >= 1 && data.inviterUid.size() <= 128 && data.inviterUid == request.auth.uid &&
+        data.friendName is string && data.friendName.size() >= 1 && data.friendName.size() <= 80 &&
+        data.friendHandle is string && data.friendHandle.size() >= 2 && data.friendHandle.size() <= 64 &&
+        data.inviterBonusEtb is int && data.inviterBonusEtb == 20 &&
+        data.inviteeBonusEtb is int && data.inviteeBonusEtb == 15 &&
+        data.status is string && data.status.size() <= 16 &&
+        (data.status == 'qualified' || data.status == 'pending') &&
+        data.createdAt is timestamp;
+    }
+
+    // =========================================================================
+    // 1. USERS PUBLIC PROFILE (/users/{userId})
+    // =========================================================================
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+
+      // Atomic Telegram Binding Invariant (Pillar 7):
+      // Creating a user profile requires a matching 1-to-1 /telegramBindings/{telegramUserId}
+      // document owned by the same userId after the transaction/batch.
+      allow create: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserPublicProfile(incoming(), userId) &&
+        incoming().demoBalanceEtb == 250 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/telegramBindings/$(incoming().telegramUserId)) &&
+        getAfter(/databases/$(database)/documents/telegramBindings/$(incoming().telegramUserId)).data.uid == userId;
+
+      // Users can NEVER modify demoBalanceEtb, uid, telegramUserId, or createdAt
+      allow update: if isOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserPublicProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().telegramUserId == existing().telegramUserId &&
+        incoming().demoBalanceEtb == existing().demoBalanceEtb &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName',
+          'username',
+          'language',
+          'phoneVerified',
+          'updatedAt'
+        ]);
+
+      allow delete: if false;
+
+      // =======================================================================
+      // 2. USERS PRIVATE PII SUBCOLLECTION (/users/{userId}/private/{docId})
+      // =======================================================================
+      match /private/{docId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(docId);
+        allow list: if false;
+
+        allow create: if isOwner(userId) &&
+          isValidId(userId) &&
+          docId == 'contact' &&
+          isValidUserPrivateContact(incoming(), userId) &&
+          incoming().phoneVerified == true &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId));
+
+        allow update: if isOwner(userId) &&
+          isValidId(userId) &&
+          docId == 'contact' &&
+          isValidUserPrivateContact(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          incoming().phoneVerified == true &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'phoneNumber',
+            'phoneVerified',
+            'verificationMethod',
+            'updatedAt'
+          ]) &&
+          exists(/databases/$(database)/documents/users/$(userId));
+
+        allow delete: if false;
+      }
+    }
+
+    // =========================================================================
+    // 2B. TELEGRAM ACCOUNT BINDINGS (/telegramBindings/{telegramUserId})
+    // =========================================================================
+    match /telegramBindings/{telegramUserId} {
+      allow get: if isVerifiedUser() && isValidId(telegramUserId) && (existing().uid == request.auth.uid || isAdmin());
+      allow list: if false;
+
+      // Prevents duplicate Telegram account registration:
+      // Can only be created once (update/delete forbidden) and must atomically match /users/{uid}.
+      allow create: if isVerifiedUser() &&
+        isValidId(telegramUserId) &&
+        isValidTelegramAccountBinding(incoming(), telegramUserId) &&
+        incoming().boundAt == request.time &&
+        existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.telegramUserId == telegramUserId;
+
+      allow update, delete: if false;
+    }
+
+    // =========================================================================
+    // 3. GAME ROOMS (/rooms/{roomId})
+    // =========================================================================
+    match /rooms/{roomId} {
+      allow get: if isVerifiedUser() && isValidId(roomId);
+      allow list: if isVerifiedUser() && resource.data.maxCardsPerRoom == 600;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(roomId) &&
+        isValidGameRoom(incoming(), roomId) &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(roomId) &&
+        isValidGameRoom(incoming(), roomId) &&
+        incoming().roomId == existing().roomId &&
+        incoming().maxCardsPerRoom == existing().maxCardsPerRoom &&
+        incoming().maxCardsPerPlayer == existing().maxCardsPerPlayer &&
+        incoming().minPlayers == existing().minPlayers &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'cardPrice',
+            'countdownSeconds',
+            'activePlayersCount',
+            'reservedCardsCount',
+            'status',
+            'currentGameId',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if false;
+
+      // =======================================================================
+      // 4. ROOM PLAYERS (/rooms/{roomId}/players/{playerId})
+      // =======================================================================
+      match /players/{playerId} {
+        allow get: if isVerifiedUser() && isValidId(roomId) && isValidId(playerId);
+        allow list: if isVerifiedUser() && resource.data.roomId == roomId;
+
+        allow create: if isOwner(playerId) &&
+          isValidId(roomId) &&
+          isValidId(playerId) &&
+          isValidRoomPlayerState(incoming(), roomId, playerId) &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/rooms/$(roomId));
+
+        allow update: if isOwner(playerId) &&
+          isValidId(roomId) &&
+          isValidId(playerId) &&
+          isValidRoomPlayerState(incoming(), roomId, playerId) &&
+          incoming().playerId == existing().playerId &&
+          incoming().roomId == existing().roomId &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName',
+            'cardIds',
+            'updatedAt'
+          ]) &&
+          exists(/databases/$(database)/documents/rooms/$(roomId));
+
+        allow delete: if isOwner(playerId) &&
+          isValidId(roomId) &&
+          isValidId(playerId) &&
+          exists(/databases/$(database)/documents/rooms/$(roomId));
+      }
+
+      // =======================================================================
+      // 5. ATOMIC CARD RESERVATIONS (/rooms/{roomId}/cards/{cardId})
+      // =======================================================================
+      match /cards/{cardId} {
+        allow get: if isVerifiedUser() && isValidId(roomId) && isValidCardPathId(cardId);
+        allow list: if isVerifiedUser() && resource.data.roomId == roomId;
+
+        // Atomic Reservation Invariant (Pillar 1 + Pillar 7):
+        // 1. Card ID must be 1..600.
+        // 2. Parent room must exist and not be completed.
+        // 3. Player's /rooms/{roomId}/players/{uid} doc must exist after the batch/transaction
+        //    with cardIds.size() <= 4 (max 4 cards per player).
+        allow create: if isVerifiedUser() &&
+          isValidId(roomId) &&
+          isValidCardPathId(cardId) &&
+          isValidRoomCardReservation(incoming(), roomId) &&
+          incoming().reservedAt == request.time &&
+          exists(/databases/$(database)/documents/rooms/$(roomId)) &&
+          get(/databases/$(database)/documents/rooms/$(roomId)).data.status != 'completed' &&
+          existsAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)) &&
+          getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.cardIds.size() <= 4;
+
+        // Prevent hijacking or overwriting an existing reservation
+        allow update: if false;
+
+        // Only the card owner can release their reservation before the room completes
+        allow delete: if isVerifiedUser() &&
+          isValidId(roomId) &&
+          isValidCardPathId(cardId) &&
+          existing().ownerId == request.auth.uid &&
+          exists(/databases/$(database)/documents/rooms/$(roomId)) &&
+          get(/databases/$(database)/documents/rooms/$(roomId)).data.status != 'completed';
+      }
+    }
+
+    // =========================================================================
+    // 6. BINGO GAME SESSIONS (/games/{gameId})
+    // =========================================================================
+    match /games/{gameId} {
+      allow get: if isVerifiedUser() && isValidId(gameId);
+      allow list: if isVerifiedUser() && resource.data.status in ['countdown', 'live', 'completed'];
+
+      allow create: if isVerifiedUser() &&
+        isValidId(gameId) &&
+        isValidBingoGameSession(incoming(), gameId) &&
+        incoming().hostUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/rooms/$(incoming().roomId));
+
+      // Terminal State Locking + Privileged Operation Authorization:
+      // 1. Once status == 'completed', no further updates are allowed.
+      // 2. Calling a ball (Action 1) is restricted to the session hostUid (or Admin)
+      //    and must monotonically append exactly 1 ball.
+      // 3. Declaring a winner (Action 2) requires that the claiming player owns a
+      //    valid card reservation in that room.
+      allow update: if isVerifiedUser() &&
+        isValidId(gameId) &&
+        isValidBingoGameSession(incoming(), gameId) &&
+        existing().status != 'completed' &&
+        incoming().gameId == existing().gameId &&
+        incoming().roomId == existing().roomId &&
+        incoming().hostUid == existing().hostUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          // Action 1: Host-Authorized Monotonic Ball Call
+          (incoming().status == 'live' &&
+            existing().hostUid == request.auth.uid &&
+            incoming().calledNumbers.size() == existing().calledNumbers.size() + 1 &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status',
+              'calledNumbers',
+              'latestBall',
+              'updatedAt'
+            ])) ||
+          // Action 2: Declare Verified Winner (transitions to 'completed')
+          (incoming().status == 'completed' &&
+            incoming().winnerUid == request.auth.uid &&
+            incoming().winningCardId >= 1 &&
+            exists(/databases/$(database)/documents/rooms/$(existing().roomId)/players/$(request.auth.uid)) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status',
+              'winnerUid',
+              'winnerName',
+              'winningCardId',
+              'winningPattern',
+              'updatedAt'
+            ]))
+        );
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // 7. DEMO WALLET TRANSACTIONS (/transactions/{transactionId})
+    // =========================================================================
+    match /transactions/{transactionId} {
+      allow get: if isVerifiedUser() && isValidId(transactionId) && existing().userId == request.auth.uid;
+      allow list: if isVerifiedUser() && resource.data.userId == request.auth.uid;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(transactionId) &&
+        isValidDemoTransaction(incoming(), transactionId) &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      allow update, delete: if false;
+    }
+
+    // =========================================================================
+    // 8. REFERRALS (/referrals/{referralId})
+    // =========================================================================
+    match /referrals/{referralId} {
+      allow get: if isVerifiedUser() && isValidId(referralId) && existing().inviterUid == request.auth.uid;
+      allow list: if isVerifiedUser() && resource.data.inviterUid == request.auth.uid;
+
+      // Prevents self-referral: friendHandle cannot match the inviter's own username
+      allow create: if isVerifiedUser() &&
+        isValidId(referralId) &&
+        isValidReferralRecord(incoming(), referralId) &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        incoming().friendHandle != get(/databases/$(database)/documents/users/$(request.auth.uid)).data.username;
+
+      allow update, delete: if false;
+    }
+  }
+}

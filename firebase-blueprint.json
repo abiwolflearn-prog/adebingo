@@ -1,0 +1,561 @@
+{
+  "entities": {
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Public player profile and game metadata (PII isolated in private subcollection).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID matching document ID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "telegramUserId": {
+          "type": "string",
+          "description": "Unique Telegram user ID or mapped identifier.",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Player display name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "username": {
+          "type": "string",
+          "description": "Telegram handle or username.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "language": {
+          "type": "string",
+          "description": "Preferred UI language (am or en).",
+          "enum": ["am", "en"]
+        },
+        "phoneVerified": {
+          "type": "boolean",
+          "description": "Whether the player's phone number is verified."
+        },
+        "demoBalanceEtb": {
+          "type": "number",
+          "description": "Initial demo sandbox credit balance (immutable by client updates)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": [
+        "uid",
+        "telegramUserId",
+        "displayName",
+        "username",
+        "language",
+        "phoneVerified",
+        "demoBalanceEtb",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserPrivateContact": {
+      "title": "UserPrivateContact",
+      "description": "Isolated PII document storing player phone number and verification proof.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "phoneNumber": {
+          "type": "string",
+          "description": "E.164 Ethiopian or international phone number.",
+          "minLength": 9,
+          "maxLength": 16,
+          "pattern": "^\\+?[0-9]{9,15}$"
+        },
+        "phoneVerified": {
+          "type": "boolean",
+          "description": "Verification status."
+        },
+        "verificationMethod": {
+          "type": "string",
+          "description": "Method used to verify phone.",
+          "enum": ["telegram_contact", "sms_otp_demo"]
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of verification."
+        }
+      },
+      "required": [
+        "uid",
+        "phoneNumber",
+        "phoneVerified",
+        "verificationMethod",
+        "updatedAt"
+      ]
+    },
+    "GameRoom": {
+      "title": "GameRoom",
+      "description": "Multiplayer Bingo room configuration and live capacity counters.",
+      "type": "object",
+      "properties": {
+        "roomId": {
+          "type": "string",
+          "description": "Unique room identifier.",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "nameAm": {
+          "type": "string",
+          "description": "Amharic room title.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "nameEn": {
+          "type": "string",
+          "description": "English room title.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "cardPrice": {
+          "type": "number",
+          "description": "Demo card cost in ETB."
+        },
+        "maxCardsPerRoom": {
+          "type": "number",
+          "description": "Room capacity (600 cards)."
+        },
+        "maxCardsPerPlayer": {
+          "type": "number",
+          "description": "Per-player limit (4 cards)."
+        },
+        "minPlayers": {
+          "type": "number",
+          "description": "Minimum eligible players (3)."
+        },
+        "countdownSeconds": {
+          "type": "number",
+          "description": "Lobby countdown seconds (0-60)."
+        },
+        "activePlayersCount": {
+          "type": "number",
+          "description": "Number of active players in room."
+        },
+        "reservedCardsCount": {
+          "type": "number",
+          "description": "Number of cards reserved (0-600)."
+        },
+        "status": {
+          "type": "string",
+          "description": "Current room lifecycle state.",
+          "enum": ["waiting", "countdown", "live", "completed"]
+        },
+        "currentGameId": {
+          "type": "string",
+          "description": "Active game session ID.",
+          "maxLength": 64
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp."
+        }
+      },
+      "required": [
+        "roomId",
+        "nameAm",
+        "nameEn",
+        "cardPrice",
+        "maxCardsPerRoom",
+        "maxCardsPerPlayer",
+        "minPlayers",
+        "countdownSeconds",
+        "activePlayersCount",
+        "reservedCardsCount",
+        "status",
+        "currentGameId",
+        "updatedAt"
+      ]
+    },
+    "RoomPlayerState": {
+      "title": "RoomPlayerState",
+      "description": "Per-room player participation record enforcing maximum 4 cards per player.",
+      "type": "object",
+      "properties": {
+        "playerId": {
+          "type": "string",
+          "description": "Player UID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "description": "Parent room ID.",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Player display name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "telegramUserId": {
+          "type": "string",
+          "description": "Player Telegram ID.",
+          "maxLength": 64
+        },
+        "cardIds": {
+          "type": "array",
+          "description": "Bounded list of reserved card IDs (1 to 4 cards max)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp."
+        }
+      },
+      "required": [
+        "playerId",
+        "roomId",
+        "displayName",
+        "telegramUserId",
+        "cardIds",
+        "updatedAt"
+      ]
+    },
+    "RoomCardReservation": {
+      "title": "RoomCardReservation",
+      "description": "Atomic reservation lock for a single card number (1..600) in a room.",
+      "type": "object",
+      "properties": {
+        "cardId": {
+          "type": "number",
+          "description": "Card number between 1 and 600."
+        },
+        "roomId": {
+          "type": "string",
+          "description": "Parent room ID.",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of player who reserved this card.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerName": {
+          "type": "string",
+          "description": "Display name of card holder.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "serial": {
+          "type": "string",
+          "description": "Deterministic card serial ADB-001..ADB-600.",
+          "maxLength": 16,
+          "pattern": "^ADB-[0-9]{3}$"
+        },
+        "reservedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp."
+        }
+      },
+      "required": [
+        "cardId",
+        "roomId",
+        "ownerId",
+        "ownerName",
+        "serial",
+        "reservedAt"
+      ]
+    },
+    "BingoGameSession": {
+      "title": "BingoGameSession",
+      "description": "Live Bingo game state, called numbers, and verified winner outcome.",
+      "type": "object",
+      "properties": {
+        "gameId": {
+          "type": "string",
+          "description": "Unique game session ID.",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomId": {
+          "type": "string",
+          "description": "Associated room ID.",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "hostUid": {
+          "type": "string",
+          "description": "UID of session initiator.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "status": {
+          "type": "string",
+          "description": "Game status (countdown, live, completed).",
+          "enum": ["countdown", "live", "completed"]
+        },
+        "calledNumbers": {
+          "type": "array",
+          "description": "Ordered list of called numbers (1..75, max 75)."
+        },
+        "latestBall": {
+          "type": "number",
+          "description": "Most recently called ball number (1..75)."
+        },
+        "winnerUid": {
+          "type": "string",
+          "description": "UID of verified winner (empty string until won).",
+          "maxLength": 128
+        },
+        "winnerName": {
+          "type": "string",
+          "description": "Display name of winner.",
+          "maxLength": 80
+        },
+        "winningCardId": {
+          "type": "number",
+          "description": "Winning card number (0 until won, 1..600 when won)."
+        },
+        "winningPattern": {
+          "type": "string",
+          "description": "Description of winning pattern.",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of update."
+        }
+      },
+      "required": [
+        "gameId",
+        "roomId",
+        "hostUid",
+        "status",
+        "calledNumbers",
+        "latestBall",
+        "winnerUid",
+        "winnerName",
+        "winningCardId",
+        "winningPattern",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DemoTransaction": {
+      "title": "DemoTransaction",
+      "description": "Immutable audit log entry for demo wallet activity.",
+      "type": "object",
+      "properties": {
+        "transactionId": {
+          "type": "string",
+          "description": "Unique transaction ID.",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "description": "Transaction category.",
+          "enum": [
+            "deposit_demo",
+            "withdraw_demo",
+            "card_entry",
+            "bingo_win",
+            "referral_bonus"
+          ]
+        },
+        "amountEtb": {
+          "type": "number",
+          "description": "Demo amount in ETB."
+        },
+        "status": {
+          "type": "string",
+          "description": "Sandbox status.",
+          "enum": ["demo_completed", "demo_pending"]
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "reference": {
+          "type": "string",
+          "description": "Audit reference code.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp."
+        }
+      },
+      "required": [
+        "transactionId",
+        "userId",
+        "type",
+        "amountEtb",
+        "status",
+        "description",
+        "reference",
+        "createdAt"
+      ]
+    },
+    "ReferralRecordDoc": {
+      "title": "ReferralRecordDoc",
+      "description": "Demo referral record linking inviter to invited friend.",
+      "type": "object",
+      "properties": {
+        "referralId": {
+          "type": "string",
+          "description": "Unique referral ID.",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "inviterUid": {
+          "type": "string",
+          "description": "UID of inviter.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "friendName": {
+          "type": "string",
+          "description": "Invited friend display name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "friendHandle": {
+          "type": "string",
+          "description": "Invited friend Telegram handle.",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "inviterBonusEtb": {
+          "type": "number",
+          "description": "Demo bonus for inviter (20 ETB)."
+        },
+        "inviteeBonusEtb": {
+          "type": "number",
+          "description": "Demo bonus for invitee (15 ETB)."
+        },
+        "status": {
+          "type": "string",
+          "description": "Referral qualification status.",
+          "enum": ["qualified", "pending"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp."
+        }
+      },
+      "required": [
+        "referralId",
+        "inviterUid",
+        "friendName",
+        "friendHandle",
+        "inviterBonusEtb",
+        "inviteeBonusEtb",
+        "status",
+        "createdAt"
+      ]
+    },
+    "TelegramAccountBinding": {
+      "title": "TelegramAccountBinding",
+      "description": "Unique 1-to-1 registry mapping a Telegram User ID to a single Firebase Auth UID to prevent duplicate Telegram account registration.",
+      "type": "object",
+      "properties": {
+        "telegramUserId": {
+          "type": "string",
+          "description": "Unique Telegram user ID (document ID).",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "uid": {
+          "type": "string",
+          "description": "Bound Firebase Auth UID.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "boundAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when binding was created."
+        }
+      },
+      "required": [
+        "telegramUserId",
+        "uid",
+        "boundAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public player profile; demoBalanceEtb is locked against client modification and atomically bound to /telegramBindings/{telegramUserId}."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateContact" },
+      "description": "Strictly isolated PII subcollection storing verified phone numbers."
+    },
+    "/telegramBindings/{telegramUserId}": {
+      "schema": { "$ref": "#/entities/TelegramAccountBinding" },
+      "description": "Immutable 1-to-1 uniqueness lock preventing duplicate Telegram account registrations."
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/GameRoom" },
+      "description": "Bingo game rooms with capacity 600 cards and max 4 cards per player."
+    },
+    "/rooms/{roomId}/players/{playerId}": {
+      "schema": { "$ref": "#/entities/RoomPlayerState" },
+      "description": "Real-time room player participation enforcing max 4 cards per player."
+    },
+    "/rooms/{roomId}/cards/{cardId}": {
+      "schema": { "$ref": "#/entities/RoomCardReservation" },
+      "description": "Atomic per-card lock documents for cards 1..600 in a room."
+    },
+    "/games/{gameId}": {
+      "schema": { "$ref": "#/entities/BingoGameSession" },
+      "description": "Active and completed Bingo game sessions with called numbers and winner state."
+    },
+    "/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/DemoTransaction" },
+      "description": "Append-only demo wallet ledger entries scoped to owner userId."
+    },
+    "/referrals/{referralId}": {
+      "schema": { "$ref": "#/entities/ReferralRecordDoc" },
+      "description": "Append-only demo referral records scoped to inviterUid."
+    }
+  }
+}
