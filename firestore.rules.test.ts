@@ -45,49 +45,77 @@ test('Phase 0 Dirty Dozen & Eight Pillars Audit on Firestore Security Rules', ()
     'Must forbid storing unverified phone numbers as verified in /users/{userId}/private/contact'
   );
 
-  // 5. Duplicate Telegram Account Registration Prevention (/telegramBindings/{telegramUserId})
+  // 5. Server-Only Telegram Bindings & Anti-Pre-Hijacking (/telegramBindings/{telegramUserId} & /users/{userId})
   assert.match(
     rulesContent,
-    /match \/telegramBindings\/\{telegramUserId\}/,
-    'Must enforce unique Telegram ID binding collection'
+    /match \/telegramBindings\/\{telegramUserId\}[\s\S]*?allow create, update, delete: if false;/,
+    'Must lock /telegramBindings writes strictly to server Admin SDK'
   );
   assert.match(
     rulesContent,
-    /existsAfter\(\/databases\/\$\(database\)\/documents\/telegramBindings\/\$\(incoming\(\)\.telegramUserId\)\)/,
-    'Must require atomic creation of /telegramBindings/{telegramUserId} when creating /users/{userId}'
-  );
-
-  // 6. Card Bounds (1..600) & Atomic Max-4-Cards Enforcement (getAfter)
-  assert.match(
-    rulesContent,
-    /data\.cardId >= 1 && data\.cardId <= 600/,
-    'Must enforce 1..600 card ID bounds'
-  );
-  assert.match(
-    rulesContent,
-    /getAfter\(\/databases\/\$\(database\)\/documents\/rooms\/\$\(roomId\)\/players\/\$\(request\.auth\.uid\)\)\.data\.cardIds\.size\(\) <= 4/,
-    'Must enforce max 4 cards per player atomically via getAfter()'
+    /match \/users\/\{userId\}[\s\S]*?allow create: if isVerifiedTelegramUser\(\) &&[\s\S]*?incoming\(\)\.telegramUserId == request\.auth\.uid/,
+    'Must block email-authenticated users from claiming Telegram IDs or creating Telegram profiles'
   );
 
-  // 7. Terminal State Locking, Host-Authorized Monotonic Ball Call, and Self-Referral Prevention
+  // 6. Server-Only Card & Player Reservations (Blocks Direct Client Bypass of 4-Card Limit)
   assert.match(
     rulesContent,
-    /existing\(\)\.status != 'completed'/,
-    'Must lock terminal completed game sessions against further mutation'
+    /match \/players\/\{playerId\}[\s\S]*?allow create, update, delete: if false;/,
+    'Must forbid direct client writes to /rooms/{roomId}/players/{playerId}'
   );
   assert.match(
     rulesContent,
-    /existing\(\)\.hostUid == request\.auth\.uid/,
-    'Must restrict ball-calling updates on /games/{gameId} to the session host or admin'
+    /match \/cards\/\{cardId\}[\s\S]*?allow create, update, delete: if false;/,
+    'Must forbid direct client writes to /rooms/{roomId}/cards/{cardId}'
   );
+
+  // 7. Server-Only Game Sessions (/games/{gameId}) & Self-Referral Prevention
   assert.match(
     rulesContent,
-    /incoming\(\)\.calledNumbers\.size\(\) == existing\(\)\.calledNumbers\.size\(\) \+ 1/,
-    'Must enforce monotonic single-ball increments on /games/{gameId}'
+    /match \/games\/\{gameId\}[\s\S]*?allow create, update, delete: if false;/,
+    'Must forbid client game creation, hostUid assignment, calledNumbers rewriting, and winner claims'
   );
   assert.match(
     rulesContent,
     /incoming\(\)\.friendHandle != get\(\/databases\/\$\(database\)\/documents\/users\/\$\(request\.auth\.uid\)\)\.data\.username/,
     'Must block self-referral abuse on /referrals/{referralId}'
   );
+
+  // 8. Telegram Verified Custom Claims (Integer ID Match) & Email-Only Admin Gate
+  assert.match(
+    rulesContent,
+    /request\.auth\.token\.telegram_verified == true\s*&&\s*request\.auth\.token\.telegram_id is int\s*&&\s*request\.auth\.uid == 'tg_' \+ string\(request\.auth\.token\.telegram_id\)/,
+    'Must require telegram_verified == true, integer telegram_id, and exact tg_<id> UID match'
+  );
+  assert.match(
+    rulesContent,
+    /function isAdmin\(\) \{\s*return isVerifiedEmailUser\(\)/,
+    'Must restrict admin access strictly to email-verified admins, never Telegram custom claims'
+  );
+
+  // 9. Lock Client Mutation of Room Creation/Pricing, Winnings, and Referral Payouts
+  assert.match(
+    rulesContent,
+    /match \/rooms\/\{roomId\}[\s\S]*?allow create: if isAdmin\(\)[\s\S]*?allow update: if isAdmin\(\)/,
+    'Must restrict room creation and updates strictly to admins/server Admin SDK'
+  );
+  assert.match(
+    rulesContent,
+    /incoming\(\)\.type != 'bingo_win' &&\s*incoming\(\)\.type != 'referral_bonus'/,
+    'Must forbid clients from creating forged bingo_win or referral_bonus transactions'
+  );
+  assert.match(
+    rulesContent,
+    /match \/referrals\/\{referralId\}[\s\S]*?incoming\(\)\.status == 'pending'/,
+    'Must forbid clients from self-qualifying referral payouts'
+  );
+
+  // 10. Server-Only Collections Explicitly Locked
+  for (const col of ['admins', 'replayGuards', 'botPlayers', 'botOutbox']) {
+    assert.match(
+      rulesContent,
+      new RegExp(`match \\/${col}\\/\\{[^}]+\\} \\{\\s*allow read, write: if false;\\s*\\}`),
+      `Must deny all client access to server-only /${col} collection`
+    );
+  }
 });

@@ -97,7 +97,7 @@ export interface BotNotificationMessage {
 }
 
 export const DEFAULT_DEPLOYED_MINI_APP_URL =
-  'https://ais-pre-evydgg3zevudzz52jzdy5u-529287111346.europe-west1.run.app';
+  'https://adebingo-3nta.vercel.app/';
 
 /**
  * Builds the 7-button ADEYBINGO Telegram Bot Main Menu Reply Keyboard + Mini App WebApp Launcher.

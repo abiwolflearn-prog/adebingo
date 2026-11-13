@@ -20,17 +20,39 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+function parseCliOption(flag: string): string | undefined {
+  const idx = process.argv.indexOf(flag);
+  if (idx !== -1 && idx + 1 < process.argv.length) {
+    return process.argv[idx + 1];
+  }
+  const prefix = `${flag}=`;
+  const match = process.argv.find((arg) => arg.startsWith(prefix));
+  return match ? match.slice(prefix.length) : undefined;
+}
+
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  const cliPortRaw = parseCliOption('--port');
+  const cliPort = cliPortRaw ? Number(cliPortRaw) : NaN;
+  const PORT =
+    Number.isFinite(cliPort) && cliPort > 0
+      ? cliPort
+      : process.env.NODE_ENV === 'production'
+        ? Number(process.env.PORT) || 3000
+        : Number(process.env.DEFAULT_APP_PORT) || 3000;
+  const HOST = parseCliOption('--host') || '0.0.0.0';
 
-  const miniAppUrl = (
-    process.env.APP_URL &&
-    process.env.APP_URL !== 'MY_APP_URL' &&
-    process.env.APP_URL.startsWith('https://')
-      ? process.env.APP_URL
-      : DEFAULT_DEPLOYED_MINI_APP_URL
+  const publicBaseUrl = (
+    [process.env.PUBLIC_MINI_APP_URL, process.env.APP_URL].find(
+      (candidate) =>
+        typeof candidate === 'string' &&
+        candidate.startsWith('https://') &&
+        candidate !== 'MY_APP_URL' &&
+        !candidate.includes('ais-dev-') &&
+        !candidate.includes('ais-pre-')
+    ) || DEFAULT_DEPLOYED_MINI_APP_URL
   ).replace(/\/+$/, '');
+  const miniAppUrl = `${publicBaseUrl}/`;
 
   const botEngine = new AdeyBingoTelegramBotEngine(miniAppUrl);
   const gameAuthority = new ServerGameAuthority();
@@ -66,7 +88,7 @@ async function startServer() {
       telegramBotTokenConfigured: hasBotToken,
       telegramWebhookSecretConfigured: hasWebhookSecret,
       miniAppUrl,
-      webhookEndpointUrl: `${miniAppUrl}/api/telegram/webhook`,
+      webhookEndpointUrl: `${publicBaseUrl}/api/telegram/webhook`,
       mode: 'demo_sandbox',
     });
   });
@@ -263,7 +285,7 @@ async function startServer() {
     const requestedBaseUrl =
       typeof candidateUrl === 'string' && candidateUrl.startsWith('https://')
         ? candidateUrl.replace(/\/+$/, '')
-        : miniAppUrl;
+        : publicBaseUrl;
     const webhookUrl = `${requestedBaseUrl}/api/telegram/webhook`;
     const normalizedSecret = normalizeWebhookSecretForTelegram(rawWebhookSecret);
 
@@ -589,9 +611,12 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ADEYBINGO server listening on http://localhost:${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`ADEYBINGO server listening on http://${HOST}:${PORT}`);
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('Failed to start ADEYBINGO server:', err);
+  process.exit(1);
+});

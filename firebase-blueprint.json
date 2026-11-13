@@ -518,6 +518,192 @@
         "uid",
         "boundAt"
       ]
+    },
+    "ReplayGuardMarker": {
+      "title": "ReplayGuardMarker",
+      "description": "Server-only persistent replay protection marker keyed by SHA-256 scope:keyHash with TTL expiration.",
+      "type": "object",
+      "properties": {
+        "keyHash": {
+          "type": "string",
+          "description": "SHA-256 hex digest of scope:rawKey.",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "scope": {
+          "type": "string",
+          "description": "Replay protection scope.",
+          "enum": ["init_data", "tg_update", "game_draw", "card_tx", "custom"]
+        },
+        "expiresAtMs": {
+          "type": "number",
+          "description": "Epoch milliseconds after which the marker may be purged."
+        },
+        "expireAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Firestore TTL timestamp for automatic cleanup."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation."
+        }
+      },
+      "required": [
+        "keyHash",
+        "scope",
+        "expiresAtMs",
+        "expireAt",
+        "createdAt"
+      ]
+    },
+    "BotPlayerRecord": {
+      "title": "BotPlayerRecord",
+      "description": "Server-only Telegram bot user registration and language preference state.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Mapped Firebase UID (tg_<telegramUserId>).",
+          "maxLength": 128,
+          "pattern": "^tg_[0-9]+$"
+        },
+        "telegramUserId": {
+          "type": "number",
+          "description": "Numeric Telegram user ID."
+        },
+        "telegramKey": {
+          "type": "string",
+          "description": "Canonical binding key tg_<telegramUserId>.",
+          "maxLength": 64,
+          "pattern": "^tg_[0-9]+$"
+        },
+        "firstName": {
+          "type": "string",
+          "description": "Telegram first name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "lastName": {
+          "type": "string",
+          "description": "Telegram last name.",
+          "maxLength": 80
+        },
+        "username": {
+          "type": "string",
+          "description": "Telegram username without leading @.",
+          "maxLength": 64
+        },
+        "language": {
+          "type": "string",
+          "description": "Preferred bot and Mini App language.",
+          "enum": ["am", "en"]
+        },
+        "phoneVerified": {
+          "type": "boolean",
+          "description": "Whether Telegram native contact sharing succeeded."
+        },
+        "verifiedPhoneMasked": {
+          "type": "string",
+          "description": "Masked phone number for display.",
+          "maxLength": 32
+        },
+        "demoBalanceEtb": {
+          "type": "number",
+          "description": "Cached demo balance snapshot."
+        },
+        "referralCode": {
+          "type": "string",
+          "description": "Referral code for Telegram deep links.",
+          "maxLength": 32
+        },
+        "registeredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of registration."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of last update."
+        }
+      },
+      "required": [
+        "uid",
+        "telegramUserId",
+        "telegramKey",
+        "firstName",
+        "username",
+        "language",
+        "phoneVerified",
+        "demoBalanceEtb",
+        "referralCode",
+        "registeredAt",
+        "updatedAt"
+      ]
+    },
+    "BotOutboxMessage": {
+      "title": "BotOutboxMessage",
+      "description": "Server-only persistent outbox of Telegram bot notifications.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique notification ID.",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "event": {
+          "type": "string",
+          "description": "Notification event category.",
+          "maxLength": 48
+        },
+        "telegramUserId": {
+          "type": "number",
+          "description": "Target Telegram user ID."
+        },
+        "language": {
+          "type": "string",
+          "description": "Message language.",
+          "enum": ["am", "en"]
+        },
+        "title": {
+          "type": "string",
+          "description": "Localized notification title.",
+          "maxLength": 160
+        },
+        "body": {
+          "type": "string",
+          "description": "Localized notification body.",
+          "maxLength": 1024
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp."
+        },
+        "createdAtMs": {
+          "type": "number",
+          "description": "Epoch milliseconds used for ordering outbox messages."
+        },
+        "deliveredViaBotApi": {
+          "type": "boolean",
+          "description": "Whether Bot API delivery succeeded."
+        }
+      },
+      "required": [
+        "id",
+        "event",
+        "telegramUserId",
+        "language",
+        "title",
+        "body",
+        "createdAt",
+        "createdAtMs",
+        "deliveredViaBotApi"
+      ]
     }
   },
   "firestore": {
@@ -556,6 +742,18 @@
     "/referrals/{referralId}": {
       "schema": { "$ref": "#/entities/ReferralRecordDoc" },
       "description": "Append-only demo referral records scoped to inviterUid."
+    },
+    "/replayGuards/{guardId}": {
+      "schema": { "$ref": "#/entities/ReplayGuardMarker" },
+      "description": "Server-only atomic replay protection records for Telegram initData hashes, update IDs, and action nonces."
+    },
+    "/botPlayers/{telegramUserId}": {
+      "schema": { "$ref": "#/entities/BotPlayerRecord" },
+      "description": "Server-only Telegram bot user state and language preferences."
+    },
+    "/botOutbox/{notificationId}": {
+      "schema": { "$ref": "#/entities/BotOutboxMessage" },
+      "description": "Server-only persistent outbox for Telegram bot notifications."
     }
   }
 }

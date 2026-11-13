@@ -15,8 +15,19 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isVerifiedUser() {
+    function isVerifiedEmailUser() {
       return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isVerifiedTelegramUser() {
+      return isSignedIn() &&
+        request.auth.token.telegram_verified == true &&
+        request.auth.token.telegram_id is int &&
+        request.auth.uid == 'tg_' + string(request.auth.token.telegram_id);
+    }
+
+    function isVerifiedUser() {
+      return isVerifiedTelegramUser() || isVerifiedEmailUser();
     }
 
     function isOwner(userId) {
@@ -24,7 +35,7 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isVerifiedUser() && (
+      return isVerifiedEmailUser() && (
         request.auth.token.email == 'abelbimrew868@gmail.com' ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
@@ -339,17 +350,19 @@ service cloud.firestore {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if false;
 
-      // Atomic Telegram Binding Invariant (Pillar 7):
-      // Creating a user profile requires a matching 1-to-1 /telegramBindings/{telegramUserId}
-      // document owned by the same userId after the transaction/batch.
-      allow create: if isOwner(userId) &&
+      // Server-Verified Telegram Binding Invariant:
+      // Only Telegram custom-token users can bind tg_<id> profiles, and only after
+      // the Admin SDK has created /telegramBindings/{telegramUserId} for this UID.
+      allow create: if isVerifiedTelegramUser() &&
+        isOwner(userId) &&
         isValidId(userId) &&
         isValidUserPublicProfile(incoming(), userId) &&
+        incoming().telegramUserId == request.auth.uid &&
         incoming().demoBalanceEtb == 250 &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        existsAfter(/databases/$(database)/documents/telegramBindings/$(incoming().telegramUserId)) &&
-        getAfter(/databases/$(database)/documents/telegramBindings/$(incoming().telegramUserId)).data.uid == userId;
+        exists(/databases/$(database)/documents/telegramBindings/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/telegramBindings/$(request.auth.uid)).data.uid == userId;
 
       // Users can NEVER modify demoBalanceEtb, uid, telegramUserId, or createdAt
       allow update: if isOwner(userId) &&
@@ -411,16 +424,8 @@ service cloud.firestore {
       allow get: if isVerifiedUser() && isValidId(telegramUserId) && (existing().uid == request.auth.uid || isAdmin());
       allow list: if false;
 
-      // Prevents duplicate Telegram account registration:
-      // Can only be created once (update/delete forbidden) and must atomically match /users/{uid}.
-      allow create: if isVerifiedUser() &&
-        isValidId(telegramUserId) &&
-        isValidTelegramAccountBinding(incoming(), telegramUserId) &&
-        incoming().boundAt == request.time &&
-        existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.telegramUserId == telegramUserId;
-
-      allow update, delete: if false;
+      // Server-only writes via Admin SDK prevent duplicate Telegram binding or squatting
+      allow create, update, delete: if false;
     }
 
     // =========================================================================
@@ -430,12 +435,13 @@ service cloud.firestore {
       allow get: if isVerifiedUser() && isValidId(roomId);
       allow list: if isVerifiedUser() && resource.data.maxCardsPerRoom == 600;
 
-      allow create: if isVerifiedUser() &&
+      allow create: if isAdmin() &&
         isValidId(roomId) &&
         isValidGameRoom(incoming(), roomId) &&
+        incoming().status != 'completed' &&
         incoming().updatedAt == request.time;
 
-      allow update: if isVerifiedUser() &&
+      allow update: if isAdmin() &&
         isValidId(roomId) &&
         isValidGameRoom(incoming(), roomId) &&
         incoming().roomId == existing().roomId &&
@@ -443,148 +449,53 @@ service cloud.firestore {
         incoming().maxCardsPerPlayer == existing().maxCardsPerPlayer &&
         incoming().minPlayers == existing().minPlayers &&
         incoming().updatedAt == request.time &&
-        (
-          isAdmin() ||
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'cardPrice',
-            'countdownSeconds',
-            'activePlayersCount',
-            'reservedCardsCount',
-            'status',
-            'currentGameId',
-            'updatedAt'
-          ])
-        );
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'nameAm',
+          'nameEn',
+          'cardPrice',
+          'countdownSeconds',
+          'activePlayersCount',
+          'reservedCardsCount',
+          'status',
+          'currentGameId',
+          'updatedAt'
+        ]);
 
       allow delete: if false;
 
       // =======================================================================
-      // 4. ROOM PLAYERS (/rooms/{roomId}/players/{playerId})
+      // 4. ROOM PLAYERS (/rooms/{roomId}/players/{playerId}) - Server-Only Writes
       // =======================================================================
       match /players/{playerId} {
         allow get: if isVerifiedUser() && isValidId(roomId) && isValidId(playerId);
         allow list: if isVerifiedUser() && resource.data.roomId == roomId;
 
-        allow create: if isOwner(playerId) &&
-          isValidId(roomId) &&
-          isValidId(playerId) &&
-          isValidRoomPlayerState(incoming(), roomId, playerId) &&
-          incoming().updatedAt == request.time &&
-          exists(/databases/$(database)/documents/rooms/$(roomId));
-
-        allow update: if isOwner(playerId) &&
-          isValidId(roomId) &&
-          isValidId(playerId) &&
-          isValidRoomPlayerState(incoming(), roomId, playerId) &&
-          incoming().playerId == existing().playerId &&
-          incoming().roomId == existing().roomId &&
-          incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'displayName',
-            'cardIds',
-            'updatedAt'
-          ]) &&
-          exists(/databases/$(database)/documents/rooms/$(roomId));
-
-        allow delete: if isOwner(playerId) &&
-          isValidId(roomId) &&
-          isValidId(playerId) &&
-          exists(/databases/$(database)/documents/rooms/$(roomId));
+        // All card and player reservations must execute via trusted backend Admin SDK transactions
+        allow create, update, delete: if false;
       }
 
       // =======================================================================
-      // 5. ATOMIC CARD RESERVATIONS (/rooms/{roomId}/cards/{cardId})
+      // 5. ATOMIC CARD RESERVATIONS (/rooms/{roomId}/cards/{cardId}) - Server-Only Writes
       // =======================================================================
       match /cards/{cardId} {
         allow get: if isVerifiedUser() && isValidId(roomId) && isValidCardPathId(cardId);
         allow list: if isVerifiedUser() && resource.data.roomId == roomId;
 
-        // Atomic Reservation Invariant (Pillar 1 + Pillar 7):
-        // 1. Card ID must be 1..600.
-        // 2. Parent room must exist and not be completed.
-        // 3. Player's /rooms/{roomId}/players/{uid} doc must exist after the batch/transaction
-        //    with cardIds.size() <= 4 (max 4 cards per player).
-        allow create: if isVerifiedUser() &&
-          isValidId(roomId) &&
-          isValidCardPathId(cardId) &&
-          isValidRoomCardReservation(incoming(), roomId) &&
-          incoming().reservedAt == request.time &&
-          exists(/databases/$(database)/documents/rooms/$(roomId)) &&
-          get(/databases/$(database)/documents/rooms/$(roomId)).data.status != 'completed' &&
-          existsAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)) &&
-          getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.cardIds.size() <= 4;
-
-        // Prevent hijacking or overwriting an existing reservation
-        allow update: if false;
-
-        // Only the card owner can release their reservation before the room completes
-        allow delete: if isVerifiedUser() &&
-          isValidId(roomId) &&
-          isValidCardPathId(cardId) &&
-          existing().ownerId == request.auth.uid &&
-          exists(/databases/$(database)/documents/rooms/$(roomId)) &&
-          get(/databases/$(database)/documents/rooms/$(roomId)).data.status != 'completed';
+        // All card reservations and releases are strictly server-only via Admin SDK
+        allow create, update, delete: if false;
       }
     }
 
     // =========================================================================
-    // 6. BINGO GAME SESSIONS (/games/{gameId})
+    // 6. BINGO GAME SESSIONS (/games/{gameId}) - Server-Only Writes
     // =========================================================================
     match /games/{gameId} {
       allow get: if isVerifiedUser() && isValidId(gameId);
       allow list: if isVerifiedUser() && resource.data.status in ['countdown', 'live', 'completed'];
 
-      allow create: if isVerifiedUser() &&
-        isValidId(gameId) &&
-        isValidBingoGameSession(incoming(), gameId) &&
-        incoming().hostUid == request.auth.uid &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time &&
-        exists(/databases/$(database)/documents/rooms/$(incoming().roomId));
-
-      // Terminal State Locking + Privileged Operation Authorization:
-      // 1. Once status == 'completed', no further updates are allowed.
-      // 2. Calling a ball (Action 1) is restricted to the session hostUid (or Admin)
-      //    and must monotonically append exactly 1 ball.
-      // 3. Declaring a winner (Action 2) requires that the claiming player owns a
-      //    valid card reservation in that room.
-      allow update: if isVerifiedUser() &&
-        isValidId(gameId) &&
-        isValidBingoGameSession(incoming(), gameId) &&
-        existing().status != 'completed' &&
-        incoming().gameId == existing().gameId &&
-        incoming().roomId == existing().roomId &&
-        incoming().hostUid == existing().hostUid &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        (
-          isAdmin() ||
-          // Action 1: Host-Authorized Monotonic Ball Call
-          (incoming().status == 'live' &&
-            existing().hostUid == request.auth.uid &&
-            incoming().calledNumbers.size() == existing().calledNumbers.size() + 1 &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'status',
-              'calledNumbers',
-              'latestBall',
-              'updatedAt'
-            ])) ||
-          // Action 2: Declare Verified Winner (transitions to 'completed')
-          (incoming().status == 'completed' &&
-            incoming().winnerUid == request.auth.uid &&
-            incoming().winningCardId >= 1 &&
-            exists(/databases/$(database)/documents/rooms/$(existing().roomId)/players/$(request.auth.uid)) &&
-            incoming().diff(existing()).affectedKeys().hasOnly([
-              'status',
-              'winnerUid',
-              'winnerName',
-              'winningCardId',
-              'winningPattern',
-              'updatedAt'
-            ]))
-        );
-
-      allow delete: if false;
+      // Only trusted Firebase Admin backend code may create games, draw numbers,
+      // reset rounds, and finalize winners.
+      allow create, update, delete: if false;
     }
 
     // =========================================================================
@@ -594,9 +505,12 @@ service cloud.firestore {
       allow get: if isVerifiedUser() && isValidId(transactionId) && existing().userId == request.auth.uid;
       allow list: if isVerifiedUser() && resource.data.userId == request.auth.uid;
 
+      // Clients cannot forge server-verified winnings ('bingo_win') or referral rewards ('referral_bonus')
       allow create: if isVerifiedUser() &&
         isValidId(transactionId) &&
         isValidDemoTransaction(incoming(), transactionId) &&
+        incoming().type != 'bingo_win' &&
+        incoming().type != 'referral_bonus' &&
         incoming().createdAt == request.time &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid));
 
@@ -610,15 +524,35 @@ service cloud.firestore {
       allow get: if isVerifiedUser() && isValidId(referralId) && existing().inviterUid == request.auth.uid;
       allow list: if isVerifiedUser() && resource.data.inviterUid == request.auth.uid;
 
-      // Prevents self-referral: friendHandle cannot match the inviter's own username
+      // Prevents self-referral and forbids clients from self-qualifying referral payouts
       allow create: if isVerifiedUser() &&
         isValidId(referralId) &&
         isValidReferralRecord(incoming(), referralId) &&
+        incoming().status == 'pending' &&
         incoming().createdAt == request.time &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         incoming().friendHandle != get(/databases/$(database)/documents/users/$(request.auth.uid)).data.username;
 
       allow update, delete: if false;
+    }
+
+    // =========================================================================
+    // 9. SERVER-ONLY COLLECTIONS (Admin SDK Exclusively)
+    // =========================================================================
+    match /admins/{adminUid} {
+      allow read, write: if false;
+    }
+
+    match /replayGuards/{guardId} {
+      allow read, write: if false;
+    }
+
+    match /botPlayers/{telegramUserId} {
+      allow read, write: if false;
+    }
+
+    match /botOutbox/{notificationId} {
+      allow read, write: if false;
     }
   }
 }
