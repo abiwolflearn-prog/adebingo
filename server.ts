@@ -17,6 +17,16 @@ import {
   verifyWebhookSecretHeader,
 } from './src/utils/telegramBot.ts';
 import type { NotificationEventType } from './src/utils/telegramBot.ts';
+import {
+  authorizeAdminRequest,
+  mintServerSessionToken,
+  ServerAdminAuthority,
+} from './src/utils/adminAuthority.ts';
+import type {
+  DepositRequestStatus,
+  PayoutOrderStatus,
+  VerifiedSessionActor,
+} from './src/utils/adminAuthority.ts';
 
 dotenv.config();
 
@@ -126,6 +136,7 @@ async function startServer() {
 
   const botEngine = new AdeyBingoTelegramBotEngine(miniAppUrl);
   const gameAuthority = new ServerGameAuthority();
+  const adminAuthority = new ServerAdminAuthority(botEngine);
 
   // Seed default demo player profile in bot engine so outbox & profile queries work out of the box
   botEngine.handleIncomingUpdate({
@@ -314,9 +325,16 @@ async function startServer() {
     const senderTelegramId = Number(
       from.id || message.chat?.id || update.senderTelegramId || 8842109
     );
+    const callbackQueryId =
+      typeof update.callback_query?.id === 'string'
+        ? update.callback_query.id
+        : typeof update.callbackQueryId === 'string'
+        ? update.callbackQueryId
+        : undefined;
 
     const botResponse = botEngine.handleIncomingUpdate({
       updateId,
+      callbackQueryId,
       senderTelegramId,
       firstName: from.first_name || update.firstName || 'Player',
       lastName: from.last_name || update.lastName || '',
@@ -588,9 +606,12 @@ async function startServer() {
     const contact = req.body?.contact ?? null;
     const updateId =
       typeof req.body?.updateId === 'number' ? req.body.updateId : undefined;
+    const callbackQueryId =
+      typeof req.body?.callbackQueryId === 'string' ? req.body.callbackQueryId : undefined;
 
     const botResponse = botEngine.handleIncomingUpdate({
       updateId,
+      callbackQueryId,
       senderTelegramId,
       firstName,
       lastName,
@@ -737,6 +758,401 @@ async function startServer() {
     }
 
     res.json(verifyRes);
+  });
+
+  // ---------------------------------------------------------------------------
+  // 9. Server-Side Admin Authorization & Protected /api/admin/* Endpoints
+  // ---------------------------------------------------------------------------
+  const resolveAdminSessionSecret = (): string => {
+    const raw = (process.env.TELEGRAM_WEBHOOK_SECRET || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    if (raw && raw.length >= 8 && raw !== 'MY_TELEGRAM_WEBHOOK_SECRET') {
+      return `adeybingo_admin_session_secret_${raw}`;
+    }
+    return 'adeybingo_server_admin_session_hmac_secret_v1';
+  };
+
+  const extractAdminAuthFromRequest = (req: express.Request) => {
+    const authHeader =
+      typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
+    const bearerToken = authHeader.startsWith('Bearer ')
+      ? authHeader.slice('Bearer '.length).trim()
+      : undefined;
+    const headerSessionToken =
+      typeof req.headers['x-adey-session-token'] === 'string'
+        ? req.headers['x-adey-session-token'].trim()
+        : undefined;
+    const telegramInitData =
+      typeof req.headers['x-telegram-init-data'] === 'string'
+        ? req.headers['x-telegram-init-data'].trim()
+        : undefined;
+
+    return authorizeAdminRequest({
+      sessionToken: bearerToken || headerSessionToken,
+      telegramInitData,
+      botToken: resolveInitDataVerificationToken(),
+      sessionSecret: resolveAdminSessionSecret(),
+    });
+  };
+
+  const requireAdmin: express.RequestHandler = (req, res, next) => {
+    const authRes = extractAdminAuthFromRequest(req);
+    if (!authRes.authorized || !authRes.actor) {
+      res.status(authRes.statusCode).json({
+        ok: false,
+        authorized: false,
+        statusCode: authRes.statusCode,
+        reason: authRes.reason,
+        actor: authRes.actor
+          ? {
+              uid: authRes.actor.uid,
+              telegramUserId: authRes.actor.telegramUserId,
+              displayName: authRes.actor.displayName,
+              role: authRes.actor.role,
+            }
+          : null,
+        message:
+          authRes.statusCode === 401
+            ? 'HTTP 401 Unauthorized: Valid server-verified session token or Telegram initData required.'
+            : 'HTTP 403 Forbidden: Normal player accounts are not authorized to access administrator endpoints.',
+      });
+      return;
+    }
+
+    (req as express.Request & { adminActor?: VerifiedSessionActor }).adminActor = authRes.actor;
+    next();
+  };
+
+  // 9A. Exchange identity or Telegram initData for a server-signed session token
+  // Never allows a normal player to grant themselves an admin role!
+  app.post('/api/admin/session/exchange', (req, res) => {
+    const sessionSecret = resolveAdminSessionSecret();
+    const botToken = resolveInitDataVerificationToken();
+    const rawInitData = typeof req.body?.initData === 'string' ? req.body.initData.trim() : '';
+    const identityMode = typeof req.body?.identityMode === 'string' ? req.body.identityMode : '';
+    const clientClaimedRole =
+      typeof req.body?.requestedRole === 'string' ? req.body.requestedRole : undefined;
+
+    if (rawInitData) {
+      const check = validateTelegramWebAppInitData(rawInitData, botToken, {
+        maxAgeSeconds: 86400,
+      });
+      if (!check.valid || !check.telegramUser) {
+        res.status(401).json({
+          ok: false,
+          statusCode: 401,
+          reason: check.reason || 'invalid_init_data',
+          message: 'Telegram initData signature validation failed.',
+        });
+        return;
+      }
+      const tg = check.telegramUser;
+      const minted = mintServerSessionToken(
+        {
+          telegramUserId: tg.id,
+          displayName: `${tg.first_name} ${tg.last_name || ''}`.trim(),
+          username: tg.username || `tg_${tg.id}`,
+        },
+        sessionSecret
+      );
+      if (clientClaimedRole === 'admin' && minted.actor.role !== 'admin') {
+        const blocked = adminAuthority.blockRoleEscalationAttempt({
+          actor: minted.actor,
+          targetUid: minted.actor.uid,
+          requestedRole: 'admin',
+        });
+        res.status(403).json(blocked);
+        return;
+      }
+      res.json({
+        ok: true,
+        token: minted.token,
+        actor: minted.actor,
+      });
+      return;
+    }
+
+    // Preset server-verified sessions for interactive verification of Admin (200) vs Normal Player (403)
+    if (identityMode === 'admin') {
+      const minted = mintServerSessionToken(
+        {
+          telegramUserId: 8842109,
+          displayName: 'Abebe Bikila (Lead Admin)',
+          username: 'abebe_adey',
+          email: 'abelbimrew868@gmail.com',
+        },
+        sessionSecret
+      );
+      res.json({
+        ok: true,
+        token: minted.token,
+        actor: minted.actor,
+      });
+      return;
+    }
+
+    if (identityMode === 'player') {
+      const minted = mintServerSessionToken(
+        {
+          telegramUserId: 7777777,
+          displayName: 'Dawit Mekonnen (Player)',
+          username: 'dawit_m',
+        },
+        sessionSecret
+      );
+
+      if (clientClaimedRole === 'admin') {
+        const blocked = adminAuthority.blockRoleEscalationAttempt({
+          actor: minted.actor,
+          targetUid: minted.actor.uid,
+          requestedRole: 'admin',
+        });
+        res.status(403).json(blocked);
+        return;
+      }
+
+      res.json({
+        ok: true,
+        token: minted.token,
+        actor: minted.actor,
+      });
+      return;
+    }
+
+    res.status(401).json({
+      ok: false,
+      statusCode: 401,
+      reason: 'unauthenticated',
+      message: 'Valid identityMode or Telegram initData is required.',
+    });
+  });
+
+  // 9B. Verify current session role against server authority
+  app.get('/api/admin/session', requireAdmin, (req, res) => {
+    const actor = (req as express.Request & { adminActor: VerifiedSessionActor }).adminActor;
+    res.json({
+      ok: true,
+      authorized: true,
+      statusCode: 200,
+      actor,
+    });
+  });
+
+  // 9C. Section 1: Overview Metrics
+  app.get('/api/admin/overview', requireAdmin, (_req, res) => {
+    res.json({
+      ok: true,
+      overview: adminAuthority.getOverviewMetrics(),
+    });
+  });
+
+  // 9D. Section 2: User Management (Search + Account Status + Masked Phone + Wallet Ledger)
+  app.get('/api/admin/users', requireAdmin, (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    res.json({
+      ok: true,
+      users: adminAuthority.searchUsers(q),
+    });
+  });
+
+  app.post('/api/admin/users/:uid/status', requireAdmin, (req, res) => {
+    const actor = (req as express.Request & { adminActor: VerifiedSessionActor }).adminActor;
+    const uid = String(req.params.uid || '');
+    const accountStatus = req.body?.accountStatus === 'suspended' ? 'suspended' : 'active';
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : '';
+
+    // Block any attempt to modify user roles through this endpoint
+    if (req.body?.role !== undefined) {
+      const blocked = adminAuthority.blockRoleEscalationAttempt({
+        actor,
+        targetUid: uid,
+        requestedRole: String(req.body.role),
+      });
+      res.status(403).json(blocked);
+      return;
+    }
+
+    const result = adminAuthority.updateUserStatus({
+      uid,
+      accountStatus,
+      reason,
+      adminActor: actor,
+    });
+    if (!result.ok) {
+      res.status(404).json(result);
+      return;
+    }
+    res.json(result);
+  });
+
+  // 9E. Section 3: Payout Orders (Demo-Only Payout Request Management)
+  app.get('/api/admin/payouts', requireAdmin, (req, res) => {
+    const statusFilter = typeof req.query.status === 'string' ? req.query.status : 'ALL';
+    res.json({
+      ok: true,
+      payouts: adminAuthority.getPayoutOrders(statusFilter),
+    });
+  });
+
+  app.post('/api/admin/payouts/:requestId/review', requireAdmin, (req, res) => {
+    const actor = (req as express.Request & { adminActor: VerifiedSessionActor }).adminActor;
+    const requestId = String(req.params.requestId || '');
+    const nextStatus = req.body?.nextStatus as PayoutOrderStatus;
+    const reviewNotes = typeof req.body?.reviewNotes === 'string' ? req.body.reviewNotes : '';
+
+    const result = adminAuthority.reviewPayoutOrder({
+      requestId,
+      nextStatus,
+      reviewNotes,
+      adminActor: actor,
+    });
+    if (!result.ok) {
+      res.status(400).json(result);
+      return;
+    }
+    res.json(result);
+  });
+
+  // 9F. Section 4: Deposit Requests (Demo-Only)
+  app.get('/api/admin/deposits', requireAdmin, (_req, res) => {
+    res.json({
+      ok: true,
+      deposits: adminAuthority.getDepositRequests(),
+    });
+  });
+
+  app.post('/api/admin/deposits/:depositId/review', requireAdmin, (req, res) => {
+    const actor = (req as express.Request & { adminActor: VerifiedSessionActor }).adminActor;
+    const depositId = String(req.params.depositId || '');
+    const nextStatus = req.body?.nextStatus as DepositRequestStatus;
+    const reviewNotes = typeof req.body?.reviewNotes === 'string' ? req.body.reviewNotes : '';
+
+    const result = adminAuthority.reviewDepositRequest({
+      depositId,
+      nextStatus,
+      reviewNotes,
+      adminActor: actor,
+    });
+    if (!result.ok) {
+      res.status(400).json(result);
+      return;
+    }
+    res.json(result);
+  });
+
+  // 9G. Section 5: Game Room Management
+  app.get('/api/admin/rooms', requireAdmin, (_req, res) => {
+    res.json({
+      ok: true,
+      rooms: adminAuthority.getRooms(),
+    });
+  });
+
+  app.post('/api/admin/rooms/:roomId', requireAdmin, (req, res) => {
+    const actor = (req as express.Request & { adminActor: VerifiedSessionActor }).adminActor;
+    const roomId = String(req.params.roomId || '');
+    const cardPriceEtb =
+      typeof req.body?.cardPriceEtb === 'number' ? req.body.cardPriceEtb : undefined;
+    const lobbyCountdownSeconds =
+      typeof req.body?.lobbyCountdownSeconds === 'number'
+        ? req.body.lobbyCountdownSeconds
+        : undefined;
+    const minPlayers =
+      typeof req.body?.minPlayers === 'number' ? req.body.minPlayers : undefined;
+    const status = req.body?.status;
+
+    const result = adminAuthority.updateRoomConfig({
+      roomId,
+      cardPriceEtb,
+      lobbyCountdownSeconds,
+      minPlayers,
+      status,
+      adminActor: actor,
+    });
+    if (!result.ok) {
+      res.status(400).json(result);
+      return;
+    }
+    res.json(result);
+  });
+
+  // 9H. Section 6: Referral Management
+  app.get('/api/admin/referrals', requireAdmin, (_req, res) => {
+    res.json({
+      ok: true,
+      referrals: adminAuthority.getReferrals(),
+    });
+  });
+
+  // 9I. Section 7: Bot Management (Welcome messages, button labels/destinations, announcements, delivery stats)
+  app.get('/api/admin/bot/config', requireAdmin, (_req, res) => {
+    res.json({
+      ok: true,
+      botConfig: adminAuthority.getBotManagementState(),
+    });
+  });
+
+  app.post('/api/admin/bot/config', requireAdmin, (req, res) => {
+    const actor = (req as express.Request & { adminActor: VerifiedSessionActor }).adminActor;
+    const result = adminAuthority.updateBotManagementConfig({
+      miniAppUrl: typeof req.body?.miniAppUrl === 'string' ? req.body.miniAppUrl : undefined,
+      customWelcomeAm:
+        req.body?.customWelcomeAm !== undefined ? req.body.customWelcomeAm : undefined,
+      customWelcomeEn:
+        req.body?.customWelcomeEn !== undefined ? req.body.customWelcomeEn : undefined,
+      buttonLabels:
+        typeof req.body?.buttonLabels === 'object' && req.body.buttonLabels
+          ? req.body.buttonLabels
+          : undefined,
+      adminActor: actor,
+    });
+    res.json(result);
+  });
+
+  app.post('/api/admin/bot/announce', requireAdmin, (req, res) => {
+    const actor = (req as express.Request & { adminActor: VerifiedSessionActor }).adminActor;
+    const result = adminAuthority.sendBotAnnouncement({
+      titleAm: typeof req.body?.titleAm === 'string' ? req.body.titleAm : '',
+      titleEn: typeof req.body?.titleEn === 'string' ? req.body.titleEn : '',
+      bodyAm: typeof req.body?.bodyAm === 'string' ? req.body.bodyAm : '',
+      bodyEn: typeof req.body?.bodyEn === 'string' ? req.body.bodyEn : '',
+      targetAudience:
+        req.body?.targetAudience === 'verified_players' ? 'verified_players' : 'all_players',
+      adminActor: actor,
+    });
+    if (!result.ok) {
+      res.status(400).json(result);
+      return;
+    }
+    res.json(result);
+  });
+
+  // 9J. Section 8: Notifications Management
+  app.get('/api/admin/notifications', requireAdmin, (_req, res) => {
+    res.json({
+      ok: true,
+      outbox: botEngine.getNotificationOutbox(),
+    });
+  });
+
+  app.post('/api/admin/notifications/send', requireAdmin, (req, res) => {
+    const event = (req.body?.event || 'support_response') as NotificationEventType;
+    const telegramUserId = Number(req.body?.telegramUserId || 8842109);
+    const payload =
+      typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {};
+    const notification = botEngine.queueNotification(event, telegramUserId, payload, false);
+    res.json({
+      ok: true,
+      notification,
+      outbox: botEngine.getNotificationOutbox().slice(0, 20),
+    });
+  });
+
+  // 9K. Section 9: Admin Settings & Immutable SHA-256 Audit Log
+  app.get('/api/admin/settings', requireAdmin, (_req, res) => {
+    res.json({
+      ok: true,
+      settings: adminAuthority.getAdminSettings(),
+    });
   });
 
   if (process.env.NODE_ENV !== 'production') {

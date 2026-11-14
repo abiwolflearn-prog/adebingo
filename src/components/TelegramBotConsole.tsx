@@ -40,6 +40,16 @@ const MENU_BUTTONS = [
   '🌐 Change Language',
 ] as const;
 
+const INLINE_CALLBACK_BUTTONS = [
+  { label: '🎮 Play Bingo', callbackData: 'cb:play_bingo' },
+  { label: '💰 My Wallet', callbackData: 'cb:my_wallet' },
+  { label: '👥 Invite Friends', callbackData: 'cb:invite_friends' },
+  { label: '👤 My Profile', callbackData: 'cb:my_profile' },
+  { label: '📜 Game History', callbackData: 'cb:game_history' },
+  { label: '💬 Support', callbackData: 'cb:support' },
+  { label: '🌐 Language', callbackData: 'cb:language' },
+] as const;
+
 const NOTIFICATION_EVENTS: {
   id: NotificationEventType;
   labelAm: string;
@@ -74,6 +84,8 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
   async function sendBotCommand(
     text: string,
     extra: {
+      callbackData?: string;
+      callbackQueryId?: string;
       contact?: {
         phone_number: string;
         first_name: string;
@@ -94,6 +106,8 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
           username: user.username.replace(/^@/, ''),
           firebaseUid: extra.overrideUid || firebaseUid || `tg_${user.id}`,
           text,
+          callbackData: extra.callbackData || '',
+          callbackQueryId: extra.callbackQueryId,
           contact: extra.contact ?? null,
         }),
       });
@@ -349,6 +363,31 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
               </button>
             );
           })}
+        </div>
+
+        <small className="text-[11px] font-bold text-[#486655] block pt-1">
+          {lang === 'am'
+            ? 'የውስጥ ቁልፎች (Milestone 4 — Interactive Inline Callbacks):'
+            : 'Interactive Inline Keyboard Callbacks (Milestone 4):'}
+        </small>
+        <div className="flex flex-wrap gap-1.5">
+          {INLINE_CALLBACK_BUTTONS.map((cb) => (
+            <button
+              key={cb.callbackData}
+              type="button"
+              disabled={busy}
+              data-testid={`bot-cb-${cb.callbackData}`}
+              onClick={() =>
+                sendBotCommand('', {
+                  callbackData: cb.callbackData,
+                  callbackQueryId: `cbq_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+                })
+              }
+              className="px-2.5 py-1.5 rounded-xl bg-[#eef8f2] border border-[#cde5d6] text-[#087e50] text-xs font-extrabold hover:bg-[#def2e6]"
+            >
+              {cb.label}
+            </button>
+          ))}
         </div>
       </div>
 

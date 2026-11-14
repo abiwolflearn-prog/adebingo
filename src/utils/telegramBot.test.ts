@@ -255,3 +255,106 @@ test('Webhook secret normalization and constant-time header verification', () =>
   assert.equal(verifyWebhookSecretHeader(undefined, sampleBase64Secret), false);
 });
 
+test('Milestone 4 Part A: All 7 interactive inline callback buttons, duplicate callbackQueryId protection, and player-bot admin isolation', () => {
+  const bot = new AdeyBingoTelegramBotEngine('https://adebingo-3nta.vercel.app/');
+
+  // 1. /start initializes user and includes inline_keyboard with PLAY BINGO and all 7 actions + language selectors
+  const startRes = bot.handleIncomingUpdate({
+    updateId: 4001,
+    senderTelegramId: 7777777,
+    firstName: 'Dawit',
+    username: 'dawit_m',
+    text: '/start',
+  });
+  assert.equal(startRes.ok, true);
+  const inlineCallbacks = (startRes.replyMarkup.inline_keyboard || [])
+    .flat()
+    .map((b) => b.callback_data)
+    .filter(Boolean);
+  assert.ok(inlineCallbacks.includes('cb:play_bingo'));
+  assert.ok(inlineCallbacks.includes('cb:my_wallet'));
+  assert.ok(inlineCallbacks.includes('cb:invite_friends'));
+  assert.ok(inlineCallbacks.includes('cb:my_profile'));
+  assert.ok(inlineCallbacks.includes('cb:game_history'));
+  assert.ok(inlineCallbacks.includes('cb:support'));
+  assert.ok(inlineCallbacks.includes('cb:language'));
+  assert.ok(inlineCallbacks.includes('lang:am'));
+  assert.ok(inlineCallbacks.includes('lang:en'));
+
+  // 2. Test each of the 7 callback buttons
+  const playCb = bot.handleIncomingUpdate({
+    callbackQueryId: 'cbq-1',
+    senderTelegramId: 7777777,
+    callbackData: 'cb:play_bingo',
+  });
+  assert.equal(playCb.ok, true);
+  assert.match(playCb.text, /https:\/\/adebingo-3nta\.vercel\.app\//);
+
+  const walletCb = bot.handleIncomingUpdate({
+    callbackQueryId: 'cbq-2',
+    senderTelegramId: 7777777,
+    callbackData: 'cb:my_wallet',
+  });
+  assert.equal(walletCb.ok, true);
+  assert.match(walletCb.text, /250\.00 ETB/);
+
+  const inviteCb = bot.handleIncomingUpdate({
+    callbackQueryId: 'cbq-3',
+    senderTelegramId: 7777777,
+    callbackData: 'cb:invite_friends',
+  });
+  assert.equal(inviteCb.ok, true);
+  assert.match(inviteCb.text, /ADEY-7777777/);
+
+  const profileCb = bot.handleIncomingUpdate({
+    callbackQueryId: 'cbq-4',
+    senderTelegramId: 7777777,
+    callbackData: 'cb:my_profile',
+  });
+  assert.equal(profileCb.ok, true);
+  assert.match(profileCb.text, /Dawit/);
+
+  const historyCb = bot.handleIncomingUpdate({
+    callbackQueryId: 'cbq-5',
+    senderTelegramId: 7777777,
+    callbackData: 'cb:game_history',
+  });
+  assert.equal(historyCb.ok, true);
+  assert.match(historyCb.text, /Adey Main Hall/);
+
+  const supportCb = bot.handleIncomingUpdate({
+    callbackQueryId: 'cbq-6',
+    senderTelegramId: 7777777,
+    callbackData: 'cb:support',
+  });
+  assert.equal(supportCb.ok, true);
+  assert.match(supportCb.text, /@AdeyBingoSupport/);
+
+  const langCb = bot.handleIncomingUpdate({
+    callbackQueryId: 'cbq-7',
+    senderTelegramId: 7777777,
+    callbackData: 'lang:en',
+  });
+  assert.equal(langCb.ok, true);
+  assert.equal(langCb.language, 'en');
+  assert.equal(bot.getLanguage(7777777), 'en');
+
+  // 3. Duplicate callback query protection (replaying cbq-2 must be rejected)
+  const duplicateCb = bot.handleIncomingUpdate({
+    callbackQueryId: 'cbq-2',
+    senderTelegramId: 7777777,
+    callbackData: 'cb:my_wallet',
+  });
+  assert.equal(duplicateCb.ok, false);
+  assert.equal(duplicateCb.securityCode, 'duplicate_callback_query');
+
+  // 4. Normal users cannot invoke admin functions in the player bot
+  const adminAttempt = bot.handleIncomingUpdate({
+    senderTelegramId: 7777777,
+    text: '/admin',
+  });
+  assert.equal(adminAttempt.ok, false);
+  assert.equal(adminAttempt.securityCode, 'admin_command_forbidden_in_player_bot');
+});
+
+

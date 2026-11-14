@@ -75,9 +75,24 @@ import { LobbyAndCardsScreen } from './components/LobbyAndCardsScreen';
 import { LiveGameScreen } from './components/LiveGameScreen';
 import { WalletScreens } from './components/WalletScreens';
 import { CommunityScreens } from './components/CommunityScreens';
+import { AdminDashboardScreen } from './components/AdminDashboardScreen';
+
+function checkIsAdminRoute(): boolean {
+  if (typeof window === 'undefined') return false;
+  const path = window.location.pathname.replace(/\/+$/, '');
+  const params = new URLSearchParams(window.location.search);
+  return path === '/admin' || params.get('route') === 'admin';
+}
 
 export default function App() {
   const [user] = useState(() => initTelegramMiniApp());
+  const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => checkIsAdminRoute());
+
+  useEffect(() => {
+    const onPopState = () => setIsAdminRoute(checkIsAdminRoute());
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   // Default language is Amharic ('am'), with English ('en') switching
   const [lang, setLang] = useState<Language>('am');
@@ -884,6 +899,19 @@ export default function App() {
   const unreadCount = notifications.filter((n) => !n.read).length;
   const winningCardObj =
     playerCards.find((c) => c.id === activeWinResult?.cardId) ?? playerCards[0];
+
+  if (isAdminRoute) {
+    return (
+      <AdminDashboardScreen
+        lang={lang}
+        onToggleLang={() => setLang((l) => (l === 'am' ? 'en' : 'am'))}
+        onReturnToPlayerApp={() => {
+          window.history.pushState({}, '', '/');
+          setIsAdminRoute(false);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="app">
