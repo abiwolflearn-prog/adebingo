@@ -5,6 +5,7 @@ export type ScreenId =
   | 'lobby'
   | 'cards'
   | 'game'
+  | 'leaderboard'
   | 'wallet'
   | 'deposit'
   | 'withdraw'
@@ -52,10 +53,10 @@ export interface RoomConfig {
   maxCardsPerRoom: number; // 600
   maxCardsPerPlayer: number; // 4
   minPlayers: number; // 3
-  countdownSeconds: number; // 60
+  countdownSeconds: number;
   activePlayers: number;
   takenCardIds: number[];
-  status: 'countdown' | 'live' | 'waiting';
+  status: 'countdown' | 'live' | 'waiting' | 'completed';
   badgeAm: string;
   badgeEn: string;
 }
@@ -70,6 +71,57 @@ export interface WalletTransaction {
   labelEn: string;
   timestamp: string;
   reference: string;
+}
+
+export interface DepositRequestSummary {
+  depositId: string;
+  amountEtb: number;
+  provider: string;
+  referenceCode: string;
+  status: 'Pending' | 'Approved' | 'Rejected';
+  requestDate: string;
+}
+
+export interface PayoutRequestSummary {
+  requestId: string;
+  requestedAmountEtb: number;
+  paymentMethod: string;
+  status: 'Pending' | 'Under Review' | 'Approved' | 'Rejected' | 'Completed';
+  requestDate: string;
+  reviewNotes: string;
+}
+
+export interface LeaderboardEntry {
+  uid: string;
+  telegramUserId: number;
+  displayName: string;
+  wins: number;
+  winningsEtb: number;
+}
+
+export interface PlayerStateResponse {
+  ok: boolean;
+  profile: {
+    uid: string;
+    telegramUserId: number;
+    displayName: string;
+    username: string;
+    language: Language;
+    phoneVerified: boolean;
+    referralCode: string;
+    referredByCode?: string;
+  };
+  wallet: {
+    availableBalanceEtb: number;
+    winningsBalanceEtb: number;
+    demoSandboxOnly: boolean;
+  };
+  transactions: WalletTransaction[];
+  depositRequests: DepositRequestSummary[];
+  payoutRequests: PayoutRequestSummary[];
+  referrals: ReferralRecord[];
+  gameHistory: GameHistoryItem[];
+  leaderboard: LeaderboardEntry[];
 }
 
 export interface ReferralRecord {

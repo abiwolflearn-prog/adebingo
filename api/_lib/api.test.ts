@@ -20,6 +20,8 @@ import { createStartGameHandler } from '../game/start.ts';
 import { createDrawBallHandler } from '../game/draw-ball.ts';
 import { createResetRoundHandler } from '../game/reset-round.ts';
 import { createVerifyWinnerHandler } from '../game/verify-winner.ts';
+import { createPlayerStateHandler } from '../player/state.ts';
+import { createPlayerWalletHandler } from '../player/wallet.ts';
 import {
   createAdminBotAnnounceHandler,
   createAdminBotConfigHandler,
@@ -270,12 +272,12 @@ function buildSignedInitData(
   params.set('query_id', 'AAHdF6IQAAAAAN0XohDhrOrc');
   params.set('user', JSON.stringify(userObj));
 
-  const pairs: string[] = [];
+  const entries: Array<[string, string]> = [];
   params.forEach((value, key) => {
-    pairs.push(`${key}=${value}`);
+    entries.push([key, value]);
   });
-  pairs.sort((a, b) => a.localeCompare(b));
-  const dataCheckString = pairs.join('\n');
+  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const dataCheckString = entries.map(([k, v]) => `${k}=${v}`).join('\n');
 
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
   const hash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
@@ -487,6 +489,57 @@ test('Telegram auth & initData validation reject invalid, expired, replayed, and
   });
   assert.equal(valReplay.statusCode, 409);
   assert.equal(valReplay.body.reason, 'replay_detected');
+
+  // Missing or placeholder bot token -> 503 missing_bot_token (never 401 signature_mismatch)
+  const unconfiguredAuthHandler = createTelegramAuthHandler({
+    getDb: () => db,
+    getBotToken: () => 'MY_TELEGRAM_BOT_TOKEN',
+    isAdminReady: () => true,
+    nowUnixSeconds: () => nowUnix,
+    limiter: new BoundedRateLimiter(),
+  });
+  const missingTokenRes = await invokeHandler(unconfiguredAuthHandler, {
+    method: 'POST',
+    body: { initData: validInit },
+  });
+  assert.equal(missingTokenRes.statusCode, 503);
+  assert.equal(missingTokenRes.body.reason, 'missing_bot_token');
+  assert.equal(
+    (missingTokenRes.body.diagnostics as { failureCategory?: string } | undefined)?.failureCategory,
+    'backend_environment_configuration'
+  );
+
+  // Missing hash -> 400 missing_hash with safe diagnostics
+  const missingHashInit = validInit.replace(/&hash=[0-9a-f]+/i, '');
+  const missingHashRes = await invokeHandler(authHandler, {
+    method: 'POST',
+    body: { initData: missingHashInit },
+  });
+  assert.equal(missingHashRes.statusCode, 400);
+  assert.equal(missingHashRes.body.reason, 'missing_hash');
+
+  // Malformed query string -> 400 malformed_init_data
+  const malformedRes = await invokeHandler(authHandler, {
+    method: 'POST',
+    body: { initData: 'not_a_query_string' },
+  });
+  assert.equal(malformedRes.statusCode, 400);
+  assert.equal(malformedRes.body.reason, 'malformed_init_data');
+
+  // Non-string initData or initDataUnsafe override rejected -> 400
+  const nonStringRes = await invokeHandler(authHandler, {
+    method: 'POST',
+    body: { initData: { user: { id: 778899 } } },
+  });
+  assert.equal(nonStringRes.statusCode, 400);
+  assert.equal(nonStringRes.body.reason, 'malformed_init_data');
+
+  const unsafeOverrideRes = await invokeHandler(authHandler, {
+    method: 'POST',
+    body: { initData: validInit, initDataUnsafe: { user: { id: 778899 } } },
+  });
+  assert.equal(unsafeOverrideRes.statusCode, 400);
+  assert.equal(unsafeOverrideRes.body.reason, 'client_identity_override_rejected');
 });
 
 test('Telegram webhook & secret-protected endpoints enforce fail-closed secret, replay protection, private chat rules, and no firebaseUid overrides', async () => {
@@ -1444,4 +1497,314 @@ test('Milestone 4.2: Admin Serverless API blocks preset identityMode bypass (403
   assert.equal(dupCallbackRes.statusCode, 409);
   assert.equal(dupCallbackRes.body.reason, 'duplicate_callback_query');
 });
+
+test('Milestone 5: /api/telegram/auth defaults new users to Amharic even when language_code is en, retains user language switch, and webhook callbackAnswerText + deposit/withdraw persistence work', async () => {
+  const { db, store } = createStrictInMemoryFirestore();
+  const botToken = '123456:TEST_ADEYBINGO_BOT_TOKEN';
+  const webhookSecret = 'webhook_secret_m5';
+  const nowUnix = 1_760_000_000;
+  const answerBodies: Array<Record<string, unknown>> = [];
+
+  const authHandler = createTelegramAuthHandler({
+    getDb: () => db,
+    getBotToken: () => botToken,
+    isAdminReady: () => true,
+    nowUnixSeconds: () => nowUnix,
+    limiter: new BoundedRateLimiter(),
+    mintCustomToken: async ({ telegramUserId }) => ({
+      uid: `tg_${telegramUserId}`,
+      customToken: `custom_${telegramUserId}`,
+    }),
+  });
+
+  // 1. New user with Telegram client language_code='en' MUST default to Amharic ('am')
+  const enClientInit = buildSignedInitData(botToken, nowUnix - 10, {
+    id: 665544,
+    first_name: 'Biniyam',
+    username: 'biniyam_et',
+    language_code: 'en',
+  });
+  const authRes = await invokeHandler(authHandler, {
+    method: 'POST',
+    body: { initData: enClientInit },
+  });
+  assert.equal(authRes.statusCode, 200);
+  assert.equal((authRes.body.profile as { language?: string }).language, 'am');
+  assert.equal(store.get('users/tg_665544')?.language, 'am');
+
+  // 2. Webhook switches language via lang:en callback and passes callbackAnswerText to answerCallbackQuery
+  const webhookHandler = createTelegramWebhookHandler({
+    getDb: () => db,
+    getBotToken: () => botToken,
+    getWebhookSecret: () => webhookSecret,
+    isAdminReady: () => true,
+    nowUnixSeconds: () => nowUnix,
+    limiter: new BoundedRateLimiter(),
+    fetchImpl: async (url, init) => {
+      if (String(url).includes('/answerCallbackQuery') && typeof init?.body === 'string') {
+        answerBodies.push(JSON.parse(init.body));
+      }
+      return {
+        ok: true,
+        json: async () => ({ ok: true, result: true }),
+      } as unknown as Response;
+    },
+  });
+
+  const switchEnRes = await invokeHandler(webhookHandler, {
+    method: 'POST',
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
+    body: {
+      update_id: 9501,
+      callback_query: {
+        id: 'cbq_m5_lang_en',
+        from: { id: 665544, first_name: 'Biniyam', username: 'biniyam_et' },
+        message: { chat: { id: 665544, type: 'private' } },
+        data: 'lang:en',
+      },
+    },
+  });
+  assert.equal(switchEnRes.statusCode, 200);
+  assert.equal(switchEnRes.body.language, 'en');
+  assert.ok(answerBodies.length === 1 && typeof answerBodies[0].text === 'string');
+
+  // 3. Subsequent /api/telegram/auth retains saved 'en' preference
+  const secondAuthInit = buildSignedInitData(botToken, nowUnix - 2, {
+    id: 665544,
+    first_name: 'Biniyam',
+    username: 'biniyam_et',
+    language_code: 'am',
+  });
+  const authRes2 = await invokeHandler(authHandler, {
+    method: 'POST',
+    body: { initData: secondAuthInit },
+  });
+  assert.equal(authRes2.statusCode, 200);
+  assert.equal((authRes2.body.profile as { language?: string }).language, 'en');
+
+  // 4. Bot deposit & withdraw requests submitted via webhook are persisted for admin review
+  const depCb = await invokeHandler(webhookHandler, {
+    method: 'POST',
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
+    body: {
+      update_id: 9502,
+      callback_query: {
+        id: 'cbq_m5_dep_100',
+        from: { id: 665544, first_name: 'Biniyam', username: 'biniyam_et' },
+        message: { chat: { id: 665544, type: 'private' } },
+        data: 'cb:deposit_amount:100',
+      },
+    },
+  });
+  assert.equal(depCb.statusCode, 200);
+  assert.equal(depCb.body.securityCode, 'deposit_request_created');
+
+  const wdrCb = await invokeHandler(webhookHandler, {
+    method: 'POST',
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
+    body: {
+      update_id: 9503,
+      callback_query: {
+        id: 'cbq_m5_wdr_50',
+        from: { id: 665544, first_name: 'Biniyam', username: 'biniyam_et' },
+        message: { chat: { id: 665544, type: 'private' } },
+        data: 'cb:withdraw_amount:50',
+      },
+    },
+  });
+  assert.equal(wdrCb.statusCode, 200);
+  assert.equal(wdrCb.body.securityCode, 'withdraw_request_created');
+
+  // Verify deposits/payouts exist in Firestore and are visible to admin endpoints
+  const adminDeps = createAdminDepositsHandler({
+    getDb: () => db,
+    getBotToken: () => botToken,
+    authDeps: createMockAuthDeps(
+      {
+        'tok-admin-m5': {
+          uid: 'tg_8842109',
+          email: 'abelbimrew868@gmail.com',
+          email_verified: true,
+        },
+      },
+      ['tg_8842109']
+    ),
+    limiter: new BoundedRateLimiter(),
+  });
+  const depListRes = await invokeHandler(adminDeps, {
+    method: 'GET',
+    headers: { authorization: 'Bearer tok-admin-m5' },
+  });
+  assert.equal(depListRes.statusCode, 200);
+  const deposits = depListRes.body.deposits as Array<{ uid: string; amountEtb: number }>;
+  assert.ok(deposits.some((d) => d.uid === 'tg_665544' && d.amountEtb === 100));
+});
+
+test('Milestone 5 Player API: /api/player/state returns 0 ETB on fresh users, computes verified winnings & leaderboard, and /api/player/wallet handles promo/referral, deposit, and withdrawal checks securely', async () => {
+  const { db, store } = createStrictInMemoryFirestore();
+
+  const authDeps = createMockAuthDeps(
+    {
+      'tok-fresh': {
+        uid: 'tg_910001',
+        telegram_verified: true,
+        telegram_id: 910001,
+        name: 'Fresh Player',
+      },
+      'tok-winner': {
+        uid: 'tg_920002',
+        telegram_verified: true,
+        telegram_id: 920002,
+        name: 'Selam Winner',
+      },
+    },
+    []
+  );
+
+  // Seed winner profile + verified bingo_win transaction + promo code
+  store.set('users/tg_920002', {
+    uid: 'tg_920002',
+    telegramUserId: 'tg_920002',
+    displayName: 'Selam Winner',
+    username: '@selam_w',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 140,
+  });
+  store.set('botPlayers/920002', {
+    telegramUserId: 920002,
+    firebaseUid: 'tg_920002',
+    firstName: 'Selam',
+    username: 'selam_w',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 140,
+    wins: 2,
+    totalWonEtb: 140,
+    referralCode: 'ADEY-920002',
+  });
+  store.set('transactions/tx_win_1', {
+    transactionId: 'tx_win_1',
+    userId: 'tg_920002',
+    type: 'bingo_win',
+    amountEtb: 90,
+    status: 'demo_completed',
+    description: 'Card #7 Row 1',
+    reference: 'WIN-001',
+    createdAt: '2026-11-14T10:00:00.000Z',
+  });
+  store.set('promoCodes/ADEY50', {
+    code: 'ADEY50',
+    bonusEtb: 50,
+    active: true,
+  });
+
+  const stateHandler = createPlayerStateHandler({
+    getDb: () => db,
+    authDeps,
+    limiter: new BoundedRateLimiter(),
+  });
+  const walletHandler = createPlayerWalletHandler({
+    getDb: () => db,
+    authDeps,
+    limiter: new BoundedRateLimiter(),
+  });
+
+  // 1. Unauthenticated access rejected with 401
+  const unauthState = await invokeHandler(stateHandler, { method: 'GET' });
+  assert.equal(unauthState.statusCode, 401);
+
+  const unauthWallet = await invokeHandler(walletHandler, {
+    method: 'POST',
+    body: { action: 'apply_promo', code: 'ADEY50' },
+  });
+  assert.equal(unauthWallet.statusCode, 401);
+
+  // 2. Fresh user with no stored balance receives strictly 0 ETB (never fabricated 250) and empty transactions
+  const freshState = await invokeHandler(stateHandler, {
+    method: 'GET',
+    headers: { authorization: 'Bearer tok-fresh' },
+  });
+  assert.equal(freshState.statusCode, 200);
+  assert.equal((freshState.body.wallet as { availableBalanceEtb: number }).availableBalanceEtb, 0);
+  assert.equal((freshState.body.wallet as { winningsBalanceEtb: number }).winningsBalanceEtb, 0);
+  assert.deepEqual(freshState.body.transactions, []);
+
+  // 3. Seeded winner receives verified balance, winningsBalanceEtb=90, and leaderboard entry
+  const winnerState = await invokeHandler(stateHandler, {
+    method: 'GET',
+    headers: { authorization: 'Bearer tok-winner' },
+  });
+  assert.equal(winnerState.statusCode, 200);
+  assert.equal((winnerState.body.wallet as { availableBalanceEtb: number }).availableBalanceEtb, 140);
+  assert.equal((winnerState.body.wallet as { winningsBalanceEtb: number }).winningsBalanceEtb, 90);
+  const lb = winnerState.body.leaderboard as Array<{ uid: string; winningsEtb: number }>;
+  assert.ok(lb.some((e) => e.uid === 'tg_920002' && e.winningsEtb === 90));
+
+  // 4. Client balance/uid override attempt rejected with 403
+  const spoofRes = await invokeHandler(walletHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-fresh' },
+    body: { action: 'deposit_request', amountEtb: 100, demoBalanceEtb: 9999 },
+  });
+  assert.equal(spoofRes.statusCode, 403);
+  assert.equal(spoofRes.body.reason, 'client_override_rejected');
+
+  // 5. Fresh user cannot withdraw 50 ETB when balance is 0 ETB -> 400 insufficient_balance
+  const emptyWithdraw = await invokeHandler(walletHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-fresh' },
+    body: { action: 'withdraw_request', amountEtb: 50, method: 'Telebirr (Demo)' },
+  });
+  assert.equal(emptyWithdraw.statusCode, 400);
+  assert.equal(emptyWithdraw.body.reason, 'insufficient_demo_balance');
+
+  // 6. Fresh user redeems promo code ADEY50 -> +50 ETB once, duplicate rejected (409)
+  const promoOk = await invokeHandler(walletHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-fresh' },
+    body: { action: 'apply_promo', code: 'ADEY50' },
+  });
+  assert.equal(promoOk.statusCode, 200);
+  assert.equal(promoOk.body.bonusEtb, 50);
+  assert.equal(promoOk.body.updatedBalanceEtb, 50);
+
+  const promoDup = await invokeHandler(walletHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-fresh' },
+    body: { action: 'apply_promo', code: 'ADEY50' },
+  });
+  assert.equal(promoDup.statusCode, 409);
+
+  // 7. Deposit request creates pending record without fabricating instant balance credit
+  const depReq = await invokeHandler(walletHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-fresh' },
+    body: { action: 'deposit_request', amountEtb: 100, provider: 'CBE Birr (Demo)' },
+  });
+  assert.equal(depReq.statusCode, 201);
+  assert.equal(store.get('users/tg_910001')?.demoBalanceEtb, 50);
+
+  // 8. Withdrawal request succeeds against verified 50 ETB balance and records pending payout
+  const wdrOk = await invokeHandler(walletHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-fresh' },
+    body: { action: 'withdraw_request', amountEtb: 25, method: 'Telebirr (Demo)' },
+  });
+  assert.equal(wdrOk.statusCode, 201);
+  const createdWithdrawal = wdrOk.body.withdrawal as { requestId: string; status: string; requestedAmountEtb: number };
+  assert.equal(createdWithdrawal.status, 'Pending');
+  assert.equal(createdWithdrawal.requestedAmountEtb, 25);
+  assert.equal(store.get(`payoutRequests/${createdWithdrawal.requestId}`)?.status, 'Pending');
+
+  // 9. Self-referral rejected
+  const selfRef = await invokeHandler(walletHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-winner' },
+    body: { action: 'apply_promo', code: 'ADEY-920002' },
+  });
+  assert.equal(selfRef.statusCode, 400);
+});
+
+
 

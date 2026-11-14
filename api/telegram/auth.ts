@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
 import { mintServerSessionToken } from '../../src/utils/adminAuthority.ts';
+import { resolveAdminSessionSecret } from '../_lib/auth.ts';
 import {
   createTelegramCustomToken,
   getAdminDb,
@@ -34,6 +35,8 @@ const FORBIDDEN_AUTH_OVERRIDE_FIELDS = [
   'isAdmin',
   'demoBalanceEtb',
   'customToken',
+  'initDataUnsafe',
+  'user',
 ] as const;
 
 export interface TelegramAuthHandlerDeps {
@@ -73,23 +76,63 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
       return;
     }
 
+    if (body.initData !== undefined && typeof body.initData !== 'string') {
+      console.warn('[api/telegram/auth] rejected non-string initData payload', {
+        receivedType: typeof body.initData,
+      });
+      sendError(
+        res,
+        400,
+        'malformed_init_data',
+        'Telegram initData must be sent as the raw query string from window.Telegram.WebApp.initData.',
+        {
+          diagnostics: {
+            failureCategory: 'frontend_request_formatting',
+            botTokenConfigured: isConfiguredBotToken(
+              deps.getBotToken ? deps.getBotToken() : process.env.TELEGRAM_BOT_TOKEN
+            ),
+            initDataPresent: true,
+          },
+        }
+      );
+      return;
+    }
+
     const rawInitData = typeof body.initData === 'string' ? body.initData.trim() : '';
     if (!rawInitData) {
-      sendError(res, 400, 'missing_init_data', 'Telegram Mini App initData is required.');
+      sendError(res, 400, 'missing_init_data', 'Telegram Mini App initData is required.', {
+        diagnostics: {
+          failureCategory: 'missing_init_data',
+          initDataPresent: false,
+        },
+      });
       return;
     }
     if (rawInitData.length > 4096) {
-      sendError(res, 400, 'invalid_init_data', 'Telegram initData exceeds allowed length.');
+      sendError(res, 400, 'malformed_init_data', 'Telegram initData exceeds allowed length.', {
+        diagnostics: {
+          failureCategory: 'malformed_init_data',
+          initDataPresent: true,
+          initDataLength: rawInitData.length,
+        },
+      });
       return;
     }
 
     const botToken = deps.getBotToken ? deps.getBotToken() : process.env.TELEGRAM_BOT_TOKEN;
     if (!isConfiguredBotToken(botToken)) {
+      console.warn('[api/telegram/auth] missing or placeholder TELEGRAM_BOT_TOKEN');
       sendError(
         res,
         503,
         'missing_bot_token',
-        'Telegram authentication is not configured on the server.'
+        'Telegram authentication is not configured on the server (missing or invalid TELEGRAM_BOT_TOKEN).',
+        {
+          diagnostics: {
+            failureCategory: 'backend_environment_configuration',
+            botTokenConfigured: false,
+          },
+        }
       );
       return;
     }
@@ -130,12 +173,17 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
     });
 
     if (!validation.valid || !validation.telegramUser) {
+      console.warn('[api/telegram/auth] initData validation failed', {
+        reason: validation.reason,
+        diagnostics: validation.diagnostics,
+      });
       if (validation.reason === 'replay_detected') {
         sendError(
           res,
           409,
           'replay_detected',
-          'This Telegram initData payload has already been used.'
+          'This Telegram initData payload has already been used.',
+          { diagnostics: validation.diagnostics }
         );
         return;
       }
@@ -144,7 +192,20 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
           res,
           503,
           'missing_bot_token',
-          'Telegram authentication is not configured on the server.'
+          'Telegram authentication is not configured on the server.',
+          { diagnostics: validation.diagnostics }
+        );
+        return;
+      }
+      if (validation.reason === 'malformed_init_data' || validation.reason === 'missing_hash') {
+        sendError(
+          res,
+          400,
+          validation.reason,
+          validation.reason === 'missing_hash'
+            ? 'Telegram initData is missing its cryptographic hash parameter.'
+            : 'Telegram initData query string is malformed.',
+          { diagnostics: validation.diagnostics }
         );
         return;
       }
@@ -152,7 +213,9 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
         validation.reason === 'expired_auth_date' || validation.reason === 'future_auth_date'
           ? 'Telegram initData auth_date is expired or invalid.'
           : 'Telegram initData verification failed.';
-      sendError(res, 401, validation.reason || 'signature_mismatch', message);
+      sendError(res, 401, validation.reason || 'signature_mismatch', message, {
+        diagnostics: validation.diagnostics,
+      });
       return;
     }
 
@@ -165,7 +228,7 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
       firstName: tgUser.first_name || 'Adey Player',
       lastName: tgUser.last_name || '',
       username: tgUser.username || canonicalUid,
-      language: tgUser.language_code === 'en' ? 'en' : 'am',
+      language: 'am',
     });
 
     if (!persisted.ok || !persisted.player) {
@@ -198,27 +261,22 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
       return;
     }
 
-    const secret =
-      (process.env.ADEY_ADMIN_SESSION_SECRET ||
-        process.env.TELEGRAM_WEBHOOK_SECRET ||
-        botToken ||
-        '').trim();
-    const sessionToken =
-      secret.length >= 8
-        ? mintServerSessionToken(
-            {
-              uid: minted.uid,
-              telegramUserId: tgUser.id,
-              displayName: `${persisted.player.firstName} ${persisted.player.lastName || ''}`.trim(),
-              username: persisted.player.username,
-              nowUnixSeconds,
-              expiresInSeconds: 3600,
-            },
-            secret.startsWith('adeybingo_admin_session_secret_')
-              ? secret
-              : `adeybingo_admin_session_secret_${secret}`
-          ).token
-        : undefined;
+    const sessionSecret = resolveAdminSessionSecret({
+      getSessionSecret: () => undefined,
+    }) || (botToken ? resolveAdminSessionSecret({ sessionSecret: botToken }) : null);
+    const sessionToken = sessionSecret
+      ? mintServerSessionToken(
+          {
+            uid: minted.uid,
+            telegramUserId: tgUser.id,
+            displayName: `${persisted.player.firstName} ${persisted.player.lastName || ''}`.trim(),
+            username: persisted.player.username,
+            nowUnixSeconds,
+            expiresInSeconds: 3600,
+          },
+          sessionSecret
+        ).token
+      : undefined;
 
     sendJson(res, 200, {
       ok: true,

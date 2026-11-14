@@ -20,6 +20,7 @@ import {
   UserX,
 } from 'lucide-react';
 import type { Language } from '../types/bingo';
+import { waitForTelegramWebAppInitData } from '../utils/telegram';
 import type {
   AdminAuditRecord,
   AdminDepositRequest,
@@ -157,12 +158,7 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
     setEscalationTestResult('');
     setAuthStatus((prev) => ({ ...prev, loading: true }));
 
-    const tgWebApp = (
-      window as unknown as {
-        Telegram?: { WebApp?: { initData?: string } };
-      }
-    ).Telegram?.WebApp;
-    const liveInitData = tgWebApp?.initData?.trim() || '';
+    const { initData: liveInitData } = await waitForTelegramWebAppInitData(800);
 
     if (liveInitData) {
       await verifyCryptographicCredential(liveInitData);

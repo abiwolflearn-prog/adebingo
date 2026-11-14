@@ -24,35 +24,51 @@ export function BingoCardView({
   const winningCoords = new Set(winCheck.winningCells.map(([r, c]) => `${r}-${c}`));
   const isOneAway = !winCheck.won && winCheck.missingNumbers?.length === 1;
 
+  const canToggleCells = Boolean(onToggleCell);
+
   return (
     <div
       data-testid={`bingo-card-${card.id}`}
-      className={`bg-[#f0f8f2] border transition-all ${
+      className={`bg-[#0b1526] border transition-all ${
         winCheck.won
-          ? 'border-[#eab308] ring-2 ring-[#facc15] shadow-lg'
+          ? 'border-[#facc15] ring-2 ring-[#facc15]/60 shadow-[0_0_24px_rgba(250,204,21,0.22)]'
           : isOneAway
-          ? 'border-[#12a566] shadow-md'
-          : 'border-[#d8eadc]'
-      } ${compact ? 'p-2 rounded-xl' : 'p-2.5 sm:p-3 rounded-2xl'}`}
+          ? 'border-[#22d3ee] shadow-[0_0_20px_rgba(34,211,238,0.18)]'
+          : 'border-[#1e3252]'
+      } ${compact ? 'p-1.5 rounded-lg' : 'p-2.5 sm:p-3 rounded-2xl'}`}
     >
       {/* Card Top Meta Row */}
-      <div className="flex items-center justify-between px-1 pb-2 text-xs">
-        <div className="flex items-center gap-1.5 font-bold text-[#145b38]">
-          <span className="font-['Outfit'] text-sm">#{card.id}</span>
-          <span aria-hidden="true" className="text-[#8ba394]">
-            ·
+      <div
+        className={`flex items-center justify-between px-0.5 ${
+          compact ? 'pb-0.5 text-[10px]' : 'pb-2 text-xs'
+        }`}
+      >
+        <div className="flex items-center gap-1 font-bold text-[#e2e8f0] min-w-0">
+          <span className={`font-['Outfit'] text-[#22d3ee] ${compact ? 'text-[11px]' : 'text-sm'}`}>
+            {card.id}
           </span>
-          <span className="font-mono text-[11px] text-[#597765]">{card.serial}</span>
+          {!compact && (
+            <>
+              <span aria-hidden="true" className="text-[#475569]">
+                ·
+              </span>
+              <span className="font-mono text-[11px] text-[#94a3b8] truncate">{card.serial}</span>
+            </>
+          )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1">
           {winCheck.won && (
-            <span className="text-[11px] font-extrabold text-[#95690c] bg-[#fef08a] px-2 py-0.5 rounded-md">
+            <span
+              className={`font-extrabold text-[#451a03] bg-[#facc15] rounded ${
+                compact ? 'text-[8px] px-1 py-0.5' : 'text-[11px] px-2 py-0.5 rounded-md'
+              }`}
+            >
               ★ BINGO!
             </span>
           )}
           {!winCheck.won && isOneAway && (
-            <span className="text-[11px] font-bold text-[#087e50]">
+            <span className={`font-bold text-[#22d3ee] ${compact ? 'text-[9px]' : 'text-[11px]'}`}>
               {lang === 'am' ? '1 ቀረው!' : '1 Away!'}
             </span>
           )}
@@ -60,7 +76,9 @@ export function BingoCardView({
             <button
               type="button"
               onClick={() => onRemoveCard(card.id)}
-              className="text-[11px] text-[#7c9084] hover:text-red-600 px-1.5 py-0.5 rounded transition-colors"
+              className={`text-[#94a3b8] hover:text-red-400 rounded transition-colors ${
+                compact ? 'text-[10px] px-1 leading-none' : 'text-[11px] px-1.5 py-0.5'
+              }`}
               aria-label={`Remove card ${card.id}`}
             >
               ✕
@@ -70,12 +88,12 @@ export function BingoCardView({
       </div>
 
       {/* B I N G O Header */}
-      <div className="grid grid-cols-5 gap-1.5 mb-1.5">
+      <div className={`grid grid-cols-5 ${compact ? 'gap-0.5 mb-0.5' : 'gap-1.5 mb-1.5'}`}>
         {BINGO_COLUMNS.map((col) => (
           <div
             key={col.letter}
-            className={`bg-gradient-to-br from-[#20b96d] to-[#087e50] text-white rounded-lg flex items-center justify-center font-['Outfit'] font-extrabold shadow-xs ${
-              compact ? 'h-6 text-xs' : 'h-8 text-sm'
+            className={`bg-gradient-to-br from-[#22d3ee] to-[#0284c7] text-[#04101d] flex items-center justify-center font-['Outfit'] font-extrabold shadow-xs ${
+              compact ? 'h-4 text-[9px] rounded' : 'h-8 text-sm rounded-lg'
             }`}
           >
             {col.letter}
@@ -84,9 +102,9 @@ export function BingoCardView({
       </div>
 
       {/* 5x5 Number Grid */}
-      <div className="grid grid-rows-5 gap-1.5">
+      <div className={`grid grid-rows-5 ${compact ? 'gap-0.5' : 'gap-1.5'}`}>
         {card.grid.map((row, rIdx) => (
-          <div key={rIdx} className="grid grid-cols-5 gap-1.5">
+          <div key={rIdx} className={`grid grid-cols-5 ${compact ? 'gap-0.5' : 'gap-1.5'}`}>
             {row.map((num, cIdx) => {
               const isFree = num === 0;
               const isCalled = isFree || calledNumbers.includes(num);
@@ -94,26 +112,26 @@ export function BingoCardView({
               const isWinningCell = winningCoords.has(`${rIdx}-${cIdx}`);
 
               let cellClasses =
-                'bg-white text-[#284b36] hover:bg-[#e9f7ee] shadow-[0_2px_4px_rgba(22,62,37,0.06)]';
+                'bg-[#13223b] text-[#e2e8f0] hover:bg-[#1a2e4f] border border-[#1f3458]';
               if (isFree) {
                 cellClasses =
-                  'bg-[#f8dc7b] text-[#95690c] font-black shadow-[inset_0_0_0_2px_#e5b83b]';
+                  'bg-gradient-to-br from-[#fde047] to-[#f59e0b] text-[#451a03] font-black border border-[#fef08a]/60';
               } else if (isWinningCell) {
                 cellClasses =
-                  'bg-gradient-to-br from-[#fde047] to-[#f59e0b] text-[#451a03] shadow-[inset_0_0_0_2px_#b45309] scale-[1.02]';
+                  'bg-gradient-to-br from-[#fde047] to-[#f59e0b] text-[#451a03] font-black border border-[#fef08a] scale-[1.03] shadow-[0_0_12px_rgba(250,204,21,0.45)]';
               } else if (isMarked) {
                 cellClasses =
-                  'bg-[#3bc97f] text-[#054427] shadow-[inset_0_0_0_2px_#0e8047]';
+                  'bg-gradient-to-br from-[#22d3ee] to-[#14b8a6] text-[#041824] font-black border border-[#a5f3fc]/60 shadow-[0_0_10px_rgba(34,211,238,0.3)]';
               } else if (isCalled) {
                 cellClasses =
-                  'bg-[#dff6e7] text-[#087e50] ring-1 ring-[#16a34a]/40';
+                  'bg-[#0f2f46] text-[#67e8f9] border border-[#22d3ee]/60';
               }
 
               return (
                 <button
                   key={`${rIdx}-${cIdx}`}
                   type="button"
-                  disabled={compact || isFree}
+                  disabled={!canToggleCells || isFree}
                   onClick={() => onToggleCell?.(num, card.id)}
                   aria-label={
                     isFree
@@ -122,10 +140,12 @@ export function BingoCardView({
                           isMarked ? ' marked' : ''
                         }`
                   }
-                  className={`aspect-square rounded-lg font-['Outfit'] font-bold flex items-center justify-center transition-all select-none tabular-nums ${
-                    compact ? 'text-xs min-h-[28px]' : 'text-sm sm:text-base min-h-[42px]'
+                  className={`aspect-square font-['Outfit'] font-bold flex items-center justify-center transition-all select-none tabular-nums ${
+                    compact
+                      ? 'text-[10px] min-h-[20px] rounded'
+                      : 'text-sm sm:text-base min-h-[42px] rounded-lg'
                   } ${cellClasses} ${
-                    !compact && !isFree ? 'active:scale-95 cursor-pointer' : 'cursor-default'
+                    canToggleCells && !isFree ? 'active:scale-95 cursor-pointer' : 'cursor-default'
                   }`}
                 >
                   {isFree ? '★' : num}

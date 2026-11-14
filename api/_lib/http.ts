@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { DEFAULT_DEPLOYED_MINI_APP_URL } from '../../src/utils/telegramBot.ts';
+import { hasValidTelegramBotTokenFormat } from '../../src/utils/telegramVerify.ts';
 
 const FORBIDDEN_PROTO_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -303,9 +304,7 @@ export function getPublicMiniAppUrl(): string {
 }
 
 export function isConfiguredBotToken(token: string | undefined): token is string {
-  return Boolean(
-    token && token.trim().length > 10 && token.trim() !== 'MY_TELEGRAM_BOT_TOKEN'
-  );
+  return hasValidTelegramBotTokenFormat(token);
 }
 
 export function isConfiguredWebhookSecret(secret: string | undefined): secret is string {

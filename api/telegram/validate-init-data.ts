@@ -24,6 +24,8 @@ const FORBIDDEN_FIELDS = [
   'telegramId',
   'expectedTelegramUserId',
   'actionNonce',
+  'initDataUnsafe',
+  'user',
 ] as const;
 
 export interface ValidateInitDataHandlerDeps {
@@ -62,6 +64,27 @@ export function createValidateInitDataHandler(deps: ValidateInitDataHandlerDeps 
       return;
     }
 
+    if (body.initData !== undefined && typeof body.initData !== 'string') {
+      console.warn('[api/telegram/validate-init-data] rejected non-string initData payload', {
+        receivedType: typeof body.initData,
+      });
+      sendError(
+        res,
+        400,
+        'malformed_init_data',
+        'Telegram initData must be sent as the raw query string from window.Telegram.WebApp.initData.',
+        {
+          verified: false,
+          statusCode: 400,
+          diagnostics: {
+            failureCategory: 'frontend_request_formatting',
+            initDataPresent: true,
+          },
+        }
+      );
+      return;
+    }
+
     const rawInitData = typeof body.initData === 'string' ? body.initData.trim() : '';
     if (!rawInitData) {
       sendError(
@@ -69,19 +92,34 @@ export function createValidateInitDataHandler(deps: ValidateInitDataHandlerDeps 
         400,
         'missing_init_data',
         'No Telegram WebApp initData was provided by the client.',
-        { verified: false, statusCode: 400 }
+        {
+          verified: false,
+          statusCode: 400,
+          diagnostics: {
+            failureCategory: 'missing_init_data',
+            initDataPresent: false,
+          },
+        }
       );
       return;
     }
 
     const botToken = deps.getBotToken ? deps.getBotToken() : process.env.TELEGRAM_BOT_TOKEN;
     if (!isConfiguredBotToken(botToken)) {
+      console.warn('[api/telegram/validate-init-data] missing or placeholder TELEGRAM_BOT_TOKEN');
       sendError(
         res,
         503,
         'missing_bot_token',
         'TELEGRAM_BOT_TOKEN is not configured on the server environment.',
-        { verified: false, statusCode: 503 }
+        {
+          verified: false,
+          statusCode: 503,
+          diagnostics: {
+            failureCategory: 'backend_environment_configuration',
+            botTokenConfigured: false,
+          },
+        }
       );
       return;
     }
@@ -124,21 +162,32 @@ export function createValidateInitDataHandler(deps: ValidateInitDataHandlerDeps 
     });
 
     if (!result.valid || !result.telegramUser) {
+      console.warn('[api/telegram/validate-init-data] validation failed', {
+        reason: result.reason,
+        diagnostics: result.diagnostics,
+      });
       const code =
         result.reason === 'missing_bot_token'
           ? 503
           : result.reason === 'replay_detected'
             ? 409
-            : 401;
+            : result.reason === 'malformed_init_data' || result.reason === 'missing_hash'
+              ? 400
+              : 401;
       const message =
         result.reason === 'replay_detected'
           ? 'Duplicate/replayed Telegram initData request blocked.'
           : result.reason === 'future_auth_date' || result.reason === 'expired_auth_date'
             ? 'Telegram initData auth_date is expired or invalid.'
-            : 'Telegram initData cryptographic signature validation failed.';
+            : result.reason === 'missing_hash'
+              ? 'Telegram initData is missing its cryptographic hash parameter.'
+              : result.reason === 'malformed_init_data'
+                ? 'Telegram initData query string is malformed.'
+                : 'Telegram initData cryptographic signature validation failed.';
       sendError(res, code, result.reason || 'signature_mismatch', message, {
         verified: false,
         statusCode: code,
+        diagnostics: result.diagnostics,
       });
       return;
     }

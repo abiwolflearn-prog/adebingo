@@ -16,6 +16,7 @@ import {
   where,
   Unsubscribe,
 } from 'firebase/firestore';
+import type { RoundWinnerShare } from '../game/roundSettlement';
 import {
   auth,
   db,
@@ -70,6 +71,8 @@ export interface FirestoreLiveGameSession {
   winnerName: string;
   winningCardId: number;
   winningPattern: string;
+  prizePoolEtb?: number;
+  winners?: RoundWinnerShare[];
 }
 
 let activeServerSessionToken = '';
@@ -140,7 +143,7 @@ export async function ensureUserProfileInFirestore(
         username: data.username,
         language: data.language === 'en' ? 'en' : 'am',
         phoneVerified: Boolean(data.phoneVerified),
-        demoBalanceEtb: Number(data.demoBalanceEtb ?? 250),
+        demoBalanceEtb: Number(data.demoBalanceEtb ?? 0),
       };
     }
 
@@ -170,7 +173,7 @@ export async function ensureUserProfileInFirestore(
           username: d.username,
           language: d.language === 'en' ? 'en' : 'am',
           phoneVerified: Boolean(d.phoneVerified),
-          demoBalanceEtb: Number(d.demoBalanceEtb ?? 250),
+          demoBalanceEtb: Number(d.demoBalanceEtb ?? 0),
         };
       }
 
@@ -193,7 +196,7 @@ export async function ensureUserProfileInFirestore(
         username: safeUsername,
         language: lang,
         phoneVerified: false,
-        demoBalanceEtb: 250,
+        demoBalanceEtb: 0,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -205,7 +208,7 @@ export async function ensureUserProfileInFirestore(
         username: safeUsername,
         language: lang,
         phoneVerified: false,
-        demoBalanceEtb: 250,
+        demoBalanceEtb: 0,
       };
     });
   } catch (error) {
@@ -236,13 +239,61 @@ export function subscribeToUserProfile(
         username: String(d.username || uid),
         language: d.language === 'en' ? 'en' : 'am',
         phoneVerified: Boolean(d.phoneVerified),
-        demoBalanceEtb: Number(d.demoBalanceEtb ?? 250),
+        demoBalanceEtb: Number(d.demoBalanceEtb ?? 0),
       });
     },
     () => {
       // Ignore transient listener permission errors when custom token is not active
     }
   );
+}
+
+/**
+ * Updates the authenticated user's language preference in /users/{uid} (allowed by firestore.rules).
+ */
+export async function updateUserLanguageInFirestore(
+  uid: string,
+  language: Language
+): Promise<void> {
+  if (!uid || !auth.currentUser || auth.currentUser.uid !== uid) return;
+  try {
+    await updateDoc(doc(db, 'users', uid), {
+      language,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Ignore when running in offline/local preview without active Firestore profile
+  }
+}
+
+/**
+ * Synchronizes language preference across Mini App Firestore profile and Telegram Bot backend.
+ */
+export async function syncLanguagePreference(
+  nextLang: Language,
+  uid?: string | null,
+  telegramUserId?: number
+): Promise<void> {
+  if (uid) {
+    await updateUserLanguageInFirestore(uid, nextLang);
+  }
+  try {
+    const token = await getActiveBearerToken();
+    const headers = await buildAuthenticatedHeaders();
+    const body: Record<string, unknown> = {
+      callbackData: `lang:${nextLang}`,
+    };
+    if (!token && telegramUserId) {
+      body.senderTelegramId = telegramUserId;
+    }
+    await fetch('/api/telegram/bot-command', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch {
+    // Ignore transient network errors when offline
+  }
 }
 
 /**
@@ -678,4 +729,106 @@ export async function fetchUserTransactionsFromFirestore(uid: string) {
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
   }
+}
+
+export interface ServerRoomSummary {
+  roomId: string;
+  nameAm: string;
+  nameEn: string;
+  cardPrice: number;
+  maxCardsPerRoom: number;
+  maxCardsPerPlayer: number;
+  minPlayers: number;
+  countdownSeconds: number;
+  activePlayersCount: number;
+  reservedCardsCount: number;
+  status: 'countdown' | 'live' | 'waiting' | 'completed';
+  currentGameId: string;
+  hostUid: string;
+}
+
+export async function fetchRoomsFromServerApi(): Promise<ServerRoomSummary[]> {
+  const headers = await buildAuthenticatedHeaders();
+  const resp = await fetch('/api/rooms', { method: 'GET', headers });
+  if (!resp.ok) {
+    throw new Error(`GET /api/rooms failed (${resp.status})`);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return Array.isArray(data.rooms) ? (data.rooms as ServerRoomSummary[]) : [];
+}
+
+export async function fetchRoomDetailFromServerApi(roomId: string): Promise<{
+  room: ServerRoomSummary;
+  myCardIds: number[];
+  takenCardIds: number[];
+  game: FirestoreLiveGameSession | null;
+} | null> {
+  const headers = await buildAuthenticatedHeaders();
+  const resp = await fetch(`/api/rooms?roomId=${encodeURIComponent(roomId)}`, {
+    method: 'GET',
+    headers,
+  });
+  if (!resp.ok) return null;
+  const data = await resp.json().catch(() => ({}));
+  if (!data.ok || !data.room) return null;
+  return {
+    room: data.room as ServerRoomSummary,
+    myCardIds: Array.isArray(data.myCardIds) ? data.myCardIds.map(Number) : [],
+    takenCardIds: Array.isArray(data.takenCardIds) ? data.takenCardIds.map(Number) : [],
+    game: data.game ? (data.game as FirestoreLiveGameSession) : null,
+  };
+}
+
+export async function fetchPlayerStateFromApi(): Promise<
+  import('../types/bingo').PlayerStateResponse | null
+> {
+  const token = await getActiveBearerToken();
+  if (!token) return null;
+  const headers = await buildAuthenticatedHeaders();
+  const resp = await fetch('/api/player/state', { method: 'GET', headers });
+  if (!resp.ok) return null;
+  const data = await resp.json().catch(() => ({}));
+  if (!data.ok) return null;
+  return data as import('../types/bingo').PlayerStateResponse;
+}
+
+export async function submitPlayerWalletAction(
+  payload:
+    | { action: 'apply_promo'; code: string }
+    | { action: 'deposit_request'; amountEtb: number; provider: string }
+    | { action: 'withdraw_request'; amountEtb: number; method: string }
+): Promise<{
+  ok: boolean;
+  error?: string;
+  message?: string;
+  bonusEtb?: number;
+  updatedBalanceEtb?: number;
+  availableBalanceEtb?: number;
+  deposit?: import('../types/bingo').DepositRequestSummary;
+  withdrawal?: import('../types/bingo').PayoutRequestSummary;
+}> {
+  const headers = await buildAuthenticatedHeaders();
+  const resp = await fetch('/api/player/wallet', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data.ok) {
+    return {
+      ok: false,
+      error: data.error || data.reason || `http_${resp.status}`,
+      message: data.message || `Request failed (${resp.status})`,
+      availableBalanceEtb:
+        typeof data.availableBalanceEtb === 'number' ? data.availableBalanceEtb : undefined,
+    };
+  }
+  return {
+    ok: true,
+    bonusEtb: typeof data.bonusEtb === 'number' ? data.bonusEtb : undefined,
+    updatedBalanceEtb:
+      typeof data.updatedBalanceEtb === 'number' ? data.updatedBalanceEtb : undefined,
+    deposit: data.deposit,
+    withdrawal: data.withdrawal,
+  };
 }

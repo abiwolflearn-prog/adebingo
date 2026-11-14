@@ -73,6 +73,63 @@ export function initTelegramMiniApp(): TelegramUserProfile {
   };
 }
 
+/**
+ * Waits briefly for Telegram WebApp SDK initialization (`window.Telegram.WebApp.ready()`),
+ * then returns the untouched original `window.Telegram.WebApp.initData` query string.
+ * Never constructs, modifies, or falls back to `initDataUnsafe` for authentication.
+ */
+export async function waitForTelegramWebAppInitData(timeoutMs = 1500): Promise<{
+  isTelegramWebApp: boolean;
+  initData: string;
+}> {
+  if (typeof window === 'undefined') {
+    return { isTelegramWebApp: false, initData: '' };
+  }
+
+  const readState = () => {
+    const tg = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp;
+    if (tg) {
+      try {
+        tg.ready?.();
+        tg.expand?.();
+      } catch {
+        // Ignore outside Telegram environment
+      }
+    }
+    const rawInitData = typeof tg?.initData === 'string' ? tg.initData : '';
+    return { tg, rawInitData };
+  };
+
+  const initial = readState();
+  if (initial.rawInitData.length > 0) {
+    return { isTelegramWebApp: true, initData: initial.rawInitData };
+  }
+
+  // If the Telegram WebApp script already initialized with empty initData in a regular browser,
+  // return immediately unless the document is still loading.
+  if (initial.tg && typeof document !== 'undefined' && document.readyState === 'complete') {
+    return { isTelegramWebApp: false, initData: '' };
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+    const next = readState();
+    if (next.rawInitData.length > 0) {
+      return { isTelegramWebApp: true, initData: next.rawInitData };
+    }
+    if (next.tg && typeof document !== 'undefined' && document.readyState === 'complete') {
+      break;
+    }
+  }
+
+  const final = readState();
+  return {
+    isTelegramWebApp: final.rawInitData.length > 0,
+    initData: final.rawInitData,
+  };
+}
+
 export function triggerHaptic(type: 'light' | 'medium' | 'success' | 'error' = 'light') {
   if (typeof window === 'undefined') return;
   const haptics = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp?.HapticFeedback;

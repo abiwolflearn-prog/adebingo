@@ -3,10 +3,12 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { GoogleGenAI } from '@google/genai';
 import { cert, getApps, initializeApp as initializeAdminApp } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import {
   defaultReplayGuard,
+  hasValidTelegramBotTokenFormat,
   validateTelegramWebAppInitData,
 } from './src/utils/telegramVerify.ts';
 import {
@@ -17,6 +19,12 @@ import {
   verifyWebhookSecretHeader,
 } from './src/utils/telegramBot.ts';
 import type { NotificationEventType } from './src/utils/telegramBot.ts';
+import { getBingoVoiceCallScript } from './src/utils/amharicNumbers.ts';
+import {
+  evaluateRoundWinners,
+  type RoomCardOwnerEntry,
+  type RoundWinnerShare,
+} from './src/game/roundSettlement.ts';
 import {
   authorizeAdminRequest,
   mintServerSessionToken,
@@ -102,12 +110,12 @@ function buildSignedTelegramInitDataOnBackend(
   params.set('query_id', `AAHdF6IQAAAAAN0XohD_${authDate}`);
   params.set('user', userJson);
 
-  const pairs: string[] = [];
+  const entries: Array<[string, string]> = [];
   for (const [k, v] of params.entries()) {
-    pairs.push(`${k}=${v}`);
+    entries.push([k, v]);
   }
-  pairs.sort((a, b) => a.localeCompare(b));
-  const dataCheckString = pairs.join('\n');
+  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const dataCheckString = entries.map(([k, v]) => `${k}=${v}`).join('\n');
 
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
   let hash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
@@ -122,7 +130,17 @@ function buildSignedTelegramInitDataOnBackend(
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  const portArgIndex = process.argv.indexOf('--port');
+  const cliPort =
+    portArgIndex !== -1 && process.argv[portArgIndex + 1]
+      ? Number(process.argv[portArgIndex + 1])
+      : undefined;
+  const PORT =
+    cliPort && Number.isFinite(cliPort)
+      ? cliPort
+      : process.env.NODE_ENV === 'production'
+        ? Number(process.env.PORT) || 3000
+        : 3000;
 
   // Never use the private AI Studio developer preview URL (ais-dev-*) for Telegram Mini App launch,
   // because ais-dev-* redirects unauthenticated Telegram WebView users to a Google login cookie check.
@@ -152,13 +170,29 @@ async function startServer() {
 
   app.use(express.json({ limit: '64kb' }));
 
+  const resolveConfiguredBotToken = (): string | undefined => {
+    const envToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    return hasValidTelegramBotTokenFormat(envToken) ? envToken : undefined;
+  };
+
+  const resolveAdminSessionSecret = (): string => {
+    const raw = (
+      process.env.ADEY_ADMIN_SESSION_SECRET ||
+      process.env.TELEGRAM_WEBHOOK_SECRET ||
+      process.env.TELEGRAM_BOT_TOKEN ||
+      ''
+    ).trim();
+    if (raw && raw.length >= 8 && raw !== 'MY_TELEGRAM_WEBHOOK_SECRET') {
+      return raw.startsWith('adeybingo_admin_session_secret_')
+        ? raw
+        : `adeybingo_admin_session_secret_${raw}`;
+    }
+    return 'adeybingo_server_admin_session_hmac_secret_v1';
+  };
+
   // 1. Trusted Backend Status Endpoint (Honest reporting — never exposes or logs secrets)
   app.get('/api/backend/status', (_req, res) => {
-    const hasBotToken = Boolean(
-      process.env.TELEGRAM_BOT_TOKEN &&
-        process.env.TELEGRAM_BOT_TOKEN.trim().length > 10 &&
-        process.env.TELEGRAM_BOT_TOKEN !== 'MY_TELEGRAM_BOT_TOKEN'
-    );
+    const hasBotToken = Boolean(resolveConfiguredBotToken());
     const hasWebhookSecret = Boolean(
       process.env.TELEGRAM_WEBHOOK_SECRET &&
         process.env.TELEGRAM_WEBHOOK_SECRET.trim().length >= 8 &&
@@ -178,14 +212,6 @@ async function startServer() {
     });
   });
 
-  const resolveInitDataVerificationToken = (): string => {
-    const envToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
-    if (envToken && envToken !== 'MY_TELEGRAM_BOT_TOKEN') {
-      return envToken;
-    }
-    return 'adeybingo_server_initdata_hmac_key_v1';
-  };
-
   // 2. Trusted Backend Telegram Mini App Authentication & Custom Token Endpoint
   const handleTelegramInitDataAuth: express.RequestHandler = async (req, res) => {
     if (
@@ -193,7 +219,9 @@ async function startServer() {
       req.body?.telegramUserId !== undefined ||
       req.body?.uid !== undefined ||
       req.body?.firebaseUid !== undefined ||
-      req.body?.isAdmin !== undefined
+      req.body?.isAdmin !== undefined ||
+      req.body?.initDataUnsafe !== undefined ||
+      req.body?.user !== undefined
     ) {
       res.status(400).json({
         ok: false,
@@ -202,20 +230,80 @@ async function startServer() {
         statusCode: 400,
         error: 'client_identity_override_rejected',
         reason: 'client_identity_override_rejected',
-        message: 'Caller-supplied Telegram IDs or privilege fields are not accepted.',
+        message: 'Caller-supplied Telegram IDs, initDataUnsafe, or privilege fields are not accepted.',
+        diagnostics: {
+          failureCategory: 'frontend_request_formatting',
+        },
+      });
+      return;
+    }
+
+    const allowEnvelope = Boolean(req.body?.envelope);
+    if (req.body?.initData !== undefined && typeof req.body.initData !== 'string') {
+      console.warn('[server/telegram-auth] rejected non-string initData payload', {
+        receivedType: typeof req.body.initData,
+      });
+      res.status(allowEnvelope ? 200 : 400).json({
+        ok: false,
+        authenticated: false,
+        verified: false,
+        statusCode: 400,
+        reason: 'malformed_init_data',
+        message: 'Telegram initData must be sent as the raw query string from window.Telegram.WebApp.initData.',
+        diagnostics: {
+          failureCategory: 'frontend_request_formatting',
+          botTokenConfigured: Boolean(resolveConfiguredBotToken()),
+          initDataPresent: true,
+        },
       });
       return;
     }
 
     const rawInitData = typeof req.body?.initData === 'string' ? req.body.initData : '';
-    const allowEnvelope = Boolean(req.body?.envelope);
     const expectedTelegramUserId =
       typeof req.body?.expectedTelegramUserId === 'number'
         ? req.body.expectedTelegramUserId
         : undefined;
     const actionNonce =
       typeof req.body?.actionNonce === 'string' ? req.body.actionNonce : undefined;
-    const botToken = resolveInitDataVerificationToken();
+    const botToken = resolveConfiguredBotToken();
+
+    if (!rawInitData.trim()) {
+      res.status(allowEnvelope ? 200 : 400).json({
+        ok: false,
+        authenticated: false,
+        verified: false,
+        statusCode: 400,
+        reason: 'missing_init_data',
+        message: 'No Telegram WebApp initData was provided. Please open ADEYBINGO inside Telegram.',
+        diagnostics: {
+          failureCategory: 'missing_init_data',
+          botTokenConfigured: Boolean(botToken),
+          initDataPresent: false,
+        },
+      });
+      return;
+    }
+
+    if (!botToken) {
+      console.warn('[server/telegram-auth] missing or invalid TELEGRAM_BOT_TOKEN in server environment');
+      res.status(allowEnvelope ? 200 : 503).json({
+        ok: false,
+        authenticated: false,
+        verified: false,
+        statusCode: 503,
+        reason: 'missing_bot_token',
+        message: 'TELEGRAM_BOT_TOKEN is not configured on the server environment.',
+        diagnostics: {
+          failureCategory: 'backend_environment_configuration',
+          botTokenConfigured: false,
+          botTokenFormatValid: false,
+          initDataPresent: true,
+          initDataLength: rawInitData.trim().length,
+        },
+      });
+      return;
+    }
 
     const result = validateTelegramWebAppInitData(rawInitData, botToken, {
       maxAgeSeconds: 86400,
@@ -225,12 +313,20 @@ async function startServer() {
     });
 
     if (!result.valid || !result.telegramUser) {
+      console.warn('[server/telegram-auth] initData verification failed', {
+        reason: result.reason,
+        diagnostics: result.diagnostics,
+      });
       const code =
         result.reason === 'missing_bot_token'
           ? 503
           : result.reason === 'replay_detected'
-          ? 409
-          : 401;
+            ? 409
+            : result.reason === 'malformed_init_data' ||
+                result.reason === 'missing_hash' ||
+                result.reason === 'missing_init_data'
+              ? 400
+              : 401;
       res.status(allowEnvelope ? 200 : code).json({
         ok: false,
         authenticated: false,
@@ -241,12 +337,17 @@ async function startServer() {
           result.reason === 'missing_bot_token'
             ? 'TELEGRAM_BOT_TOKEN is not configured on the server environment.'
             : result.reason === 'missing_init_data'
-            ? 'No Telegram WebApp initData was provided. Please open ADEYBINGO inside Telegram.'
-            : result.reason === 'replay_detected'
-            ? 'Duplicate/replayed Telegram initData request blocked.'
-            : result.reason === 'future_auth_date' || result.reason === 'expired_auth_date'
-            ? 'Telegram initData auth_date is expired or invalid. Please relaunch from the Telegram bot.'
-            : 'Telegram initData cryptographic HMAC-SHA256 signature validation failed.',
+              ? 'No Telegram WebApp initData was provided. Please open ADEYBINGO inside Telegram.'
+              : result.reason === 'replay_detected'
+                ? 'Duplicate/replayed Telegram initData request blocked.'
+                : result.reason === 'missing_hash'
+                  ? 'Telegram initData is missing its cryptographic hash parameter.'
+                  : result.reason === 'malformed_init_data'
+                    ? 'Telegram initData query string is malformed or incorrectly formatted.'
+                    : result.reason === 'future_auth_date' || result.reason === 'expired_auth_date'
+                      ? 'Telegram initData auth_date is expired or invalid. Please relaunch from the Telegram bot.'
+                      : 'Telegram initData cryptographic HMAC-SHA256 signature validation failed.',
+        diagnostics: result.diagnostics,
       });
       return;
     }
@@ -275,6 +376,18 @@ async function startServer() {
       tgUser.username || `tg_${tgUser.id}`
     );
 
+    const mintedSession = mintServerSessionToken(
+      {
+        uid,
+        telegramUserId: tgUser.id,
+        displayName: playerProfile
+          ? `${playerProfile.firstName} ${playerProfile.lastName || ''}`.trim()
+          : `${tgUser.first_name || 'Adey'} ${tgUser.last_name || ''}`.trim(),
+        username: playerProfile?.username || tgUser.username || `tg_${tgUser.id}`,
+      },
+      resolveAdminSessionSecret()
+    );
+
     res.json({
       ok: true,
       authenticated: true,
@@ -284,6 +397,7 @@ async function startServer() {
       verifiedTelegramId: tgUser.id,
       customToken,
       customTokenStatus,
+      sessionToken: mintedSession.token,
       telegramUser: tgUser,
       profile: playerProfile
         ? {
@@ -307,9 +421,25 @@ async function startServer() {
   app.post('/api/telegram/auth', handleTelegramInitDataAuth);
   app.post('/api/telegram/validate-init-data', handleTelegramInitDataAuth);
 
-  // 2B. Backend Test initData Generator (Signs valid/expired/tampered initData on backend without exposing bot token)
+  // 2B. Backend Test initData Generator (Dev/Test only — requires configured TELEGRAM_BOT_TOKEN)
   app.post('/api/telegram/test-init-data', (req, res) => {
-    const botToken = resolveInitDataVerificationToken();
+    if (process.env.NODE_ENV === 'production') {
+      res.status(403).json({
+        ok: false,
+        reason: 'disabled_in_production',
+        message: 'Synthetic test initData generation is disabled in production.',
+      });
+      return;
+    }
+    const botToken = resolveConfiguredBotToken();
+    if (!botToken) {
+      res.status(503).json({
+        ok: false,
+        reason: 'missing_bot_token',
+        message: 'TELEGRAM_BOT_TOKEN is not configured on the server environment.',
+      });
+      return;
+    }
     const rawScenario = req.body?.scenario;
     const scenario: 'valid' | 'expired' | 'tampered' =
       rawScenario === 'expired' || rawScenario === 'tampered' ? rawScenario : 'valid';
@@ -393,6 +523,9 @@ async function startServer() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               callback_query_id: update.callback_query.id,
+              ...(botResponse.callbackAnswerText
+                ? { text: botResponse.callbackAnswerText }
+                : {}),
             }),
           });
         }
@@ -426,6 +559,9 @@ async function startServer() {
       replyMarkup: botResponse.replyMarkup,
       registrationStatus: botResponse.registrationStatus,
       securityCode: botResponse.securityCode,
+      ...(botResponse.callbackAnswerText
+        ? { callbackAnswerText: botResponse.callbackAnswerText }
+        : {}),
       deliveredToTelegramApi,
       telegramDeliveryNote,
     });
@@ -491,11 +627,18 @@ async function startServer() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           commands: [
-            { command: 'start', description: 'ቦቱን ይጀምሩ እና ስልክዎን ያረጋግጡ (Start ADEYBINGO & verify phone)' },
-            { command: 'help', description: 'የጨዋታ መመሪያ እና እገዛ (Game guide & commands)' },
-            { command: 'language', description: 'ቋንቋ ቀይር / Switch language (አማርኛ / English)' },
-            { command: 'support', description: 'የደንበኞች ድጋፍ (Contact player support)' },
-            { command: 'terms', description: 'ህጎች እና የግላዊነት ጥበቃ (Terms, rules & privacy)' },
+            { command: 'start', description: 'ቦቱን ይጀምሩ እና ዋና ሜኑን ይክፈቱ (Start ADEYBINGO)' },
+            { command: 'wallet', description: 'የእኔ ቦርሳ እና ቀሪ ሂሳብ (My Wallet)' },
+            { command: 'deposit', description: 'ገንዘብ ያስገቡ (Demo Deposit)' },
+            { command: 'withdraw', description: 'ገንዘብ ያውጡ (Demo Withdraw)' },
+            { command: 'invite', description: 'ጓደኞችን ይጋብዙ (Invite Friends)' },
+            { command: 'leaderboard', description: 'የደረጃ ሰንጠረዥ (Leaderboard)' },
+            { command: 'history', description: 'የጨዋታ ታሪክ (Game History)' },
+            { command: 'profile', description: 'የእኔ መገለጫ (My Profile)' },
+            { command: 'language', description: 'ቋንቋ ይምረጡ / Select Language (አማርኛ / English)' },
+            { command: 'support', description: 'እገዛ እና የደንበኞች ድጋፍ (Support)' },
+            { command: 'help', description: 'የጨዋታ መመሪያ (Help & Guide)' },
+            { command: 'terms', description: 'ህጎች እና የግላዊነት ጥበቃ (Terms & Privacy)' },
           ],
         }),
       });
@@ -508,7 +651,7 @@ async function startServer() {
         body: JSON.stringify({
           menu_button: {
             type: 'web_app',
-            text: '🎮 ጨዋታ ጀምር',
+            text: '🎱 ቢንጎ ይጫወቱ',
             web_app: { url: requestedBaseUrl },
           },
         }),
@@ -616,12 +759,35 @@ async function startServer() {
 
   // 4. Interactive Bot Command & Contact Verification Endpoint (for Mini App Bot Console & Testing)
   app.post('/api/telegram/bot-command', (req, res) => {
-    const senderTelegramId = Number(req.body?.senderTelegramId || 8842109);
-    const firstName = String(req.body?.firstName || 'Abebe');
+    const authHeader =
+      typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
+    const bearerToken = authHeader.startsWith('Bearer ')
+      ? authHeader.slice('Bearer '.length).trim()
+      : undefined;
+    const headerSessionToken =
+      typeof req.headers['x-adey-session-token'] === 'string'
+        ? req.headers['x-adey-session-token'].trim()
+        : undefined;
+    const rawToken = bearerToken || headerSessionToken;
+    let sessionActor: VerifiedSessionActor | null = null;
+    if (rawToken) {
+      const check = authorizeAdminRequest({
+        sessionToken: rawToken,
+        botToken: resolveConfiguredBotToken() || '',
+        sessionSecret: resolveAdminSessionSecret(),
+      });
+      sessionActor = check.actor || null;
+    }
+
+    const senderTelegramId = Number(
+      sessionActor?.telegramUserId || req.body?.senderTelegramId || 8842109
+    );
+    const firstName = String(req.body?.firstName || sessionActor?.displayName || 'Abebe');
     const lastName = String(req.body?.lastName || 'Bikila');
-    const username = String(req.body?.username || 'abebe_adey');
+    const username = String(req.body?.username || sessionActor?.username || 'abebe_adey');
     const firebaseUid =
-      typeof req.body?.firebaseUid === 'string' ? req.body.firebaseUid : undefined;
+      sessionActor?.uid ||
+      (typeof req.body?.firebaseUid === 'string' ? req.body.firebaseUid : undefined);
     const text = typeof req.body?.text === 'string' ? req.body.text : '';
     const callbackData =
       typeof req.body?.callbackData === 'string' ? req.body.callbackData : '';
@@ -705,6 +871,21 @@ async function startServer() {
   // 7. Server-Authoritative Number Calling Endpoint (Cryptographic CSPRNG 1..75)
   app.post('/api/game/draw-ball', (req, res) => {
     const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId : 'adey-main';
+    const cycle = ensureRoomCycle(roomId);
+    const existingGame = localLiveGames.get(roomId);
+    if (
+      cycle.status === 'completed' ||
+      cycle.settledRoundNumber === cycle.roundNumber ||
+      existingGame?.status === 'completed'
+    ) {
+      res.status(409).json({
+        ok: false,
+        reason: 'round_completed',
+        message: 'Winner announced — number calling terminated until the next round.',
+      });
+      return;
+    }
+
     const callerTelegramId = Number(req.body?.callerTelegramId || 8842109);
     const requestNonce =
       typeof req.body?.requestNonce === 'string' ? req.body.requestNonce : undefined;
@@ -725,6 +906,36 @@ async function startServer() {
       res.status(400).json(drawResult);
       return;
     }
+
+    const currentGame = localLiveGames.get(roomId);
+    const updatedCalls = drawResult.calledNumbers || [
+      ...(currentGame?.calledNumbers || []),
+      drawResult.ball,
+    ];
+    if (currentGame) {
+      currentGame.calledNumbers = updatedCalls;
+      currentGame.latestBall = drawResult.ball;
+      currentGame.status = 'live';
+    } else {
+      localLiveGames.set(roomId, {
+        gameId: `game_${roomId}_live`,
+        roomId,
+        hostUid: `tg_${callerTelegramId}`,
+        roundNumber: ensureRoomCycle(roomId).roundNumber,
+        status: 'live',
+        calledNumbers: updatedCalls,
+        latestBall: drawResult.ball,
+        winnerUid: '',
+        winnerName: '',
+        winningCardId: 0,
+        winningPattern: '',
+        prizePoolEtb: 0,
+        winners: [],
+      });
+    }
+
+    // Check immediately if any reserved card(s) completed a diagonal or winning line on this ball
+    settleRoomIfWinnerFound(roomId, updatedCalls, drawResult.ball);
 
     // Queue Part E notification for new Bingo number
     botEngine.queueNotification('new_bingo_number', callerTelegramId, {
@@ -752,6 +963,10 @@ async function startServer() {
           .filter((n: number) => Number.isInteger(n) && n >= 1 && n <= 75)
       : [];
 
+    const activeGame = localLiveGames.get(roomId);
+    const effectiveCalledNumbers =
+      activeGame && activeGame.calledNumbers.length > 0 ? activeGame.calledNumbers : calledNumbers;
+
     const verifyRes = gameAuthority.verifyWinnerAuthoritative({
       roomId,
       claimantTelegramId,
@@ -759,7 +974,7 @@ async function startServer() {
       cardId,
       markedNumbers,
       enforceServerCallsOnly: false,
-      fallbackClientCalls: calledNumbers,
+      fallbackClientCalls: effectiveCalledNumbers,
     });
 
     if (!verifyRes.verified && verifyRes.reason === 'invalid_card_id') {
@@ -768,14 +983,77 @@ async function startServer() {
     }
 
     if (verifyRes.verified) {
+      const winnerUid = `tg_${claimantTelegramId}`;
+      const prizeEtb = 50;
+      const winList = localTransactionsByUid.get(winnerUid) || [];
+      winList.unshift({
+        id: `tx_win_${Date.now()}`,
+        type: 'bingo_win',
+        amount: prizeEtb,
+        status: 'demo_completed',
+        labelAm: `የቢንጎ ድል ሽልማት (ካርድ #${cardId})`,
+        labelEn: `Bingo Win Prize (Card #${cardId})`,
+        timestamp: new Date().toISOString(),
+        reference: `WIN-${roomId.toUpperCase()}-${cardId}`,
+      });
+      localTransactionsByUid.set(winnerUid, winList.slice(0, 30));
+
+      const p = botEngine.getPlayerByTelegramId(claimantTelegramId);
+      if (p) {
+        p.demoBalanceEtb += prizeEtb;
+      }
+
+      const cycle = ensureRoomCycle(roomId);
+      cycle.settledRoundNumber = cycle.roundNumber;
+      cycle.status = 'completed';
+      cycle.phaseEndsAtMs = Date.now() + ROUND_INTERMISSION_MS;
+
+      const winShare: RoundWinnerShare = {
+        uid: winnerUid,
+        telegramUserId: claimantTelegramId,
+        displayName: playerName,
+        cardId,
+        patternType: verifyRes.winResult?.patternType || 'diagonal',
+        patternLabelAm: verifyRes.winResult?.patternLabelAm || 'መስመር ቢንጎ',
+        patternLabelEn: verifyRes.winResult?.patternLabelEn || 'Bingo Line',
+        winningCells: verifyRes.winResult?.winningCells || [],
+        prizeEtb,
+      };
+      const finishedGame = localLiveGames.get(roomId);
+      if (finishedGame) {
+        finishedGame.status = 'completed';
+        finishedGame.winnerUid = winnerUid;
+        finishedGame.winnerName = playerName;
+        finishedGame.winningCardId = cardId;
+        finishedGame.winningPattern = verifyRes.winResult?.patternLabelEn || 'Bingo Line';
+        finishedGame.prizePoolEtb = prizeEtb;
+        finishedGame.winners = [winShare];
+      } else {
+        localLiveGames.set(roomId, {
+          gameId: `game_${roomId}_live`,
+          roomId,
+          hostUid: winnerUid,
+          roundNumber: cycle.roundNumber,
+          status: 'completed',
+          calledNumbers: effectiveCalledNumbers,
+          latestBall: effectiveCalledNumbers[effectiveCalledNumbers.length - 1] || 0,
+          winnerUid,
+          winnerName: playerName,
+          winningCardId: cardId,
+          winningPattern: verifyRes.winResult?.patternLabelEn || 'Bingo Line',
+          prizePoolEtb: prizeEtb,
+          winners: [winShare],
+        });
+      }
+
       botEngine.queueNotification('winner_announcement', claimantTelegramId, {
         winnerName: playerName,
         winningCardId: cardId,
         winningPattern: verifyRes.winResult?.patternLabelEn || 'Bingo Line',
-        demoPrizeEtb: 50,
+        demoPrizeEtb: prizeEtb,
       });
       botEngine.queueNotification('game_completion', claimantTelegramId, {
-        totalCalls: calledNumbers.length,
+        totalCalls: effectiveCalledNumbers.length,
       });
     }
 
@@ -806,16 +1084,348 @@ async function startServer() {
       : `adeybingo_admin_session_secret_${rawSecret}`;
     const check = authorizeAdminRequest({
       sessionToken: token,
-      botToken: resolveInitDataVerificationToken(),
+      botToken: resolveConfiguredBotToken() || '',
       sessionSecret,
     });
     return check.actor || null;
   };
 
   const localRoomCardOwnership = new Map<string, Map<number, string>>();
+  const localLiveGames = new Map<
+    string,
+    {
+      gameId: string;
+      roomId: string;
+      hostUid: string;
+      roundNumber: number;
+      status: 'countdown' | 'live' | 'completed';
+      calledNumbers: number[];
+      latestBall: number;
+      winnerUid: string;
+      winnerName: string;
+      winningCardId: number;
+      winningPattern: string;
+      prizePoolEtb?: number;
+      winners?: RoundWinnerShare[];
+    }
+  >();
+  const localTransactionsByUid = new Map<
+    string,
+    Array<{
+      id: string;
+      type: 'deposit_demo' | 'withdraw_demo' | 'card_entry' | 'bingo_win' | 'referral_bonus';
+      amount: number;
+      provider?: string;
+      status: 'demo_completed' | 'demo_pending';
+      labelAm: string;
+      labelEn: string;
+      timestamp: string;
+      reference: string;
+    }>
+  >();
+  const localDepositsByUid = new Map<
+    string,
+    Array<{
+      depositId: string;
+      amountEtb: number;
+      provider: string;
+      referenceCode: string;
+      status: 'Pending' | 'Approved' | 'Rejected';
+      requestDate: string;
+    }>
+  >();
+  const localPayoutsByUid = new Map<
+    string,
+    Array<{
+      requestId: string;
+      requestedAmountEtb: number;
+      paymentMethod: string;
+      status: 'Pending' | 'Under Review' | 'Approved' | 'Rejected' | 'Completed';
+      requestDate: string;
+      reviewNotes: string;
+    }>
+  >();
+  const localAppliedPromoByUid = new Map<string, string>();
+  const localReferralsByUid = new Map<
+    string,
+    Array<{
+      id: string;
+      friendName: string;
+      handle: string;
+      joinedAt: string;
+      status: 'qualified' | 'pending';
+      inviterBonus: number;
+      inviteeBonus: number;
+    }>
+  >();
 
-  app.get('/api/rooms', (_req, res) => {
-    const rooms = adminAuthority.getRooms().map((r) => ({
+  const ROUND_CARD_WINDOW_MS = 60_000;
+  const ROUND_DRAW_INTERVAL_MS = 3_000;
+  const ROUND_INTERMISSION_MS = 6_000;
+
+  const localRoomCycleState = new Map<
+    string,
+    {
+      status: 'countdown' | 'live' | 'completed';
+      phaseEndsAtMs: number;
+      roundNumber: number;
+      lastDrawAtMs: number;
+      settledRoundNumber?: number;
+    }
+  >();
+
+  const ensureRoomCycle = (roomId: string) => {
+    let cycle = localRoomCycleState.get(roomId);
+    if (!cycle) {
+      const now = Date.now();
+      cycle = {
+        status: 'countdown',
+        phaseEndsAtMs: now + ROUND_CARD_WINDOW_MS,
+        roundNumber: 1,
+        lastDrawAtMs: 0,
+      };
+      localRoomCycleState.set(roomId, cycle);
+      if (!localLiveGames.has(roomId)) {
+        localLiveGames.set(roomId, {
+          gameId: `game_${roomId}_live`,
+          roomId,
+          hostUid: 'tg_8842109',
+          roundNumber: 1,
+          status: 'countdown',
+          calledNumbers: [],
+          latestBall: 0,
+          winnerUid: '',
+          winnerName: '',
+          winningCardId: 0,
+          winningPattern: '',
+          prizePoolEtb: 0,
+          winners: [],
+        });
+      }
+    }
+    return cycle;
+  };
+
+  const settleRoomIfWinnerFound = (
+    roomId: string,
+    calledNumbers: number[],
+    latestBall: number
+  ): boolean => {
+    const cycle = ensureRoomCycle(roomId);
+    if (cycle.settledRoundNumber === cycle.roundNumber || cycle.status === 'completed') {
+      return false;
+    }
+    const ownership = localRoomCardOwnership.get(roomId);
+    if (!ownership || ownership.size === 0) return false;
+
+    const roomObj = adminAuthority.getRooms().find((r) => r.id === roomId);
+    const cardPrice = roomObj ? roomObj.cardPriceEtb : 10;
+
+    const entries: RoomCardOwnerEntry[] = [];
+    for (const [cid, ownerUid] of ownership.entries()) {
+      const tgId = ownerUid.startsWith('tg_') ? Number(ownerUid.slice(3)) || 0 : 0;
+      const p = tgId > 0 ? botEngine.getPlayerByTelegramId(tgId) : undefined;
+      const displayName = p
+        ? `${p.firstName} ${p.lastName || ''}`.trim() || ownerUid
+        : ownerUid;
+      entries.push({
+        cardId: cid,
+        uid: ownerUid,
+        telegramUserId: tgId,
+        displayName,
+      });
+    }
+
+    const settlement = evaluateRoundWinners({
+      entries,
+      calledNumbers,
+      cardPrice,
+      totalCardsInRoom: ownership.size,
+    });
+
+    if (!settlement.hasWinner) return false;
+
+    cycle.settledRoundNumber = cycle.roundNumber;
+    cycle.status = 'completed';
+    cycle.phaseEndsAtMs = Date.now() + ROUND_INTERMISSION_MS;
+
+    // Distribute prize pool across all simultaneous winners and add directly to their account balances
+    for (const payout of settlement.payoutsByPlayer) {
+      if (payout.telegramUserId > 0) {
+        const p = botEngine.getPlayerByTelegramId(payout.telegramUserId);
+        if (p) {
+          p.demoBalanceEtb = Number((p.demoBalanceEtb + payout.totalPrizeEtb).toFixed(2));
+        }
+      }
+      const winList = localTransactionsByUid.get(payout.uid) || [];
+      const cardsLabel = payout.cardIds.join(', ');
+      winList.unshift({
+        id: `tx_win_${cycle.roundNumber}_${payout.uid}_${Date.now()}`,
+        type: 'bingo_win',
+        amount: payout.totalPrizeEtb,
+        status: 'demo_completed',
+        labelAm:
+          settlement.winners.length > 1
+            ? `የጋራ የቢንጎ ድል (ካርድ ${cardsLabel})`
+            : `የቢንጎ ድል ሽልማት (ካርድ ${cardsLabel})`,
+        labelEn:
+          settlement.winners.length > 1
+            ? `Shared Bingo Win (Card ${cardsLabel})`
+            : `Bingo Win Prize (Card ${cardsLabel})`,
+        timestamp: new Date().toISOString(),
+        reference: `WIN-${roomId.toUpperCase()}-R${cycle.roundNumber}`,
+      });
+      localTransactionsByUid.set(payout.uid, winList.slice(0, 30));
+
+      if (payout.telegramUserId > 0) {
+        const firstWin = settlement.winners.find((w) => w.uid === payout.uid);
+        botEngine.queueNotification('winner_announcement', payout.telegramUserId, {
+          winnerName: payout.displayName,
+          winningCardId: payout.cardIds[0],
+          winningPattern: firstWin?.patternLabelEn || 'Bingo Line',
+          demoPrizeEtb: payout.totalPrizeEtb,
+        });
+        botEngine.queueNotification('game_completion', payout.telegramUserId, {
+          totalCalls: calledNumbers.length,
+        });
+      }
+    }
+
+    const currentGame = localLiveGames.get(roomId);
+    const primary = settlement.winners[0];
+    localLiveGames.set(roomId, {
+      gameId: currentGame?.gameId || `game_${roomId}_live`,
+      roomId,
+      hostUid: currentGame?.hostUid || 'tg_8842109',
+      roundNumber: cycle.roundNumber,
+      status: 'completed',
+      calledNumbers,
+      latestBall,
+      winnerUid: primary.uid,
+      winnerName: settlement.payoutsByPlayer.map((p) => p.displayName).join(', '),
+      winningCardId: primary.cardId,
+      winningPattern: primary.patternLabelEn,
+      prizePoolEtb: settlement.prizePoolEtb,
+      winners: settlement.winners,
+    });
+    return true;
+  };
+
+  const tickRoomCycles = () => {
+    const now = Date.now();
+    for (const room of adminAuthority.getRooms()) {
+      const roomId = room.id;
+      const cycle = ensureRoomCycle(roomId);
+      const currentGame = localLiveGames.get(roomId);
+
+      if (cycle.status === 'countdown' && now >= cycle.phaseEndsAtMs) {
+        gameAuthority.resetRoomCalls(roomId, []);
+        const openingDraw = gameAuthority.drawNextBallAuthoritative({
+          roomId,
+          callerTelegramId: 8842109,
+        });
+        const called = openingDraw.calledNumbers || (openingDraw.ball ? [openingDraw.ball] : []);
+        const latest = openingDraw.ball || 0;
+        cycle.status = 'live';
+        cycle.phaseEndsAtMs = 0;
+        cycle.lastDrawAtMs = now;
+        localLiveGames.set(roomId, {
+          gameId: `game_${roomId}_live`,
+          roomId,
+          hostUid: currentGame?.hostUid || 'tg_8842109',
+          roundNumber: cycle.roundNumber,
+          status: 'live',
+          calledNumbers: called,
+          latestBall: latest,
+          winnerUid: '',
+          winnerName: '',
+          winningCardId: 0,
+          winningPattern: '',
+          prizePoolEtb: 0,
+          winners: [],
+        });
+        settleRoomIfWinnerFound(roomId, called, latest);
+      } else if (cycle.status === 'live' && now - cycle.lastDrawAtMs >= ROUND_DRAW_INTERVAL_MS) {
+        if (cycle.settledRoundNumber === cycle.roundNumber || currentGame?.status === 'completed') {
+          cycle.status = 'completed';
+          if (!cycle.phaseEndsAtMs) cycle.phaseEndsAtMs = now + ROUND_INTERMISSION_MS;
+          continue;
+        }
+        const drawRes = gameAuthority.drawNextBallAuthoritative({
+          roomId,
+          callerTelegramId: 8842109,
+        });
+        cycle.lastDrawAtMs = now;
+        if (drawRes.ok && drawRes.ball) {
+          const called =
+            drawRes.calledNumbers ||
+            [...(currentGame?.calledNumbers || []), drawRes.ball];
+          localLiveGames.set(roomId, {
+            gameId: currentGame?.gameId || `game_${roomId}_live`,
+            roomId,
+            hostUid: currentGame?.hostUid || 'tg_8842109',
+            roundNumber: cycle.roundNumber,
+            status: 'live',
+            calledNumbers: called,
+            latestBall: drawRes.ball,
+            winnerUid: '',
+            winnerName: '',
+            winningCardId: 0,
+            winningPattern: '',
+            prizePoolEtb: 0,
+            winners: [],
+          });
+          settleRoomIfWinnerFound(roomId, called, drawRes.ball);
+        } else {
+          cycle.status = 'completed';
+          cycle.phaseEndsAtMs = now + ROUND_INTERMISSION_MS;
+          if (currentGame) {
+            currentGame.status = 'completed';
+          }
+        }
+      } else if (cycle.status === 'completed' && now >= cycle.phaseEndsAtMs) {
+        cycle.roundNumber += 1;
+        cycle.status = 'countdown';
+        cycle.phaseEndsAtMs = now + ROUND_CARD_WINDOW_MS;
+        cycle.lastDrawAtMs = 0;
+        cycle.settledRoundNumber = undefined;
+        localRoomCardOwnership.delete(roomId);
+        gameAuthority.resetRoomCalls(roomId, []);
+        localLiveGames.set(roomId, {
+          gameId: `game_${roomId}_live`,
+          roomId,
+          hostUid: currentGame?.hostUid || 'tg_8842109',
+          roundNumber: cycle.roundNumber,
+          status: 'countdown',
+          calledNumbers: [],
+          latestBall: 0,
+          winnerUid: '',
+          winnerName: '',
+          winningCardId: 0,
+          winningPattern: '',
+          prizePoolEtb: 0,
+          winners: [],
+        });
+      }
+    }
+  };
+
+  for (const r of adminAuthority.getRooms()) {
+    ensureRoomCycle(r.id);
+  }
+  const roomCycleTimer = setInterval(tickRoomCycles, 1000);
+  roomCycleTimer.unref?.();
+
+  const getLocalRoomDto = (r: ReturnType<typeof adminAuthority.getRooms>[number]) => {
+    const cycle = ensureRoomCycle(r.id);
+    const roomCards = localRoomCardOwnership.get(r.id);
+    const activePlayersCount = roomCards ? new Set(roomCards.values()).size : 0;
+    const liveGame = localLiveGames.get(r.id);
+    const remainingCountdown =
+      cycle.status === 'countdown'
+        ? Math.max(0, Math.ceil((cycle.phaseEndsAtMs - Date.now()) / 1000))
+        : 0;
+    return {
       roomId: r.id,
       nameAm: r.nameAm,
       nameEn: r.nameEn,
@@ -823,14 +1433,263 @@ async function startServer() {
       maxCardsPerRoom: r.maxCardsPerRoom,
       maxCardsPerPlayer: r.maxCardsPerPlayer,
       minPlayers: r.minPlayers,
-      countdownSeconds: r.lobbyCountdownSeconds,
-      activePlayersCount: r.activePlayers,
-      reservedCardsCount: localRoomCardOwnership.get(r.id)?.size || 12,
-      status: r.status === 'live' ? 'live' : r.status === 'starting' ? 'countdown' : 'waiting',
-      currentGameId: `game_${r.id}_live`,
-      hostUid: 'tg_8842109',
-    }));
-    res.json({ ok: true, rooms });
+      countdownSeconds: remainingCountdown,
+      activePlayersCount,
+      reservedCardsCount: roomCards?.size ?? 0,
+      status: cycle.status,
+      currentGameId: liveGame?.gameId || `game_${r.id}_live`,
+      hostUid: liveGame?.hostUid || 'tg_8842109',
+    };
+  };
+
+  app.get('/api/rooms', (req, res) => {
+    const rawRoomId = typeof req.query.roomId === 'string' ? req.query.roomId.trim() : '';
+    const allRooms = adminAuthority.getRooms();
+    if (rawRoomId) {
+      const target = allRooms.find((r) => r.id === rawRoomId);
+      if (!target) {
+        res.status(404).json({ ok: false, error: 'room_not_found', message: 'Requested room does not exist.' });
+        return;
+      }
+      const actor = extractPlayerSession(req);
+      const roomCards = localRoomCardOwnership.get(rawRoomId) || new Map<number, string>();
+      const myCardIds: number[] = [];
+      const takenCardIds: number[] = [];
+      for (const [cid, owner] of roomCards.entries()) {
+        if (actor && owner === actor.uid) myCardIds.push(cid);
+        else takenCardIds.push(cid);
+      }
+      myCardIds.sort((a, b) => a - b);
+      takenCardIds.sort((a, b) => a - b);
+      res.json({
+        ok: true,
+        room: getLocalRoomDto(target),
+        myCardIds,
+        takenCardIds,
+        game: localLiveGames.get(rawRoomId) || null,
+      });
+      return;
+    }
+
+    res.json({ ok: true, rooms: allRooms.map(getLocalRoomDto) });
+  });
+
+  app.get('/api/player/state', (req, res) => {
+    const actor = extractPlayerSession(req);
+    if (!actor) {
+      res.status(401).json({
+        ok: false,
+        error: 'missing_authorization',
+        message: 'Authentication required. Provide a valid Bearer token.',
+      });
+      return;
+    }
+    const player = botEngine.getPlayerByTelegramId(actor.telegramUserId);
+    const availableBalanceEtb = player ? Math.max(0, Number(player.demoBalanceEtb ?? 0)) : 0;
+    const txs = localTransactionsByUid.get(actor.uid) || [];
+    const winningsBalanceEtb = txs
+      .filter((tx) => tx.type === 'bingo_win' && tx.amount > 0)
+      .reduce((sum, tx) => sum + tx.amount, 0);
+
+    const leadersMap = new Map<string, { uid: string; telegramUserId: number; displayName: string; wins: number; winningsEtb: number }>();
+    for (const [uidKey, list] of localTransactionsByUid.entries()) {
+      const winsList = list.filter((t) => t.type === 'bingo_win' && t.amount > 0);
+      if (winsList.length === 0) continue;
+      const tgId = uidKey.startsWith('tg_') ? Number(uidKey.slice(3)) || 0 : 0;
+      const p = tgId > 0 ? botEngine.getPlayerByTelegramId(tgId) : undefined;
+      leadersMap.set(uidKey, {
+        uid: uidKey,
+        telegramUserId: tgId,
+        displayName: p ? `${p.firstName} ${p.lastName || ''}`.trim() : uidKey,
+        wins: winsList.length,
+        winningsEtb: winsList.reduce((s, t) => s + t.amount, 0),
+      });
+    }
+    const leaderboard = Array.from(leadersMap.values())
+      .sort((a, b) => b.wins - a.wins || b.winningsEtb - a.winningsEtb)
+      .slice(0, 15);
+
+    res.json({
+      ok: true,
+      profile: {
+        uid: actor.uid,
+        telegramUserId: actor.telegramUserId,
+        displayName: actor.displayName,
+        username: player?.username ? `@${player.username}` : `@${actor.username}`,
+        language: player?.language || botEngine.getLanguage(actor.telegramUserId),
+        phoneVerified: Boolean(player?.phoneVerified),
+        referralCode: player?.referralCode || `ADEY-${actor.telegramUserId}`,
+        ...(localAppliedPromoByUid.has(actor.uid)
+          ? { referredByCode: localAppliedPromoByUid.get(actor.uid) }
+          : player?.referredByCode
+            ? { referredByCode: player.referredByCode }
+            : {}),
+      },
+      wallet: {
+        availableBalanceEtb,
+        winningsBalanceEtb,
+        demoSandboxOnly: true,
+      },
+      transactions: txs,
+      depositRequests: localDepositsByUid.get(actor.uid) || [],
+      payoutRequests: localPayoutsByUid.get(actor.uid) || [],
+      referrals: localReferralsByUid.get(actor.uid) || [],
+      gameHistory: [],
+      leaderboard,
+    });
+  });
+
+  app.post('/api/player/wallet', (req, res) => {
+    const actor = extractPlayerSession(req);
+    if (!actor) {
+      res.status(401).json({
+        ok: false,
+        error: 'missing_authorization',
+        message: 'Authentication required. Provide a valid Bearer token.',
+      });
+      return;
+    }
+    if (
+      req.body?.uid !== undefined ||
+      req.body?.firebaseUid !== undefined ||
+      req.body?.telegramUserId !== undefined ||
+      req.body?.telegramId !== undefined ||
+      req.body?.isAdmin !== undefined ||
+      req.body?.demoBalanceEtb !== undefined ||
+      req.body?.winningsBalanceEtb !== undefined
+    ) {
+      res.status(403).json({
+        ok: false,
+        error: 'client_override_rejected',
+        message: 'Caller-supplied identity or balance fields are forbidden.',
+      });
+      return;
+    }
+
+    const action = req.body?.action;
+    const player = botEngine.getPlayerByTelegramId(actor.telegramUserId);
+    const nowIso = new Date().toISOString();
+
+    if (action === 'apply_promo') {
+      const rawCode = typeof req.body?.code === 'string' ? req.body.code.trim().toUpperCase() : '';
+      if (!rawCode || rawCode.length < 3 || rawCode.length > 32 || !/^[A-Z0-9_-]+$/.test(rawCode)) {
+        res.status(400).json({ ok: false, error: 'invalid_promo_code', message: 'Invalid promo or referral code.' });
+        return;
+      }
+      if (localAppliedPromoByUid.has(actor.uid)) {
+        res.status(409).json({ ok: false, error: 'promo_already_applied', message: 'A promo or referral code was already applied.' });
+        return;
+      }
+      if (/^ADEY-[1-9]\d*$/.test(rawCode)) {
+        const inviterId = Number(rawCode.slice(5));
+        if (inviterId === actor.telegramUserId) {
+          res.status(400).json({ ok: false, error: 'self_referral_forbidden', message: 'You cannot apply your own referral code.' });
+          return;
+        }
+        const inviterPlayer = botEngine.getPlayerByTelegramId(inviterId);
+        if (!inviterPlayer) {
+          res.status(404).json({ ok: false, error: 'inviter_not_found', message: 'No player matches this referral code.' });
+          return;
+        }
+        const inviteeBonus = 15;
+        const inviterBonus = 20;
+        if (player) player.demoBalanceEtb += inviteeBonus;
+        inviterPlayer.demoBalanceEtb += inviterBonus;
+        localAppliedPromoByUid.set(actor.uid, rawCode);
+        const actorTxs = localTransactionsByUid.get(actor.uid) || [];
+        actorTxs.unshift({
+          id: `tx_ref_${Date.now()}`,
+          type: 'referral_bonus',
+          amount: inviteeBonus,
+          status: 'demo_completed',
+          labelAm: `የግብዣ ቦነስ (${rawCode})`,
+          labelEn: `Referral Bonus (${rawCode})`,
+          timestamp: nowIso,
+          reference: `ADB-REF-${actor.telegramUserId}`,
+        });
+        localTransactionsByUid.set(actor.uid, actorTxs);
+
+        const inviterUid = inviterPlayer.uid || `tg_${inviterId}`;
+        const inviterRefs = localReferralsByUid.get(inviterUid) || [];
+        inviterRefs.unshift({
+          id: `ref_${Date.now()}`,
+          friendName: actor.displayName,
+          handle: `@${actor.username}`,
+          joinedAt: nowIso,
+          status: 'qualified',
+          inviterBonus,
+          inviteeBonus,
+        });
+        localReferralsByUid.set(inviterUid, inviterRefs);
+
+        res.json({ ok: true, action: 'apply_promo', code: rawCode, bonusEtb: inviteeBonus, demoSandboxOnly: true });
+        return;
+      }
+      res.status(404).json({ ok: false, error: 'promo_code_not_found', message: 'Promo or referral code not found.' });
+      return;
+    }
+
+    if (action === 'deposit_request') {
+      const amountEtb = Number(req.body?.amountEtb);
+      if (!Number.isFinite(amountEtb) || amountEtb < 10 || amountEtb > 10000) {
+        res.status(400).json({ ok: false, error: 'invalid_deposit_amount', message: 'Deposit request must be 10–10,000 ETB.' });
+        return;
+      }
+      const method =
+        req.body?.provider === 'CBE Birr (Demo)' || req.body?.provider === 'Chapa Sandbox (Demo)'
+          ? req.body.provider
+          : 'Telebirr (Demo)';
+      const deposit = {
+        depositId: `DEP-WEB-${Date.now().toString(36).toUpperCase()}`,
+        amountEtb,
+        provider: method,
+        referenceCode: `REF-${Math.floor(100000 + Math.random() * 899999)}`,
+        status: 'Pending' as const,
+        requestDate: nowIso,
+      };
+      const existing = localDepositsByUid.get(actor.uid) || [];
+      existing.unshift(deposit);
+      localDepositsByUid.set(actor.uid, existing.slice(0, 10));
+      res.status(201).json({ ok: true, action: 'deposit_request', deposit, demoSandboxOnly: true });
+      return;
+    }
+
+    if (action === 'withdraw_request') {
+      const amountEtb = Number(req.body?.amountEtb);
+      if (!Number.isFinite(amountEtb) || amountEtb < 20) {
+        res.status(400).json({ ok: false, error: 'invalid_withdraw_amount', message: 'Minimum withdrawal request is 20 ETB.' });
+        return;
+      }
+      const availableBalanceEtb = player ? Math.max(0, Number(player.demoBalanceEtb ?? 0)) : 0;
+      if (amountEtb > availableBalanceEtb) {
+        res.status(400).json({
+          ok: false,
+          error: 'insufficient_demo_balance',
+          availableBalanceEtb,
+          message: `Insufficient verified Demo balance (${availableBalanceEtb.toFixed(2)} ETB available).`,
+        });
+        return;
+      }
+      const method =
+        req.body?.method === 'CBE Birr (Demo)' || req.body?.method === 'Chapa Sandbox (Demo)'
+          ? req.body.method
+          : 'Telebirr (Demo)';
+      const withdrawal = {
+        requestId: `PO-WEB-${Date.now().toString(36).toUpperCase()}`,
+        requestedAmountEtb: amountEtb,
+        paymentMethod: method,
+        status: 'Pending' as const,
+        requestDate: nowIso,
+        reviewNotes: 'Submitted via ADEYBINGO Mini App (Demo Sandbox)',
+      };
+      const existing = localPayoutsByUid.get(actor.uid) || [];
+      existing.unshift(withdrawal);
+      localPayoutsByUid.set(actor.uid, existing.slice(0, 10));
+      res.status(201).json({ ok: true, action: 'withdraw_request', withdrawal, demoSandboxOnly: true });
+      return;
+    }
+
+    res.status(400).json({ ok: false, error: 'invalid_wallet_action', message: 'Unsupported wallet action.' });
   });
 
   app.post('/api/cards/reserve', (req, res) => {
@@ -852,6 +1711,29 @@ async function startServer() {
       res.status(400).json({ ok: false, error: 'invalid_card_id', message: 'cardId must be 1..600.' });
       return;
     }
+
+    const cycle = ensureRoomCycle(roomId);
+    if (cycle.status === 'live') {
+      res.status(409).json({
+        ok: false,
+        error: 'room_already_live',
+        message: 'Card selection is locked while this round is live. Wait until the round finishes.',
+      });
+      return;
+    }
+    if (cycle.status === 'completed') {
+      res.status(409).json({
+        ok: false,
+        error: 'room_completed',
+        message: 'Round just finished. Next 60s card selection opens in a moment.',
+      });
+      return;
+    }
+
+    const roomObj = adminAuthority.getRooms().find((r) => r.id === roomId);
+    const cardPrice = roomObj ? roomObj.cardPriceEtb : 10;
+    const player = botEngine.getPlayerByTelegramId(actor.telegramUserId);
+    const currentBal = player ? Math.max(0, Number(player.demoBalanceEtb ?? 0)) : 0;
 
     let roomCards = localRoomCardOwnership.get(roomId);
     if (!roomCards) {
@@ -876,13 +1758,15 @@ async function startServer() {
       }
       roomCards.delete(cardId);
       const nextCards = myCards.filter((c) => c !== cardId).sort((a, b) => a - b);
+      const updatedBal = currentBal + cardPrice;
+      if (player) player.demoBalanceEtb = updatedBal;
       res.json({
         ok: true,
         action: 'released',
         roomId,
         cardId,
         cardIds: nextCards,
-        updatedBalanceEtb: 250 - nextCards.length * 10,
+        updatedBalanceEtb: updatedBal,
       });
       return;
     }
@@ -897,15 +1781,22 @@ async function startServer() {
       return;
     }
 
+    if (currentBal < cardPrice) {
+      res.status(400).json({ ok: false, error: 'insufficient_balance', message: 'Insufficient demo balance for this card.' });
+      return;
+    }
+
     roomCards.set(cardId, actor.uid);
     const nextCards = [...myCards, cardId].sort((a, b) => a - b);
+    const updatedBal = currentBal - cardPrice;
+    if (player) player.demoBalanceEtb = updatedBal;
     res.json({
       ok: true,
       action: 'reserved',
       roomId,
       cardId,
       cardIds: nextCards,
-      updatedBalanceEtb: 250 - nextCards.length * 10,
+      updatedBalanceEtb: updatedBal,
     });
   });
 
@@ -921,25 +1812,56 @@ async function startServer() {
     }
     const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim() : 'adey-main';
     const gameId = typeof req.body?.gameId === 'string' ? req.body.gameId.trim() : `game_${roomId}_live`;
+    const cycle = ensureRoomCycle(roomId);
+    const existing = localLiveGames.get(roomId);
+    if (cycle.status === 'countdown' && !req.body?.forceStart) {
+      res.json({
+        ok: true,
+        game: existing || {
+          gameId,
+          roomId,
+          hostUid: actor.uid,
+          roundNumber: cycle.roundNumber,
+          status: 'countdown' as const,
+          calledNumbers: [],
+          latestBall: 0,
+          winnerUid: '',
+          winnerName: '',
+          winningCardId: 0,
+          winningPattern: '',
+        },
+      });
+      return;
+    }
+    if ((cycle.status === 'live' || cycle.status === 'completed') && existing && !req.body?.forceStart) {
+      res.json({ ok: true, game: existing });
+      return;
+    }
+    gameAuthority.resetRoomCalls(roomId, []);
     const drawRes = gameAuthority.drawNextBallAuthoritative({
       roomId,
       callerTelegramId: actor.telegramUserId,
     });
+    cycle.status = 'live';
+    cycle.phaseEndsAtMs = 0;
+    cycle.lastDrawAtMs = Date.now();
+    const nextGame = {
+      gameId,
+      roomId,
+      hostUid: actor.uid,
+      roundNumber: cycle.roundNumber,
+      status: 'live' as const,
+      calledNumbers: drawRes.calledNumbers || (drawRes.ball ? [drawRes.ball] : []),
+      latestBall: drawRes.ball || 0,
+      winnerUid: '',
+      winnerName: '',
+      winningCardId: 0,
+      winningPattern: '',
+    };
+    localLiveGames.set(roomId, nextGame);
     res.json({
       ok: true,
-      game: {
-        gameId,
-        roomId,
-        hostUid: actor.uid,
-        roundNumber: 1,
-        status: 'live',
-        calledNumbers: drawRes.calledNumbers || [9, 30, 7, 16, 14],
-        latestBall: drawRes.ball || 14,
-        winnerUid: '',
-        winnerName: '',
-        winningCardId: 0,
-        winningPattern: '',
-      },
+      game: nextGame,
     });
   });
 
@@ -955,7 +1877,29 @@ async function startServer() {
     }
     const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim() : 'adey-main';
     const gameId = typeof req.body?.gameId === 'string' ? req.body.gameId.trim() : `game_${roomId}_live`;
-    gameAuthority.resetRoomCalls(roomId);
+    const cycle = ensureRoomCycle(roomId);
+    cycle.roundNumber += 1;
+    cycle.status = 'countdown';
+    cycle.phaseEndsAtMs = Date.now() + ROUND_CARD_WINDOW_MS;
+    cycle.lastDrawAtMs = 0;
+    cycle.settledRoundNumber = undefined;
+    localRoomCardOwnership.delete(roomId);
+    gameAuthority.resetRoomCalls(roomId, []);
+    localLiveGames.set(roomId, {
+      gameId,
+      roomId,
+      hostUid: actor.uid,
+      roundNumber: cycle.roundNumber,
+      status: 'countdown',
+      calledNumbers: [],
+      latestBall: 0,
+      winnerUid: '',
+      winnerName: '',
+      winningCardId: 0,
+      winningPattern: '',
+      prizePoolEtb: 0,
+      winners: [],
+    });
     res.json({
       ok: true,
       roomId,
@@ -967,20 +1911,6 @@ async function startServer() {
   // ---------------------------------------------------------------------------
   // 9. Server-Side Admin Authorization & Protected /api/admin/* Endpoints
   // ---------------------------------------------------------------------------
-  const resolveAdminSessionSecret = (): string => {
-    const raw = (
-      process.env.ADEY_ADMIN_SESSION_SECRET ||
-      process.env.TELEGRAM_WEBHOOK_SECRET ||
-      process.env.TELEGRAM_BOT_TOKEN ||
-      ''
-    ).trim();
-    if (raw && raw.length >= 8 && raw !== 'MY_TELEGRAM_WEBHOOK_SECRET') {
-      return raw.startsWith('adeybingo_admin_session_secret_')
-        ? raw
-        : `adeybingo_admin_session_secret_${raw}`;
-    }
-    return 'adeybingo_server_admin_session_hmac_secret_v1';
-  };
 
   const extractAdminAuthFromRequest = (req: express.Request) => {
     const authHeader =
@@ -1000,7 +1930,7 @@ async function startServer() {
     return authorizeAdminRequest({
       sessionToken: bearerToken || headerSessionToken,
       telegramInitData,
-      botToken: resolveInitDataVerificationToken(),
+      botToken: resolveConfiguredBotToken() || '',
       sessionSecret: resolveAdminSessionSecret(),
     });
   };
@@ -1055,20 +1985,39 @@ async function startServer() {
     }
 
     const sessionSecret = resolveAdminSessionSecret();
-    const botToken = resolveInitDataVerificationToken();
+    const botToken = resolveConfiguredBotToken();
     const rawInitData = typeof req.body?.initData === 'string' ? req.body.initData.trim() : '';
 
     if (rawInitData) {
+      if (!botToken) {
+        res.status(503).json({
+          ok: false,
+          authorized: false,
+          statusCode: 503,
+          reason: 'missing_bot_token',
+          message: 'TELEGRAM_BOT_TOKEN is not configured on the server environment.',
+          diagnostics: {
+            failureCategory: 'backend_environment_configuration',
+            botTokenConfigured: false,
+          },
+        });
+        return;
+      }
       const check = validateTelegramWebAppInitData(rawInitData, botToken, {
         maxAgeSeconds: 3600,
       });
       if (!check.valid || !check.telegramUser) {
+        console.warn('[server/admin-session-exchange] initData validation failed', {
+          reason: check.reason,
+          diagnostics: check.diagnostics,
+        });
         res.status(401).json({
           ok: false,
           authorized: false,
           statusCode: 401,
           reason: check.reason || 'invalid_init_data',
           message: 'Telegram initData signature validation failed.',
+          diagnostics: check.diagnostics,
         });
         return;
       }
@@ -1111,7 +2060,7 @@ async function startServer() {
     if (bearerToken) {
       const existingCheck = authorizeAdminRequest({
         sessionToken: bearerToken,
-        botToken,
+        botToken: botToken || '',
         sessionSecret,
       });
       if (existingCheck.actor) {
@@ -1404,10 +2353,125 @@ async function startServer() {
     });
   });
 
+  // 10. Server-Side Amharic / English Bingo Number Voice TTS Endpoint (cached)
+  const ttsAudioCache = new Map<string, string>();
+  const geminiApiKey = (process.env.GEMINI_API_KEY || '').trim();
+  const geminiClient = geminiApiKey
+    ? new GoogleGenAI({
+        apiKey: geminiApiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      })
+    : null;
+
+  app.get('/api/tts/bingo-call', async (req, res) => {
+    const ballNum = Number(req.query.number);
+    const lang = req.query.lang === 'en' ? 'en' : 'am';
+
+    if (!Number.isInteger(ballNum) || ballNum < 1 || ballNum > 75) {
+      res.status(400).json({ ok: false, reason: 'invalid_bingo_number' });
+      return;
+    }
+
+    const script = getBingoVoiceCallScript(ballNum, lang);
+    const spokenText = lang === 'am' ? script.amharicText : script.englishText;
+    const cacheKey = `${lang}:${ballNum}`;
+    const cached = ttsAudioCache.get(cacheKey);
+    if (cached) {
+      res.json({
+        ok: true,
+        audioBase64: cached,
+        mimeType: 'audio/wav',
+        spokenText,
+        phoneticText: script.amharicPhonetic,
+        source: 'gemini_tts_cache',
+      });
+      return;
+    }
+
+    if (!geminiClient) {
+      res.json({
+        ok: false,
+        audioBase64: null,
+        spokenText,
+        phoneticText: script.amharicPhonetic,
+        reason: 'gemini_api_key_not_configured',
+      });
+      return;
+    }
+
+    try {
+      const response = await geminiClient.models.generateContent({
+        model: 'gemini-3.8-flash-lite-tts',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: spokenText,
+                speechMetadata: {
+                  style:
+                    lang === 'am'
+                      ? 'Clear, energetic Ethiopian Amharic Bingo caller announcing the Bingo letter and number naturally'
+                      : 'Clear, energetic Bingo caller announcing the letter and number',
+                },
+              },
+            ],
+          },
+        ],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: 'Kore' },
+            },
+          },
+        },
+      });
+
+      const base64Audio =
+        response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (!base64Audio) {
+        res.json({
+          ok: false,
+          audioBase64: null,
+          spokenText,
+          phoneticText: script.amharicPhonetic,
+          reason: 'empty_tts_response',
+        });
+        return;
+      }
+
+      ttsAudioCache.set(cacheKey, base64Audio);
+      res.json({
+        ok: true,
+        audioBase64: base64Audio,
+        mimeType: 'audio/wav',
+        spokenText,
+        phoneticText: script.amharicPhonetic,
+        source: 'gemini_tts',
+      });
+    } catch {
+      res.json({
+        ok: false,
+        audioBase64: null,
+        spokenText,
+        phoneticText: script.amharicPhonetic,
+        reason: 'gemini_tts_error',
+      });
+    }
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ...(process.env.DISABLE_HMR === 'true' ? { hmr: false } : {}),
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

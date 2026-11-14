@@ -1,49 +1,40 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithCustomToken, User as FirebaseUser } from 'firebase/auth';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Volume2,
   VolumeX,
   Languages,
-  Users,
   Wallet,
   Gift,
   Headphones,
-  Sparkles,
   Home,
   X,
-  Bell,
-  Grid,
+  Trophy,
+  User as UserIcon,
+  Play,
+  Shuffle,
+  Search,
   Clock,
-  FileText,
-  Wifi,
-  WifiOff,
-  RefreshCw,
-  LogIn,
-  Database,
 } from 'lucide-react';
 import {
   DEFAULT_GAME_RULES,
   checkCardWin,
   drawNextBall,
-  formatBallCall,
   generateDeterministicCard,
-  getNextHelpfulNumberForCard,
   toggleCardSelection,
 } from './game/rules';
 import {
-  INITIAL_GAME_HISTORY,
-  INITIAL_NOTIFICATIONS,
-  INITIAL_REFERRALS,
-  INITIAL_ROOMS,
-  INITIAL_SUPPORT_TICKETS,
-  INITIAL_TRANSACTIONS,
-} from './data/demoData';
+  evaluateRoundWinners,
+  type RoundWinnerShare,
+} from './game/roundSettlement';
+import { INITIAL_ROOMS, INITIAL_SUPPORT_TICKETS } from './data/demoData';
 import {
-  ConnectionState,
+  DepositRequestSummary,
   GameHistoryItem,
   Language,
-  NotificationItem,
+  LeaderboardEntry,
+  PayoutRequestSummary,
   ReferralRecord,
   RoomConfig,
   ScreenId,
@@ -53,28 +44,36 @@ import {
 } from './types/bingo';
 import { t } from './utils/i18n';
 import { soundFX } from './utils/sound';
-import { initTelegramMiniApp, triggerHaptic } from './utils/telegram';
+import {
+  initTelegramMiniApp,
+  triggerHaptic,
+  waitForTelegramWebAppInitData,
+} from './utils/telegram';
 import { auth, testFirestoreConnection } from './lib/firebase';
 import {
   drawBallViaServerApi,
   ensureDefaultRoomsInFirestore,
   ensureUserProfileInFirestore,
+  fetchPlayerStateFromApi,
+  fetchRoomDetailFromServerApi,
+  fetchRoomsFromServerApi,
+  FirestoreRoomPlayer,
   getActiveBearerToken,
   getPrivatePhoneContact,
-  recordDemoReferralInFirestore,
   resetRoundViaServerApi,
   setSessionBearerToken,
   signOutFromFirebase,
   startGameViaServerApi,
+  submitPlayerWalletAction,
   subscribeToGameState,
   subscribeToRoomState,
   subscribeToUserProfile,
+  syncLanguagePreference,
   toggleCardReservationAtomic,
   verifyWinnerViaServerApi,
 } from './services/firestoreService';
-import { BingoBall3D } from './components/BingoBall3D';
-import { BingoCardView } from './components/BingoCardView';
 import { WinnerModal } from './components/WinnerModal';
+import { BingoCardView } from './components/BingoCardView';
 import { LobbyAndCardsScreen } from './components/LobbyAndCardsScreen';
 import { LiveGameScreen } from './components/LiveGameScreen';
 import { WalletScreens } from './components/WalletScreens';
@@ -88,9 +87,22 @@ function checkIsAdminRoute(): boolean {
   return path === '/admin' || params.get('route') === 'admin';
 }
 
+function buildEmptyInitialRooms(): RoomConfig[] {
+  return INITIAL_ROOMS.map((rm) => ({
+    ...rm,
+    activePlayers: 0,
+    takenCardIds: [],
+    countdownSeconds: 60,
+    status: 'countdown',
+  }));
+}
+
+const ALL_CARD_NUMBERS = Array.from({ length: DEFAULT_GAME_RULES.maxCardsPerRoom }, (_, i) => i + 1);
+
 export default function App() {
   const [user] = useState(() => initTelegramMiniApp());
   const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => checkIsAdminRoute());
+  const [homeCardSearch, setHomeCardSearch] = useState<string>('');
 
   useEffect(() => {
     const onPopState = () => setIsAdminRoute(checkIsAdminRoute());
@@ -120,54 +132,250 @@ export default function App() {
   const [phoneVerified, setPhoneVerified] = useState<boolean>(false);
   const [serverVerifiedTelegramId, setServerVerifiedTelegramId] = useState<number | null>(null);
   const [telegramBackendStatus, setTelegramBackendStatus] = useState<string>(
-    'Ready to validate Telegram WebApp initData on /api/telegram/validate-init-data'
+    'Ready to validate Telegram WebApp initData on /api/telegram/auth'
   );
 
-  // Rooms & Lobby state
-  const [rooms, setRooms] = useState<RoomConfig[]>(INITIAL_ROOMS);
+  // Rooms & Lobby state (hydrated from backend — zero fabricated players/countdown)
+  const [rooms, setRooms] = useState<RoomConfig[]>(() => buildEmptyInitialRooms());
   const [activeRoomId, setActiveRoomId] = useState<string>(INITIAL_ROOMS[0].id);
+  const [roomPlayers, setRoomPlayers] = useState<FirestoreRoomPlayer[]>([]);
   const activeRoom = rooms.find((r) => r.id === activeRoomId) ?? rooms[0];
 
-  // Configurable card price (default 10 ETB)
-  const [cardPrice, setCardPrice] = useState<number>(DEFAULT_GAME_RULES.defaultCardPrice);
+  const isCardsLocked = activeRoom.status === 'live' || activeRoom.status === 'completed';
 
-  // 60-second lobby countdown
-  const [countdown, setCountdown] = useState<number>(DEFAULT_GAME_RULES.lobbyCountdownSeconds);
+  // Configurable card price from active room
+  const [cardPrice, setCardPrice] = useState<number>(DEFAULT_GAME_RULES.defaultCardPrice);
+  const [countdown, setCountdown] = useState<number>(60);
+  const hasServerRoomSyncRef = useRef<boolean>(false);
+  const prevRoomStatusRef = useRef<RoomConfig['status']>('countdown');
+  const localWinnerSettledRoundRef = useRef<boolean>(false);
+  const langRef = useRef<Language>(lang);
+  langRef.current = lang;
 
   // Player selected card IDs (1..600, max 4 cards per player)
-  const [selectedCardIds, setSelectedCardIds] = useState<number[]>([1]);
+  const [selectedCardIds, setSelectedCardIds] = useState<number[]>([]);
 
-  // Live Game state
-  const [calls, setCalls] = useState<number[]>([9, 30, 7, 16, 14]);
-  const [marked, setMarked] = useState<number[]>([9, 30, 7, 16, 14]);
+  // Live Game state (starts clean with zero fabricated calls)
+  const [calls, setCalls] = useState<number[]>([]);
+  const [marked, setMarked] = useState<number[]>([]);
   const [autoMark, setAutoMark] = useState<boolean>(true);
   const [autoCallerActive, setAutoCallerActive] = useState<boolean>(false);
   const [callerIntervalSec, setCallerIntervalSec] = useState<number>(3);
   const [winnerModalOpen, setWinnerModalOpen] = useState<boolean>(false);
   const [activeWinResult, setActiveWinResult] = useState<WinResult | null>(null);
+  const [lastVerifiedPrizeEtb, setLastVerifiedPrizeEtb] = useState<number>(0);
+  const [roundWinners, setRoundWinners] = useState<RoundWinnerShare[]>([]);
+  const [winningCardOverride, setWinningCardOverride] = useState<number | null>(null);
+  const screenRef = useRef<ScreenId>(screen);
+  screenRef.current = screen;
+  const activeUidRef = useRef<string>(fbUser?.uid || `tg_${user.id}`);
+  activeUidRef.current = fbUser?.uid || `tg_${serverVerifiedTelegramId ?? user.id}`;
+  const activeTgIdRef = useRef<number>(serverVerifiedTelegramId ?? user.id);
+  activeTgIdRef.current = serverVerifiedTelegramId ?? user.id;
 
-  // Wallet, Referrals, History, Support, Notifications
-  const [demoBalance, setDemoBalance] = useState<number>(250.0);
-  const [transactions, setTransactions] = useState<WalletTransaction[]>(INITIAL_TRANSACTIONS);
-  const [referrals, setReferrals] = useState<ReferralRecord[]>(INITIAL_REFERRALS);
-  const [gameHistory, setGameHistory] = useState<GameHistoryItem[]>(INITIAL_GAME_HISTORY);
+  // Wallet, Referrals, History, Leaderboard, Support, Notifications (verified backend only)
+  const [demoBalance, setDemoBalance] = useState<number>(0);
+  const [winningsBalance, setWinningsBalance] = useState<number>(0);
+  const [referralCode, setReferralCode] = useState<string>(`ADEY-${user.id}`);
+  const [referredByCode, setReferredByCode] = useState<string>('');
+  const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
+  const [depositRequests, setDepositRequests] = useState<DepositRequestSummary[]>([]);
+  const [payoutRequests, setPayoutRequests] = useState<PayoutRequestSummary[]>([]);
+  const [referrals, setReferrals] = useState<ReferralRecord[]>([]);
+  const [gameHistory, setGameHistory] = useState<GameHistoryItem[]>([]);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [tickets, setTickets] = useState<SupportTicket[]>(INITIAL_SUPPORT_TICKETS);
-  const [notifications, setNotifications] = useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
-  const [notificationsOpen, setNotificationsOpen] = useState<boolean>(false);
 
-  // Audio, Motion & Connection resilience state
+  // Audio, Voice, Motion & Toast state
   const [sound, setSound] = useState<boolean>(true);
+  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(true);
   const [reducedMotion, setReducedMotion] = useState<boolean>(false);
-  const [connectionState, setConnectionState] = useState<ConnectionState>('online');
-  const [toast, setToast] = useState<string>(
-    'እንኳን ወደ ADEYBINGO በደህና መጡ! · Welcome to ADEYBINGO'
-  );
+  const [toast, setToast] = useState<string>('');
+  const lastSpokenBallRef = useRef<number | null>(null);
 
-  const effectiveCardIds = selectedCardIds.length > 0 ? selectedCardIds : [1];
-  const playerCards = effectiveCardIds.map((id) => generateDeterministicCard(id));
-  const latestBall = calls[calls.length - 1] ?? 9;
+  const playerCards = selectedCardIds.map((id) => generateDeterministicCard(id));
 
-  // 1. Verify Firestore connection & listen to Firebase Auth state
+  const hydratePlayerState = useCallback(async () => {
+    try {
+      const state = await fetchPlayerStateFromApi();
+      if (!state || !state.ok) return;
+      setDemoBalance(Number(state.wallet.availableBalanceEtb ?? 0));
+      setWinningsBalance(Number(state.wallet.winningsBalanceEtb ?? 0));
+      setTransactions(Array.isArray(state.transactions) ? state.transactions : []);
+      setDepositRequests(Array.isArray(state.depositRequests) ? state.depositRequests : []);
+      setPayoutRequests(Array.isArray(state.payoutRequests) ? state.payoutRequests : []);
+      setReferrals(Array.isArray(state.referrals) ? state.referrals : []);
+      setGameHistory(Array.isArray(state.gameHistory) ? state.gameHistory : []);
+      setLeaderboard(Array.isArray(state.leaderboard) ? state.leaderboard : []);
+      if (state.profile?.referralCode) {
+        setReferralCode(state.profile.referralCode);
+      }
+      setReferredByCode(state.profile?.referredByCode || '');
+      if (typeof state.profile?.phoneVerified === 'boolean') {
+        setPhoneVerified(state.profile.phoneVerified);
+      }
+      if (state.profile?.language === 'am' || state.profile?.language === 'en') {
+        setLang(state.profile.language);
+      }
+    } catch {
+      // Non-fatal when unauthenticated
+    }
+  }, []);
+
+  const hydrateRoomState = useCallback(async (roomIdToLoad: string) => {
+    try {
+      const token = await getActiveBearerToken();
+      const [serverRooms, detail] = await Promise.all([
+        fetchRoomsFromServerApi().catch(() => []),
+        fetchRoomDetailFromServerApi(roomIdToLoad).catch(() => null),
+      ]);
+
+      if (serverRooms.length > 0) {
+        hasServerRoomSyncRef.current = true;
+        setRooms((prev) =>
+          prev.map((rm) => {
+            const match = serverRooms.find((sr) => sr.roomId === rm.id);
+            if (!match) return rm;
+            const nextRmStatus =
+              localWinnerSettledRoundRef.current && rm.id === roomIdToLoad && match.status === 'live'
+                ? 'completed'
+                : match.status || 'countdown';
+            return {
+              ...rm,
+              cardPrice: Number(match.cardPrice || rm.cardPrice),
+              activePlayers: Number(match.activePlayersCount ?? 0),
+              countdownSeconds: Number(match.countdownSeconds ?? 0),
+              status: nextRmStatus,
+            };
+          })
+        );
+      }
+
+      if (detail) {
+        hasServerRoomSyncRef.current = true;
+        const rawNextStatus: RoomConfig['status'] = detail.room.status || 'countdown';
+        const prevStatus = prevRoomStatusRef.current;
+
+        // If local round already announced a winner while server was mid-round, wait until server restarts countdown
+        if (localWinnerSettledRoundRef.current && rawNextStatus === 'live') {
+          return;
+        }
+        const nextStatus = rawNextStatus;
+
+        // Countdown finished -> instantly switch into live game showing selected cards
+        if (prevStatus === 'countdown' && nextStatus === 'live') {
+          if (
+            screenRef.current === 'home' ||
+            screenRef.current === 'lobby' ||
+            screenRef.current === 'cards'
+          ) {
+            setScreen('game');
+          }
+          setToast(
+            langRef.current === 'am'
+              ? '60 ሰከንዱ አልቋል — ጨዋታው በተመረጡ ካርዶችዎ ተጀምሯል!'
+              : 'Timer finished — game started with your selected cards!'
+          );
+        }
+
+        // Round completed -> immediately terminate auto-calling & voice; show winner modal if winners exist
+        if (nextStatus === 'completed') {
+          setAutoCallerActive(false);
+          soundFX.stopVoice();
+        }
+        const serverCalls =
+          detail.game && Array.isArray(detail.game.calledNumbers)
+            ? detail.game.calledNumbers
+            : [];
+        if (
+          prevStatus !== 'completed' &&
+          nextStatus === 'completed' &&
+          detail.game?.winners &&
+          detail.game.winners.length > 0
+        ) {
+          const winnersList = detail.game.winners;
+          const myWins = winnersList.filter(
+            (w) =>
+              w.uid === activeUidRef.current ||
+              (activeTgIdRef.current > 0 && w.telegramUserId === activeTgIdRef.current)
+          );
+          const primary = myWins[0] || winnersList[0];
+          const myTotal = myWins.reduce((s, w) => s + w.prizeEtb, 0);
+          const cardObj = generateDeterministicCard(primary.cardId);
+          const winCheck = checkCardWin(cardObj, serverCalls, serverCalls, true);
+
+          setAutoCallerActive(false);
+          soundFX.stopVoice();
+          setRoundWinners(winnersList);
+          setWinningCardOverride(primary.cardId);
+          setActiveWinResult(
+            winCheck.won
+              ? winCheck
+              : {
+                  won: true,
+                  cardId: primary.cardId,
+                  patternType: primary.patternType,
+                  patternLabelAm: primary.patternLabelAm,
+                  patternLabelEn: primary.patternLabelEn,
+                  winningCells: primary.winningCells,
+                }
+          );
+          setLastVerifiedPrizeEtb(myWins.length > 0 ? myTotal : primary.prizeEtb);
+          setWinnerModalOpen(true);
+          soundFX.playWinFanfare(true);
+          void hydratePlayerState();
+        }
+
+        // New round started -> reset board & unlock 60s card selection
+        if (
+          (prevStatus === 'live' || prevStatus === 'completed' || localWinnerSettledRoundRef.current) &&
+          nextStatus === 'countdown'
+        ) {
+          localWinnerSettledRoundRef.current = false;
+          setMarked([]);
+          setCalls([]);
+          setWinnerModalOpen(false);
+          setActiveWinResult(null);
+          setLastVerifiedPrizeEtb(0);
+          setRoundWinners([]);
+          setWinningCardOverride(null);
+          setAutoCallerActive(false);
+          soundFX.stopVoice();
+          setSelectedCardIds([]);
+          setToast(
+            langRef.current === 'am'
+              ? 'አዲስ የ60 ሰከንድ ዙር ተጀምሯል — ካርድ ይምረጡ!'
+              : 'New 60s round started — pick your cards!'
+          );
+        }
+        prevRoomStatusRef.current = nextStatus;
+
+        setCountdown(Number(detail.room.countdownSeconds ?? 0));
+        setCardPrice(Number(detail.room.cardPrice || DEFAULT_GAME_RULES.defaultCardPrice));
+        if (token) {
+          setSelectedCardIds(detail.myCardIds.sort((a, b) => a - b));
+        }
+        setRooms((prev) =>
+          prev.map((rm) =>
+            rm.id === roomIdToLoad
+              ? {
+                  ...rm,
+                  activePlayers: Number(detail.room.activePlayersCount ?? 0),
+                  takenCardIds: detail.takenCardIds,
+                  countdownSeconds: Number(detail.room.countdownSeconds ?? 0),
+                  status: nextStatus,
+                }
+              : rm
+          )
+        );
+        setCalls(serverCalls);
+      }
+    } catch {
+      // Ignore transient API polling failures
+    }
+  }, [hydratePlayerState]);
+
+  // 1. Verify Firestore connection & listen to Firebase Auth + Telegram Mini App initData
   useEffect(() => {
     testFirestoreConnection().then((ok) => setFirestoreConnected(ok));
     ensureDefaultRoomsInFirestore().catch(() => {});
@@ -191,6 +399,9 @@ export default function App() {
 
           const profile = await ensureUserProfileInFirestore(currentUser, user, lang);
           setPhoneVerified(profile.phoneVerified);
+          if (profile.language === 'am' || profile.language === 'en') {
+            setLang(profile.language);
+          }
           if (typeof profile.demoBalanceEtb === 'number') {
             setDemoBalance(profile.demoBalanceEtb);
           }
@@ -199,6 +410,8 @@ export default function App() {
             setPhoneNumber(privContact.phoneNumber);
             setPhoneVerified(privContact.phoneVerified);
           }
+          void hydratePlayerState();
+          void hydrateRoomState(activeRoomId);
         } catch (err) {
           console.error('Error syncing authenticated user profile:', err);
         }
@@ -208,44 +421,83 @@ export default function App() {
     });
 
     // Attempt automatic Telegram Mini App initData authentication when launched inside Telegram
-    const rawInitData =
-      (
-        window as unknown as {
-          Telegram?: { WebApp?: { initData?: string } };
-        }
-      ).Telegram?.WebApp?.initData || '';
-    if (rawInitData) {
-      fetch('/api/telegram/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: rawInitData }),
-      })
-        .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
-        .then(async ({ ok, d }) => {
-          if (ok && d.ok) {
-            const verifiedId = Number(
-              d.verifiedTelegramId ?? d.profile?.telegramUserId ?? d.telegramUser?.id
-            );
-            if (Number.isInteger(verifiedId) && verifiedId > 0) {
-              setServerVerifiedTelegramId(verifiedId);
-            }
-            if (d.sessionToken) setSessionBearerToken(d.sessionToken);
-            if (typeof d.demoBalanceEtb === 'number') setDemoBalance(d.demoBalanceEtb);
-            if (typeof d.phoneVerified === 'boolean') setPhoneVerified(d.phoneVerified);
-            if (d.customToken) {
-              await signInWithCustomToken(auth, d.customToken).catch(() => {});
-            }
-          }
-        })
-        .catch(() => {});
-    }
+    let cancelled = false;
+    void (async () => {
+      const { initData: rawInitData } = await waitForTelegramWebAppInitData(1500);
+      if (cancelled) return;
+      if (!rawInitData) {
+        setTelegramBackendStatus(
+          'No window.Telegram.WebApp.initData detected (open inside @AdeyBingoBot Mini App to authenticate).'
+        );
+        return;
+      }
 
-    return () => unsubAuth();
+      try {
+        const r = await fetch('/api/telegram/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData: rawInitData }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (cancelled) return;
+        if (r.ok && d.ok) {
+          const verifiedId = Number(
+            d.verifiedTelegramId ?? d.profile?.telegramUserId ?? d.telegramUser?.id
+          );
+          if (Number.isInteger(verifiedId) && verifiedId > 0) {
+            setServerVerifiedTelegramId(verifiedId);
+          }
+          if (d.sessionToken) setSessionBearerToken(d.sessionToken);
+          const profileBalance = d.profile?.demoBalanceEtb ?? d.demoBalanceEtb;
+          if (typeof profileBalance === 'number') setDemoBalance(profileBalance);
+          const profilePhoneVerified = d.profile?.phoneVerified ?? d.phoneVerified;
+          if (typeof profilePhoneVerified === 'boolean') setPhoneVerified(profilePhoneVerified);
+          const profileLang = d.profile?.language;
+          if (profileLang === 'am' || profileLang === 'en') {
+            setLang(profileLang);
+          }
+          if (d.customToken) {
+            await signInWithCustomToken(auth, d.customToken).catch(() => {});
+          }
+          setTelegramBackendStatus(
+            `✓ Authenticated on Server: TG User #${verifiedId || d.telegramUser?.id || ''}`
+          );
+          await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoomId)]);
+        } else {
+          const category = d.diagnostics?.failureCategory
+            ? ` [${d.diagnostics.failureCategory}]`
+            : '';
+          const errSummary = `Auth failed (${r.status}): ${d.reason || d.error || 'error'}${category} — ${d.message || 'Verification failed'}`;
+          setTelegramBackendStatus(errSummary);
+          setToast(d.message || 'Telegram authentication failed');
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTelegramBackendStatus(
+            `Auth network error: ${err instanceof Error ? err.message : 'Network failure'}`
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unsubAuth();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 2. Real-time Room, Card Reservation, Live Game, and User Balance onSnapshot listeners
+  // 2. Real-time Firestore listeners & backend room polling for active room
   useEffect(() => {
-    if (!fbUser) return;
+    void hydrateRoomState(activeRoomId);
+    const poll = window.setInterval(() => {
+      void hydrateRoomState(activeRoomId);
+    }, 2000);
+
+    if (!fbUser) {
+      return () => window.clearInterval(poll);
+    }
+
     const unsubRoom = subscribeToRoomState(
       activeRoomId,
       (reservations) => {
@@ -258,32 +510,26 @@ export default function App() {
             otherTakenCards.push(r.cardId);
           }
         }
-        if (myCards.length > 0) {
-          setSelectedCardIds(myCards.sort((a, b) => a - b));
-        }
+        setSelectedCardIds(myCards.sort((a, b) => a - b));
         setRooms((prev) =>
           prev.map((rm) =>
             rm.id === activeRoomId
               ? {
                   ...rm,
-                  takenCardIds: Array.from(
-                    new Set([...INITIAL_ROOMS.find((x) => x.id === rm.id)!.takenCardIds, ...otherTakenCards])
-                  ),
+                  takenCardIds: otherTakenCards,
                 }
               : rm
           )
         );
       },
       (players) => {
+        setRoomPlayers(players);
         setRooms((prev) =>
           prev.map((rm) =>
             rm.id === activeRoomId
               ? {
                   ...rm,
-                  activePlayers: Math.max(
-                    INITIAL_ROOMS.find((x) => x.id === rm.id)!.activePlayers,
-                    35 + players.length
-                  ),
+                  activePlayers: players.length,
                 }
               : rm
           )
@@ -292,7 +538,7 @@ export default function App() {
     );
 
     const unsubGame = subscribeToGameState(`game_${activeRoomId}_live`, (liveGame) => {
-      if (Array.isArray(liveGame.calledNumbers) && liveGame.calledNumbers.length > 0) {
+      if (Array.isArray(liveGame.calledNumbers)) {
         setCalls(liveGame.calledNumbers);
       }
     });
@@ -301,15 +547,19 @@ export default function App() {
       if (typeof profile.demoBalanceEtb === 'number') {
         setDemoBalance(profile.demoBalanceEtb);
       }
+      if (profile.language === 'am' || profile.language === 'en') {
+        setLang(profile.language);
+      }
       setPhoneVerified(profile.phoneVerified);
     });
 
     return () => {
+      window.clearInterval(poll);
       unsubRoom();
       unsubGame();
       unsubProfile();
     };
-  }, [fbUser, activeRoomId]);
+  }, [fbUser, activeRoomId, hydrateRoomState]);
 
   // Mirror game state to document.body.dataset.state
   useEffect(() => {
@@ -323,13 +573,172 @@ export default function App() {
     }
   }, [screen, winnerModalOpen]);
 
-  // 60-second Lobby countdown timer
+  // Decrement active room countdown when > 0
   useEffect(() => {
+    if (countdown <= 0) return;
     const timer = window.setInterval(() => {
-      setCountdown((prev) => (prev <= 1 ? DEFAULT_GAME_RULES.lobbyCountdownSeconds : prev - 1));
+      setCountdown((prev) => (prev > 0 ? prev - 1 : 0));
     }, 1000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [countdown > 0]);
+
+  // Continuous unstoppable round loop: sync on countdown expiry & drive standalone preview fallback
+  useEffect(() => {
+    if (hasServerRoomSyncRef.current) {
+      if (activeRoom.status === 'countdown' && countdown === 0) {
+        void hydrateRoomState(activeRoomId);
+      }
+      return;
+    }
+
+    if (activeRoom.status === 'countdown' && countdown === 0) {
+      setRooms((prev) =>
+        prev.map((rm) =>
+          rm.id === activeRoomId ? { ...rm, status: 'live', countdownSeconds: 0 } : rm
+        )
+      );
+      if (screen === 'home' || screen === 'lobby' || screen === 'cards') {
+        setScreen('game');
+      }
+      setAutoCallerActive(true);
+      setToast(
+        lang === 'am'
+          ? '60 ሰከንዱ አልቋል — ጨዋታው በተመረጡ ካርዶችዎ ተጀምሯል!'
+          : 'Timer finished — game started with your selected cards!'
+      );
+      return;
+    }
+
+    if (activeRoom.status === 'live' && (calls.length >= 75 || winnerModalOpen)) {
+      setAutoCallerActive(false);
+      setRooms((prev) =>
+        prev.map((rm) => (rm.id === activeRoomId ? { ...rm, status: 'completed' } : rm))
+      );
+      return;
+    }
+
+    if (activeRoom.status === 'completed') {
+      const restartTimer = window.setTimeout(() => {
+        setAutoCallerActive(false);
+        setWinnerModalOpen(false);
+        setActiveWinResult(null);
+        setLastVerifiedPrizeEtb(0);
+        setRoundWinners([]);
+        setWinningCardOverride(null);
+        setCalls([]);
+        setMarked([]);
+        setSelectedCardIds([]);
+        setCountdown(60);
+        setRooms((prev) =>
+          prev.map((rm) =>
+            rm.id === activeRoomId
+              ? { ...rm, status: 'countdown', countdownSeconds: 60, takenCardIds: [] }
+              : rm
+          )
+        );
+        setToast(
+          lang === 'am'
+            ? 'አዲስ የ60 ሰከንድ ዙር ተጀምሯል — ካርድ ይምረጡ!'
+            : 'New 60s round started — pick your cards!'
+        );
+      }, 6000);
+      return () => window.clearTimeout(restartTimer);
+    }
+  }, [activeRoom.status, activeRoomId, calls.length, countdown, hydrateRoomState, lang, screen, winnerModalOpen]);
+
+  // Automatic client-side diagonal/line win detection fallback for unauthenticated preview play
+  useEffect(() => {
+    if (
+      activeRoom.status !== 'live' ||
+      calls.length === 0 ||
+      winnerModalOpen ||
+      selectedCardIds.length === 0 ||
+      serverVerifiedTelegramId !== null ||
+      fbUser !== null
+    ) {
+      return;
+    }
+
+    const entries = selectedCardIds.map((cardId) => ({
+      cardId,
+      uid: `tg_${user.id}`,
+      telegramUserId: user.id,
+      displayName: `${user.firstName} ${user.lastName || ''}`.trim() || 'Player',
+    }));
+
+    const settlement = evaluateRoundWinners({
+      entries,
+      calledNumbers: calls,
+      cardPrice,
+      totalCardsInRoom: Math.max(selectedCardIds.length, activeRoom.takenCardIds.length + selectedCardIds.length),
+    });
+
+    if (!settlement.hasWinner) return;
+
+    const primary = settlement.winners[0];
+    const totalWon = settlement.payoutsByPlayer[0]?.totalPrizeEtb ?? primary.prizeEtb;
+    const winCheck = checkCardWin(
+      generateDeterministicCard(primary.cardId),
+      calls,
+      calls,
+      true
+    );
+
+    localWinnerSettledRoundRef.current = true;
+    setAutoCallerActive(false);
+    soundFX.stopVoice();
+    setRooms((prev) =>
+      prev.map((rm) =>
+        rm.id === activeRoomId ? { ...rm, status: 'completed', countdownSeconds: 0 } : rm
+      )
+    );
+    setRoundWinners(settlement.winners);
+    setWinningCardOverride(primary.cardId);
+    setActiveWinResult(
+      winCheck.won
+        ? winCheck
+        : {
+            won: true,
+            cardId: primary.cardId,
+            patternType: primary.patternType,
+            patternLabelAm: primary.patternLabelAm,
+            patternLabelEn: primary.patternLabelEn,
+            winningCells: primary.winningCells,
+          }
+    );
+    setLastVerifiedPrizeEtb(totalWon);
+    setDemoBalance((b) => Number((b + totalWon).toFixed(2)));
+    setWinningsBalance((w) => Number((w + totalWon).toFixed(2)));
+    setWinnerModalOpen(true);
+    soundFX.playWinFanfare(sound);
+    triggerHaptic('success');
+
+    if (hasServerRoomSyncRef.current) {
+      void verifyWinnerViaServerApi({
+        roomId: activeRoomId,
+        gameId: `game_${activeRoomId}_live`,
+        cardId: primary.cardId,
+        markedNumbers: calls,
+        calledNumbers: calls,
+        claimantTelegramId: user.id,
+        playerName: `${user.firstName} ${user.lastName || ''}`.trim() || 'Player',
+      }).catch(() => {});
+    }
+  }, [
+    activeRoom.status,
+    activeRoom.takenCardIds.length,
+    activeRoomId,
+    calls,
+    cardPrice,
+    fbUser,
+    selectedCardIds,
+    serverVerifiedTelegramId,
+    sound,
+    user.firstName,
+    user.id,
+    user.lastName,
+    winnerModalOpen,
+  ]);
 
   // Auto-dismiss toast notifications after 3.2 seconds
   useEffect(() => {
@@ -338,9 +747,17 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  // Auto-Caller interval when enabled in Live Game
+  // Immediately terminate calling & speech whenever winner is announced or round completes
   useEffect(() => {
-    if (!autoCallerActive || winnerModalOpen) return;
+    if (winnerModalOpen || activeRoom.status === 'completed') {
+      setAutoCallerActive(false);
+      soundFX.stopVoice();
+    }
+  }, [winnerModalOpen, activeRoom.status]);
+
+  // Auto-Caller interval when enabled in Live Game (only during active live round)
+  useEffect(() => {
+    if (!autoCallerActive || winnerModalOpen || activeRoom.status !== 'live') return;
     const timer = window.setInterval(() => {
       handleCallNextNumber();
     }, callerIntervalSec * 1000);
@@ -363,14 +780,29 @@ export default function App() {
     setMarked((prev) => Array.from(new Set([...prev, ...cardNums])));
   }, [autoMark, calls, selectedCardIds]);
 
-  // Handler: Authenticate via Telegram Mini App initData (/api/telegram/auth) without Google OAuth
+  // Speak newly called Bingo numbers in Amharic/English while in Live Game
+  useEffect(() => {
+    if (calls.length === 0) {
+      lastSpokenBallRef.current = null;
+      return;
+    }
+    const latest = calls[calls.length - 1];
+    if (latest === lastSpokenBallRef.current) return;
+    lastSpokenBallRef.current = latest;
+
+    if (!sound || screen !== 'game' || winnerModalOpen || activeRoom.status === 'completed' || localWinnerSettledRoundRef.current) {
+      return;
+    }
+    if (voiceEnabled) {
+      void soundFX.speakBingoBall(latest, lang, true);
+    } else {
+      soundFX.playBallCall(true);
+    }
+  }, [activeRoom.status, calls, lang, screen, sound, voiceEnabled, winnerModalOpen]);
+
+  // Handler: Authenticate via Telegram Mini App initData (/api/telegram/auth)
   async function handleSignInGoogle() {
-    const rawInitData =
-      (
-        window as unknown as {
-          Telegram?: { WebApp?: { initData?: string } };
-        }
-      ).Telegram?.WebApp?.initData || '';
+    const { initData: rawInitData } = await waitForTelegramWebAppInitData(500);
 
     try {
       const resp = await fetch('/api/telegram/auth', {
@@ -378,7 +810,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData: rawInitData }),
       });
-      const data = await resp.json();
+      const data = await resp.json().catch(() => ({}));
       if (resp.ok && data.ok) {
         const verifiedId = Number(
           data.verifiedTelegramId ?? data.profile?.telegramUserId ?? data.telegramUser?.id
@@ -389,18 +821,39 @@ export default function App() {
         if (data.sessionToken) {
           setSessionBearerToken(data.sessionToken);
         }
-        if (typeof data.demoBalanceEtb === 'number') {
-          setDemoBalance(data.demoBalanceEtb);
+        const profileBalance = data.profile?.demoBalanceEtb ?? data.demoBalanceEtb;
+        if (typeof profileBalance === 'number') {
+          setDemoBalance(profileBalance);
+        }
+        const profileLang = data.profile?.language;
+        if (profileLang === 'am' || profileLang === 'en') {
+          setLang(profileLang);
         }
         if (data.customToken) {
           await signInWithCustomToken(auth, data.customToken);
         }
+        await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoomId)]);
+        const displayName =
+          data.displayName ||
+          data.profile?.firstName ||
+          data.telegramUser?.first_name ||
+          user.firstName;
+        setTelegramBackendStatus(
+          `✓ Authenticated on Server: TG User #${verifiedId || data.telegramUser?.id || ''}`
+        );
         setToast(
           lang === 'am'
-            ? `በቴሌግራም Mini App ተረጋግጧል (${data.displayName || user.firstName})`
-            : `Authenticated via Telegram Mini App (${data.displayName || user.firstName})`
+            ? `በቴሌግራም Mini App ተረጋግጧል (${displayName})`
+            : `Authenticated via Telegram Mini App (${displayName})`
         );
       } else {
+        const statusCode = data.statusCode || resp.status;
+        const category = data.diagnostics?.failureCategory
+          ? ` [${data.diagnostics.failureCategory}]`
+          : '';
+        setTelegramBackendStatus(
+          `Server response (${statusCode}): ${data.reason || data.error || 'error'}${category} — ${data.message || 'Verification failed'}`
+        );
         setToast(
           lang === 'am'
             ? data.message || 'በቴሌግራም Mini App ውስጥ ይክፈቱ (initData ያስፈልጋል)'
@@ -420,17 +873,19 @@ export default function App() {
   async function handleSignOutFirebase() {
     await signOutFromFirebase();
     setServerVerifiedTelegramId(null);
+    setDemoBalance(0);
+    setWinningsBalance(0);
+    setTransactions([]);
+    setDepositRequests([]);
+    setPayoutRequests([]);
+    setReferrals([]);
+    setGameHistory([]);
     setToast(lang === 'am' ? 'ከFirebase ወጥተዋል' : 'Signed out from Firebase');
   }
 
   // Handler: Validate Telegram Mini App initData on trusted backend (/api/telegram/validate-init-data)
   async function handleValidateTelegramInitData() {
-    const rawInitData =
-      (
-        window as unknown as {
-          Telegram?: { WebApp?: { initData?: string } };
-        }
-      ).Telegram?.WebApp?.initData || '';
+    const { initData: rawInitData } = await waitForTelegramWebAppInitData(500);
 
     try {
       const resp = await fetch('/api/telegram/validate-init-data', {
@@ -438,7 +893,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ initData: rawInitData }),
       });
-      const data = await resp.json();
+      const data = await resp.json().catch(() => ({}));
       if (resp.ok && data.verified) {
         const verifiedId = Number(data.verifiedTelegramId ?? data.telegramUser?.id);
         if (Number.isInteger(verifiedId) && verifiedId > 0) {
@@ -465,7 +920,12 @@ export default function App() {
         );
       } else {
         const statusCode = data.statusCode || resp.status;
-        setTelegramBackendStatus(`Server response (${statusCode}): ${data.message || data.reason}`);
+        const category = data.diagnostics?.failureCategory
+          ? ` [${data.diagnostics.failureCategory}]`
+          : '';
+        setTelegramBackendStatus(
+          `Server response (${statusCode}): ${data.reason || data.error || 'error'}${category} — ${data.message || ''}`
+        );
         setToast(data.message || 'Telegram initData check completed');
       }
     } catch (err) {
@@ -475,7 +935,7 @@ export default function App() {
     }
   }
 
-  // Handler: Save & Verify Phone Number via Server-Authoritative Contact Endpoint (/api/telegram/bot-command)
+  // Handler: Save & Verify Phone Number via Server-Authoritative Contact Endpoint
   async function handleVerifyPhone(
     cleanedPhone: string,
     method: 'telegram_contact' | 'sms_otp_demo'
@@ -513,7 +973,7 @@ export default function App() {
         return;
       }
     } catch {
-      // Fall through to session state if offline
+      // Fall through
     }
 
     setPhoneNumber(cleanedPhone);
@@ -527,6 +987,14 @@ export default function App() {
 
   // Handler: Server-Authoritative Call Next Ball (POST /api/game/draw-ball)
   async function handleCallNextNumber() {
+    if (
+      winnerModalOpen ||
+      activeRoom.status !== 'live' ||
+      localWinnerSettledRoundRef.current
+    ) {
+      setAutoCallerActive(false);
+      return;
+    }
     const token = await getActiveBearerToken();
     if (token) {
       try {
@@ -535,7 +1003,6 @@ export default function App() {
           gameId: `game_${activeRoom.id}_live`,
           callerTelegramId: user.id,
         });
-        soundFX.playBallCall(sound);
         triggerHaptic('light');
         setCalls(res.calledNumbers);
         return;
@@ -546,44 +1013,30 @@ export default function App() {
       }
     }
 
-    // Local sandbox preview when unauthenticated in browser preview
+    // Local preview draw when unauthenticated
     const nextNum = drawNextBall(calls);
     if (nextNum === null) {
       setAutoCallerActive(false);
-      setToast(
-        lang === 'am'
-          ? 'ሁሉም 75 ቁጥሮች ተጠርተዋል!'
-          : 'All 75 numbers have been called!'
-      );
+      setToast(lang === 'am' ? 'ሁሉም 75 ቁጥሮች ተጠርተዋል!' : 'All 75 numbers have been called!');
       return;
     }
 
-    soundFX.playBallCall(sound);
     triggerHaptic('light');
     setCalls([...calls, nextNum]);
   }
 
-  // Handler: Draw Helpful Ball for fast demo testing
-  function handleCallHelpfulNumber() {
-    const firstCard = playerCards[0];
-    const helpful = getNextHelpfulNumberForCard(firstCard, calls);
-    if (helpful === null) {
-      handleCallNextNumber();
-      return;
-    }
-    soundFX.playBallCall(sound);
-    triggerHaptic('medium');
-    const updatedCalls = calls.includes(helpful) ? calls : [...calls, helpful];
-    setCalls(updatedCalls);
-    setToast(
-      lang === 'am'
-        ? `የተጠራ ቁጥር፦ ${formatBallCall(helpful)}`
-        : `Called ${formatBallCall(helpful)}!`
-    );
-  }
-
   // Handler: Toggle card selection (1..600, max 4) via POST /api/cards/reserve when authenticated
   async function handleToggleCardId(cardId: number) {
+    if (isCardsLocked) {
+      soundFX.playError(sound);
+      triggerHaptic('error');
+      setToast(
+        lang === 'am'
+          ? '60 ሰከንዱ አልቋል — ዙሩ እስኪያልቅ ካርድ መምረጥ አይቻልም'
+          : 'Round is live — cards are locked until this game finishes'
+      );
+      return;
+    }
     const previousCardIds = [...selectedCardIds];
     const result = toggleCardSelection(
       selectedCardIds,
@@ -597,15 +1050,11 @@ export default function App() {
       triggerHaptic('error');
       if (result.reason === 'max_limit_reached') {
         setToast(
-          lang === 'am'
-            ? 'በአንድ ተጫዋች ቢበዛ 4 ካርዶች ብቻ ይፈቀዳሉ'
-            : 'Maximum 4 cards per player'
+          lang === 'am' ? 'በአንድ ተጫዋች ቢበዛ 4 ካርዶች ብቻ ይፈቀዳሉ' : 'Maximum 4 cards per player'
         );
       } else if (result.reason === 'taken_by_other') {
         setToast(
-          lang === 'am'
-            ? `ካርድ #${cardId} በሌላ ተጫዋች ተይዟል`
-            : `Card #${cardId} is already taken`
+          lang === 'am' ? `ካርድ ${cardId} በሌላ ተጫዋች ተይዟል` : `Card ${cardId} is already taken`
         );
       }
       return;
@@ -629,11 +1078,12 @@ export default function App() {
         }
         setToast(
           lang === 'am'
-            ? `ካርድ #${cardId} በሰርቨር ትራንዛክሽን ${
+            ? `ካርድ ${cardId} በሰርቨር ትራንዛክሽን ${
                 txRes.action === 'reserved' ? 'ተይዟል' : 'ተለቋል'
               }`
-            : `Card #${cardId} ${txRes.action} via server /api/cards/reserve`
+            : `Card ${cardId} ${txRes.action} via server`
         );
+        await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoom.id)]);
       } catch (err) {
         soundFX.playError(sound);
         triggerHaptic('error');
@@ -650,6 +1100,16 @@ export default function App() {
 
   // Handler: Quick pick N available cards
   function handleQuickPickCards(targetCount: number) {
+    if (isCardsLocked) {
+      soundFX.playError(sound);
+      triggerHaptic('error');
+      setToast(
+        lang === 'am'
+          ? '60 ሰከንዱ አልቋል — ዙሩ እስኪያልቅ ካርድ መምረጥ አይቻልም'
+          : 'Round is live — cards are locked until this game finishes'
+      );
+      return;
+    }
     const clamped = Math.max(1, Math.min(DEFAULT_GAME_RULES.maxCardsPerPlayer, targetCount));
     const available: number[] = [];
     for (let id = 1; id <= DEFAULT_GAME_RULES.maxCardsPerRoom; id++) {
@@ -667,25 +1127,33 @@ export default function App() {
     setSelectedCardIds(picked.sort((a, b) => a - b));
     setToast(
       lang === 'am'
-        ? `${picked.length} ካርዶች ተመርጠዋል (${picked.map((n) => `#${n}`).join(', ')})`
-        : `Selected ${picked.length} cards (${picked.map((n) => `#${n}`).join(', ')})`
+        ? `${picked.length} ካርዶች ተመርጠዋል (${picked.join(', ')})`
+        : `Selected ${picked.length} cards (${picked.join(', ')})`
     );
   }
 
   // Handler: Add 1 card quickly (up to 4)
   function handleAddQuickCard() {
+    if (isCardsLocked) {
+      soundFX.playError(sound);
+      triggerHaptic('error');
+      setToast(
+        lang === 'am'
+          ? '60 ሰከንዱ አልቋል — ዙሩ እስኪያልቅ ካርድ መምረጥ አይቻልም'
+          : 'Round is live — cards are locked until this game finishes'
+      );
+      return;
+    }
     if (selectedCardIds.length >= DEFAULT_GAME_RULES.maxCardsPerPlayer) {
       soundFX.playError(sound);
       setToast(
-        lang === 'am'
-          ? 'በአንድ ተጫዋች ቢበዛ 4 ካርዶች ብቻ ይፈቀዳሉ'
-          : 'Maximum 4 cards per player'
+        lang === 'am' ? 'በአንድ ተጫዋች ቢበዛ 4 ካርዶች ብቻ ይፈቀዳሉ' : 'Maximum 4 cards per player'
       );
       return;
     }
     for (let id = 1; id <= DEFAULT_GAME_RULES.maxCardsPerRoom; id++) {
       if (!selectedCardIds.includes(id) && !activeRoom.takenCardIds.includes(id)) {
-        handleToggleCardId(id);
+        void handleToggleCardId(id);
         return;
       }
     }
@@ -706,18 +1174,32 @@ export default function App() {
     }
     soundFX.playDaub(sound);
     triggerHaptic('light');
-    setMarked((prev) =>
-      prev.includes(num) ? prev.filter((x) => x !== num) : [...prev, num]
-    );
+    setMarked((prev) => (prev.includes(num) ? prev.filter((x) => x !== num) : [...prev, num]));
   }
 
   // Handler: Verify BINGO claim across all player cards via POST /api/game/verify-winner
   async function handleClaimBingo() {
+    if (playerCards.length === 0) {
+      soundFX.playError(sound);
+      setToast(lang === 'am' ? 'መጀመሪያ ቢያንስ 1 ካርድ ይምረጡ!' : 'Please select at least 1 card first!');
+      return;
+    }
+
     for (const card of playerCards) {
       const winCheck = checkCardWin(card, marked, calls, true);
       if (winCheck.won) {
         const token = await getActiveBearerToken();
-        let serverPrize: number | undefined;
+        if (!token) {
+          soundFX.playError(sound);
+          setToast(
+            lang === 'am'
+              ? 'ሽልማት ለማረጋገጥ በቴሌግራም Mini App መግባት ያስፈልጋል።'
+              : 'Telegram Mini App authentication is required to verify and credit wins.'
+          );
+          return;
+        }
+
+        let serverPrize = 0;
         try {
           const verification = await verifyWinnerViaServerApi({
             roomId: activeRoom.id,
@@ -728,70 +1210,35 @@ export default function App() {
             claimantTelegramId: user.id,
             playerName: `${user.firstName} ${user.lastName || ''}`.trim(),
           });
-          if (!verification.verified && token) {
+          if (!verification.verified) {
             soundFX.playError(sound);
             triggerHaptic('error');
             setToast(
-              verification.message ||
-                verification.reason ||
-                'Server rejected winner verification'
+              verification.message || verification.reason || 'Server rejected winner verification'
             );
             return;
           }
-          serverPrize = verification.demoPrizeEtb;
+          serverPrize = Number(verification.demoPrizeEtb ?? 0);
         } catch (err) {
-          if (token) {
-            soundFX.playError(sound);
-            setToast(err instanceof Error ? err.message : 'Server winner verification failed');
-            return;
-          }
+          soundFX.playError(sound);
+          setToast(err instanceof Error ? err.message : 'Server winner verification failed');
+          return;
         }
 
+        localWinnerSettledRoundRef.current = true;
+        setAutoCallerActive(false);
+        soundFX.stopVoice();
         soundFX.playWinFanfare(sound);
         triggerHaptic('success');
-        setAutoCallerActive(false);
+        setRooms((prev) =>
+          prev.map((rm) =>
+            rm.id === activeRoom.id ? { ...rm, status: 'completed', countdownSeconds: 0 } : rm
+          )
+        );
         setActiveWinResult(winCheck);
+        setLastVerifiedPrizeEtb(serverPrize);
         setWinnerModalOpen(true);
-
-        const prizeCredit =
-          typeof serverPrize === 'number'
-            ? serverPrize
-            : Math.max(50, selectedCardIds.length * cardPrice * 4);
-        const refCode = `ADB-WIN-${Math.floor(10000 + Math.random() * 89999)}`;
-        if (!token) {
-          setDemoBalance((prev) => prev + prizeCredit);
-        }
-        setTransactions((prev) => [
-          {
-            id: `tx-${Date.now()}`,
-            type: 'bingo_win',
-            amount: prizeCredit,
-            provider: activeRoom.nameEn,
-            status: 'demo_completed',
-            labelAm: `የቢንጎ አሸናፊነት ሽልማት (ካርድ #${card.id} · Demo)`,
-            labelEn: `Bingo Win Credit (Card #${card.id} · Demo)`,
-            timestamp: lang === 'am' ? 'አሁን' : 'Just now',
-            reference: refCode,
-          },
-          ...prev,
-        ]);
-        setGameHistory((prev) => [
-          {
-            id: `gh-${Date.now()}`,
-            roomNameAm: activeRoom.nameAm,
-            roomNameEn: activeRoom.nameEn,
-            playedAt: lang === 'am' ? 'አሁን' : 'Just now',
-            cardIds: [...effectiveCardIds],
-            entryFeeDemo: effectiveCardIds.length * cardPrice,
-            outcome: 'won',
-            prizeDemo: prizeCredit,
-            winningBall: formatBallCall(latestBall),
-            callsCount: calls.length,
-            patternAm: winCheck.patternLabelAm,
-            patternEn: winCheck.patternLabelEn,
-          },
-          ...prev,
-        ]);
+        await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoom.id)]);
 
         setToast(
           lang === 'am'
@@ -815,6 +1262,8 @@ export default function App() {
 
   // Handler: Reset live round (POST /api/game/reset-round when authenticated)
   async function handleResetRound() {
+    localWinnerSettledRoundRef.current = false;
+    soundFX.stopVoice();
     const token = await getActiveBearerToken();
     if (token) {
       try {
@@ -822,25 +1271,36 @@ export default function App() {
           roomId: activeRoom.id,
           gameId: `game_${activeRoom.id}_live`,
         });
+        await hydrateRoomState(activeRoom.id);
       } catch (err) {
         soundFX.playError(sound);
         setToast(err instanceof Error ? err.message : 'Server round reset failed');
         return;
       }
+    } else {
+      setCountdown(60);
+      setSelectedCardIds([]);
+      setRooms((prev) =>
+        prev.map((rm) =>
+          rm.id === activeRoom.id
+            ? { ...rm, status: 'countdown', countdownSeconds: 60, takenCardIds: [] }
+            : rm
+        )
+      );
     }
     setAutoCallerActive(false);
     setWinnerModalOpen(false);
     setActiveWinResult(null);
-    setCalls([9, 30, 7, 16, 14]);
-    setMarked(autoMark ? [9, 30, 7, 16, 14] : []);
-    setToast(lang === 'am' ? 'የሙከራ ዙሩ እንደገና ተጀምሯል' : 'Demo round reset');
+    setLastVerifiedPrizeEtb(0);
+    setRoundWinners([]);
+    setWinningCardOverride(null);
+    setCalls([]);
+    setMarked([]);
+    setToast(lang === 'am' ? 'ዙሩ እንደገና ተጀምሯል' : 'Round reset');
   }
 
   // Handler: Enter Live Game from Lobby/Card Picker (POST /api/game/start when authenticated)
   async function handleEnterLiveGame() {
-    if (selectedCardIds.length === 0) {
-      setSelectedCardIds([1]);
-    }
     const token = await getActiveBearerToken();
     if (token) {
       try {
@@ -848,157 +1308,84 @@ export default function App() {
           roomId: activeRoom.id,
           gameId: `game_${activeRoom.id}_live`,
         });
-        if (Array.isArray(started.calledNumbers) && started.calledNumbers.length > 0) {
+        if (Array.isArray(started.calledNumbers)) {
           setCalls(started.calledNumbers);
         }
-      } catch (err) {
-        soundFX.playError(sound);
-        setToast(err instanceof Error ? err.message : 'Server game start rejected');
-        return;
-      }
-    } else {
-      const cost = Math.max(1, selectedCardIds.length) * cardPrice;
-      const refCode = `ADB-ENT-${Math.floor(10000 + Math.random() * 89999)}`;
-      if (demoBalance >= cost) {
-        setDemoBalance((prev) => prev - cost);
-        setTransactions((prev) => [
-          {
-            id: `tx-${Date.now()}`,
-            type: 'card_entry',
-            amount: -cost,
-            provider: activeRoom.nameEn,
-            status: 'demo_completed',
-            labelAm: `${Math.max(1, selectedCardIds.length)} የቢንጎ ካርድ መግቢያ (Demo)`,
-            labelEn: `${Math.max(1, selectedCardIds.length)} Bingo Card Entry (Demo)`,
-            timestamp: lang === 'am' ? 'አሁን' : 'Just now',
-            reference: refCode,
-          },
-          ...prev,
-        ]);
+        await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoom.id)]);
+      } catch {
+        // Non-fatal: during 60s countdown or watch-only mode, still open the Live Game view
       }
     }
     setScreen('game');
-    setToast(
-      lang === 'am'
-        ? `ወደ ${activeRoom.nameAm} ገብተዋል!`
-        : `Joined ${activeRoom.nameEn}!`
-    );
+    setToast(lang === 'am' ? `ወደ ${activeRoom.nameAm} ገብተዋል!` : `Joined ${activeRoom.nameEn}!`);
   }
 
-  // Handler: Demo Deposit
-  function handleSimulateDeposit(amount: number, provider: string) {
-    soundFX.playDaub(sound);
-    const refCode = `ADB-DEP-${Math.floor(10000 + Math.random() * 89999)}`;
-    setDemoBalance((prev) => prev + amount);
-    setTransactions((prev) => [
-      {
-        id: `tx-${Date.now()}`,
-        type: 'deposit_demo',
-        amount,
-        provider,
-        status: 'demo_completed',
-        labelAm: `የሙከራ ሂሳብ መሙያ (${provider})`,
-        labelEn: `Demo Sandbox Deposit (${provider})`,
-        timestamp: lang === 'am' ? 'አሁን' : 'Just now',
-        reference: refCode,
-      },
-      ...prev,
-    ]);
-
-    setToast(
-      lang === 'am'
-        ? `+${amount.toFixed(2)} ETB ወደ ሙከራ ቦርሳዎ ተጨምሯል`
-        : `+${amount.toFixed(2)} ETB added to your Demo Wallet`
-    );
-    setScreen('wallet');
-  }
-
-  // Handler: Demo Withdraw
-  function handleSimulateWithdraw(
-    amount: number,
-    provider: string,
-    accountPhone: string
-  ): boolean {
-    if (amount > demoBalance) return false;
-    soundFX.playDaub(sound);
-    const refCode = `ADB-WDR-${Math.floor(10000 + Math.random() * 89999)}`;
-    setDemoBalance((prev) => prev - amount);
-    setTransactions((prev) => [
-      {
-        id: `tx-${Date.now()}`,
-        type: 'withdraw_demo',
-        amount: -amount,
-        provider,
-        status: 'demo_pending',
-        labelAm: `የሙከራ ወጪ ጥያቄ ወደ ${accountPhone} (${provider})`,
-        labelEn: `Demo Withdrawal Request to ${accountPhone} (${provider})`,
-        timestamp: lang === 'am' ? 'አሁን' : 'Just now',
-        reference: refCode,
-      },
-      ...prev,
-    ]);
-
-    setToast(
-      lang === 'am'
-        ? `የ ${amount.toFixed(2)} ETB የሙከራ ወጪ ጥያቄ ተመዝግቧል`
-        : `Demo withdrawal of ${amount.toFixed(2)} ETB recorded`
-    );
-    setScreen('wallet');
-    return true;
-  }
-
-  // Handler: Simulate Friend Referral
-  function handleSimulateFriendJoin(friendName: string) {
-    soundFX.playWinFanfare(sound);
-    const handle = `@${friendName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'friend'}_et`;
-    const refCode = `ADB-REF-${Math.floor(10000 + Math.random() * 89999)}`;
-    const newRef: ReferralRecord = {
-      id: `ref-${Date.now()}`,
-      friendName,
-      handle,
-      joinedAt: lang === 'am' ? 'አሁን · Just now' : 'Just now',
-      status: 'qualified',
-      inviterBonus: DEFAULT_GAME_RULES.inviterBonusEtb,
-      inviteeBonus: DEFAULT_GAME_RULES.inviteeBonusEtb,
-    };
-    setReferrals((prev) => [newRef, ...prev]);
-    setDemoBalance((prev) => prev + DEFAULT_GAME_RULES.inviterBonusEtb);
-    setTransactions((prev) => [
-      {
-        id: `tx-${Date.now()}`,
-        type: 'referral_bonus',
-        amount: DEFAULT_GAME_RULES.inviterBonusEtb,
-        provider: 'ADEY Referral',
-        status: 'demo_completed',
-        labelAm: `የጓደኛ ግብዣ ቦነስ (${friendName})`,
-        labelEn: `Referral Bonus (${friendName})`,
-        timestamp: lang === 'am' ? 'አሁን' : 'Just now',
-        reference: refCode,
-      },
-      ...prev,
-    ]);
-
-    if (fbUser) {
-      recordDemoReferralInFirestore({
-        inviterUid: fbUser.uid,
-        friendName,
-        friendHandle: handle,
-      }).catch(() => {});
+  // Handler: Apply Promo or Referral Code via POST /api/player/wallet
+  async function handleApplyPromoCode(code: string): Promise<{ ok: boolean; message: string }> {
+    const res = await submitPlayerWalletAction({ action: 'apply_promo', code });
+    if (res.ok) {
+      soundFX.playWinFanfare(sound);
+      await hydratePlayerState();
+      const msg =
+        lang === 'am'
+          ? `ኮዱ ተቀባይነት አግኝቷል (+${Number(res.bonusEtb ?? 0).toFixed(2)} ETB)`
+          : `Code applied (+${Number(res.bonusEtb ?? 0).toFixed(2)} ETB)`;
+      setToast(msg);
+      return { ok: true, message: msg };
     }
+    soundFX.playError(sound);
+    const errMsg = res.message || (lang === 'am' ? 'ኮዱ አልሰራም' : 'Could not apply promo code');
+    setToast(errMsg);
+    return { ok: false, message: errMsg };
+  }
 
-    setToast(
-      lang === 'am'
-        ? `${friendName} ተቀላቅሏል! +20 ETB የሙከራ ቦነስ አግኝተዋል`
-        : `${friendName} joined! +20 ETB demo referral bonus credited`
-    );
+  // Handler: Submit Deposit Request via POST /api/player/wallet
+  async function handleSubmitDepositRequest(amount: number, provider: string) {
+    const res = await submitPlayerWalletAction({
+      action: 'deposit_request',
+      amountEtb: amount,
+      provider,
+    });
+    if (res.ok) {
+      soundFX.playDaub(sound);
+      await hydratePlayerState();
+      setToast(
+        lang === 'am'
+          ? `የ ${amount.toFixed(2)} ETB የተቀማጭ ጥያቄ (${provider}) ተልኳል`
+          : `Deposit request of ${amount.toFixed(2)} ETB (${provider}) submitted`
+      );
+      setScreen('wallet');
+      return;
+    }
+    soundFX.playError(sound);
+    setToast(res.message || (lang === 'am' ? 'የተቀማጭ ጥያቄ አልተሳካም' : 'Deposit request failed'));
+  }
+
+  // Handler: Submit Withdrawal Request via POST /api/player/wallet
+  async function handleSubmitWithdrawRequest(amount: number, method: string): Promise<boolean> {
+    const res = await submitPlayerWalletAction({
+      action: 'withdraw_request',
+      amountEtb: amount,
+      method,
+    });
+    if (res.ok) {
+      soundFX.playDaub(sound);
+      await hydratePlayerState();
+      setToast(
+        lang === 'am'
+          ? `የ ${amount.toFixed(2)} ETB የወጪ ጥያቄ (${method}) ተመዝግቧል`
+          : `Withdrawal request of ${amount.toFixed(2)} ETB (${method}) submitted`
+      );
+      setScreen('wallet');
+      return true;
+    }
+    soundFX.playError(sound);
+    setToast(res.message || (lang === 'am' ? 'የወጪ ጥያቄ አልተሳካም' : 'Withdrawal request failed'));
+    return false;
   }
 
   // Handler: Support Ticket
-  function handleSubmitSupportTicket(
-    category: string,
-    subject: string,
-    message: string
-  ) {
+  function handleSubmitSupportTicket(category: string, subject: string, message: string) {
     soundFX.playDaub(sound);
     const newTkt: SupportTicket = {
       id: `TKT-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -1010,21 +1397,27 @@ export default function App() {
     };
     setTickets((prev) => [newTkt, ...prev]);
     setToast(
-      lang === 'am'
-        ? `የድጋፍ ጥያቄዎ (${newTkt.id}) ተልኳል!`
-        : `Support ticket (${newTkt.id}) submitted!`
+      lang === 'am' ? `የድጋፍ ጥያቄዎ (${newTkt.id}) ተልኳል!` : `Support ticket (${newTkt.id}) submitted!`
     );
   }
 
-  const unreadCount = notifications.filter((n) => !n.read).length;
   const winningCardObj =
-    playerCards.find((c) => c.id === activeWinResult?.cardId) ?? playerCards[0];
+    playerCards.find((c) => c.id === activeWinResult?.cardId) ??
+    playerCards[0] ??
+    generateDeterministicCard(1);
+
+  function handleChangeLanguage(nextLangOrUpdater: Language | ((prev: Language) => Language)) {
+    const nextLang =
+      typeof nextLangOrUpdater === 'function' ? nextLangOrUpdater(lang) : nextLangOrUpdater;
+    setLang(nextLang);
+    void syncLanguagePreference(nextLang, fbUser?.uid, serverVerifiedTelegramId ?? user.id);
+  }
 
   if (isAdminRoute) {
     return (
       <AdminDashboardScreen
         lang={lang}
-        onToggleLang={() => setLang((l) => (l === 'am' ? 'en' : 'am'))}
+        onToggleLang={() => handleChangeLanguage((l) => (l === 'am' ? 'en' : 'am'))}
         onReturnToPlayerApp={() => {
           window.history.pushState({}, '', '/');
           setIsAdminRoute(false);
@@ -1033,475 +1426,420 @@ export default function App() {
     );
   }
 
+  const countdownLabel =
+    countdown > 0 ? `00:${String(countdown).padStart(2, '0')}` : '00:00';
+  const timerPercent =
+    activeRoom.status === 'countdown'
+      ? Math.max(0, Math.min(100, Math.round((countdown / 60) * 100)))
+      : 0;
+  const isUrgentCountdown =
+    activeRoom.status === 'countdown' && countdown > 0 && countdown <= 10;
+
   return (
     <div className="app">
-      {/* Top Header */}
+      {/* Compact Top Header */}
       <header className="adey-header">
         <button
           type="button"
           onClick={() => setScreen('home')}
-          className="brand text-left bg-transparent border-0 p-0"
+          className="brand text-left bg-transparent border-0 p-0 min-h-[44px]"
         >
           <b className="logo">A</b>
-          <div>
-            <strong>
-              ADEY<span>BINGO</span>
-            </strong>
-            <small>{copy.brandSubtitle}</small>
-          </div>
+          <strong>
+            ADEY<span>BINGO</span>
+          </strong>
         </button>
 
-        {/* Desktop Quick Screen Links */}
-        <div className="hidden lg:flex items-center gap-1 bg-white border border-[#e3ece5] p-1 rounded-2xl">
-          {(
-            [
-              { id: 'home', label: copy.navHome },
-              { id: 'lobby', label: copy.navLobby },
-              { id: 'cards', label: `${copy.navCards} (1–600)` },
-              { id: 'game', label: copy.navGame },
-              { id: 'wallet', label: copy.navWallet },
-              { id: 'referral', label: copy.navFriends },
-              { id: 'support', label: copy.navSupport },
-              { id: 'terms', label: copy.navTerms },
-            ] as const
-          ).map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setScreen(item.id)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-colors whitespace-nowrap ${
-                screen === item.id ||
-                (item.id === 'wallet' && (screen === 'deposit' || screen === 'withdraw'))
-                  ? 'bg-[#087e50] text-white'
-                  : 'text-[#486655] hover:bg-[#f0f8f2]'
+        <div className="actions">
+          <button
+            type="button"
+            onClick={() => setScreen('game')}
+            aria-label={lang === 'am' ? 'የዙር ሰዓት ቆጣሪ' : 'Round timer'}
+            data-testid="header-timer"
+          >
+            <Clock
+              size={15}
+              className={
+                isCardsLocked
+                  ? 'text-rose-400'
+                  : isUrgentCountdown
+                    ? 'text-amber-400 animate-pulse'
+                    : 'text-[#facc15]'
+              }
+            />
+            <span
+              className={`font-mono font-extrabold tabular-nums ${
+                isCardsLocked
+                  ? 'text-rose-300'
+                  : isUrgentCountdown
+                    ? 'text-amber-300'
+                    : 'text-[#facc15]'
               }`}
             >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="actions">
-          {/* Telegram Mini App Cloud Status & Quick Auth Button (Desktop/Tablet) */}
-          {!fbUser ? (
-            <button
-              type="button"
-              onClick={handleSignInGoogle}
-              aria-label="Authenticate via Telegram Mini App"
-              title="Verify Telegram Mini App initData to enable real-time Firestore card reservations"
-              className="!hidden sm:!flex"
-            >
-              <LogIn size={15} className="text-[#087e50]" />
-              <span>{lang === 'am' ? 'ግባ (TG)' : 'TG Auth'}</span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setScreen('profile')}
-              aria-label="Firebase Cloud Sync Active"
-              title={`Connected to Firestore as ${fbUser.uid}`}
-              className="!hidden sm:!flex"
-            >
-              <Database size={15} className="text-[#087e50]" />
-              <span className="text-[#087e50]">Cloud</span>
-            </button>
-          )}
-
-          {/* Connection State Simulator Button (Desktop/Tablet) */}
-          <button
-            type="button"
-            onClick={() => {
-              const order: ConnectionState[] = ['online', 'reconnecting', 'offline'];
-              const nextState =
-                order[(order.indexOf(connectionState) + 1) % order.length];
-              setConnectionState(nextState);
-            }}
-            aria-label={`Connection status ${connectionState}`}
-            title="Click to test Online / Reconnecting / Offline banners"
-            className="!hidden sm:!flex"
-          >
-            {connectionState === 'online' && <Wifi size={16} className="text-[#087e50]" />}
-            {connectionState === 'reconnecting' && (
-              <RefreshCw size={16} className="text-[#d49a19] animate-spin" />
-            )}
-            {connectionState === 'offline' && <WifiOff size={16} className="text-red-600" />}
+              {activeRoom.status === 'countdown'
+                ? countdownLabel
+                : activeRoom.status === 'live'
+                  ? 'LIVE'
+                  : '00:05'}
+            </span>
           </button>
 
-          {/* Sound Toggle */}
           <button
             type="button"
-            onClick={() => setSound((s) => !s)}
-            aria-label={sound ? 'Mute sound' : 'Unmute sound'}
+            onClick={() => setScreen('wallet')}
+            aria-label={copy.demoBalanceLabel}
           >
-            {sound ? <Volume2 size={16} /> : <VolumeX size={16} />}
-            <span className="hidden sm:inline">{sound ? 'ON' : 'OFF'}</span>
+            <Wallet size={15} className="text-cyan-400" />
+            <span data-testid="home-demo-balance" className="text-cyan-300 font-extrabold tabular-nums">
+              {demoBalance.toFixed(2)} ETB
+            </span>
           </button>
 
-          {/* Language Switcher */}
           <button
             type="button"
-            onClick={() => setLang((l) => (l === 'am' ? 'en' : 'am'))}
+            onClick={() => handleChangeLanguage((l) => (l === 'am' ? 'en' : 'am'))}
             aria-label="Switch language between Amharic and English"
             data-testid="lang-toggle"
           >
-            <Languages size={16} />
+            <Languages size={15} />
             {lang === 'am' ? 'አማ' : 'EN'}
           </button>
 
-          {/* Notifications Button */}
           <button
             type="button"
             onClick={() => {
-              setNotificationsOpen((o) => !o);
-              setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+              if (sound) soundFX.stopVoice();
+              setSound((s) => !s);
             }}
-            aria-label="Notifications"
-            className="relative"
+            aria-label={sound ? 'Mute sound' : 'Unmute sound'}
           >
-            <Bell size={16} />
-            {unreadCount > 0 && (
-              <span className="w-4 h-4 rounded-full bg-[#eab308] text-[#451a03] text-[10px] font-extrabold flex items-center justify-center">
-                {unreadCount}
-              </span>
-            )}
-          </button>
-
-          {/* Profile Avatar */}
-          <button
-            type="button"
-            onClick={() => setScreen('profile')}
-            aria-label="Open player profile"
-            className="avatar"
-          >
-            {user.initials}
+            {sound ? <Volume2 size={15} /> : <VolumeX size={15} />}
           </button>
         </div>
       </header>
 
-      {/* Connection Status Banner when Reconnecting or Offline */}
-      {connectionState !== 'online' && (
-        <div
-          role="status"
-          className={`mt-3 p-3 rounded-2xl text-xs font-extrabold flex items-center justify-between ${
-            connectionState === 'reconnecting'
-              ? 'bg-[#fef6d8] border border-[#f2d06b] text-[#6e4f07]'
-              : 'bg-[#fee2e2] border border-[#fca5a5] text-[#991b1b]'
-          }`}
-        >
-          <span>
-            {connectionState === 'reconnecting'
-              ? lang === 'am'
-                ? '⟳ ከጨዋታ ክፍሉ ጋር እንደገና በመገናኘት ላይ (Reconnecting...)'
-                : '⟳ Reconnecting to live game server...'
-              : lang === 'am'
-              ? '⚠ የኢንተርኔት ግንኙነት ተቋርጧል (Offline Mode) — ካርዶችዎ ተጠብቀዋል።'
-              : '⚠ You are currently offline — your selected cards are preserved.'}
-          </span>
-          <button
-            type="button"
-            onClick={() => setConnectionState('online')}
-            className="px-3 py-1 rounded-lg bg-white text-[#193b2b] text-xs font-extrabold"
-          >
-            {lang === 'am' ? 'አሁን አገናኝ' : 'Reconnect Now'}
-          </button>
-        </div>
-      )}
-
-      {/* Collapsible Notifications Drawer */}
-      <AnimatePresence>
-        {notificationsOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            className="mt-3 bg-white border border-[#dce8df] rounded-2xl p-4 shadow-lg space-y-2.5"
-          >
-            <div className="flex items-center justify-between">
-              <b className="font-['Outfit'] text-sm font-extrabold text-[#193b2b]">
-                {lang === 'am' ? 'ማሳወቂያዎች (Notifications)' : 'Notifications'}
-              </b>
-              <button
-                type="button"
-                onClick={() => setNotificationsOpen(false)}
-                className="text-xs font-bold text-[#647b6d]"
-              >
-                {lang === 'am' ? 'ዝጋ ✕' : 'Close ✕'}
-              </button>
-            </div>
-            <div className="divide-y divide-[#edf4ef]">
-              {notifications.map((n) => (
-                <div key={n.id} className="py-2 text-xs">
-                  <div className="flex items-center justify-between">
-                    <b className="text-[#087e50]">
-                      {lang === 'am' ? n.titleAm : n.titleEn}
-                    </b>
-                    <small className="text-[#7c9084]">{n.time}</small>
-                  </div>
-                  <p className="text-[#4a6656] mt-0.5">
-                    {lang === 'am' ? n.bodyAm : n.bodyEn}
+      {/* Main View Switcher */}
+      <main className="mt-5">
+        {screen === 'home' && (
+          <div className="space-y-4">
+            {/* 1. Primary Play Card */}
+            <section className="rounded-3xl bg-[#0f1a2e] border border-slate-700/60 p-5 sm:p-7 space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="space-y-1.5">
+                  <h1 className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+                    {lang === 'am' ? 'ቢንጎ ይጫወቱ' : 'Play Live Bingo'}
+                  </h1>
+                  <p className="text-xs sm:text-sm text-slate-400 max-w-xl">
+                    {lang === 'am'
+                      ? 'ካርድ ይምረጡ፣ ከዚያ ወዲያውኑ ወደ ቀጥታ ጨዋታው ይግቡ።'
+                      : 'Choose your cards, then jump straight into the live game.'}
                   </p>
                 </div>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
-      {/* Main View Switcher */}
-      <main className="mt-4">
-        {screen === 'home' && (
-          <>
-            <section className="welcome">
-              <div>
-                <small className="eyebrow">{copy.communityEyebrow}</small>
-                <h1>{copy.welcomeTitle}</h1>
-                <p>{copy.welcomeSub}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setScreen('wallet')}
-                className="balance text-left hover:border-[#12a566] transition-colors"
-              >
-                ◆{' '}
-                <span>
-                  <small>{copy.demoBalanceLabel}</small>
-                  <b data-testid="home-demo-balance">{demoBalance.toFixed(2)} ETB</b>
-                </span>
-              </button>
-            </section>
-
-            <section className="hero">
-              <div className="hero-text">
-                <small>{copy.liveRoomEyebrow}</small>
-                <h2>
-                  {copy.heroTitleLine1}
-                  <br />
-                  <em>{copy.heroTitleEmphasis}</em>
-                </h2>
-                <p>{copy.heroSub}</p>
-                <div className="flex flex-wrap items-center gap-2.5 mt-3">
-                  <button
-                    type="button"
-                    data-start="true"
-                    className="gold"
-                    onClick={() => setScreen('game')}
-                  >
-                    {copy.exploreGameCta}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setScreen('cards')}
-                    className="px-4 py-2.5 mt-2.5 rounded-xl bg-white/15 border border-white/30 text-white text-xs font-extrabold hover:bg-white/25 transition-colors"
-                  >
-                    {copy.pickCardsCta}
-                  </button>
-                </div>
-              </div>
-              <div className="hero-balls" aria-hidden="true">
-                <i>B</i>
-                <b>9</b>
-                <i>7</i>
-              </div>
-              <div className="hero-foot">
-                <span>{copy.heroFoot1}</span>
-                <span>{copy.heroFoot2}</span>
-                <span>
-                  {copy.heroFoot3} · {lang === 'am' ? 'ሎቢ ቆጠራ፦' : 'Lobby Countdown:'}{' '}
-                  <b className="font-mono tabular-nums">00:{String(countdown).padStart(2, '0')}</b>
-                </span>
-              </div>
-            </section>
-
-            <section className="stats">
-              <article>
-                <Users />
-                <small>{copy.statPlayersOnline}</small>
-                <b>{activeRoom.activePlayers}</b>
-                <span className="stat-sub">{copy.statPlayersSub}</span>
-              </article>
-              <article>
-                <Gift />
-                <small>{copy.statRoomCapacity}</small>
-                <b>{copy.statRoomCapacityValue}</b>
-                <span className="stat-sub">{copy.statRoomCapacitySub}</span>
-              </article>
-              <article>
-                <Wallet />
-                <small>{copy.statCardPrice}</small>
-                <b>{cardPrice} ETB</b>
-                <span className="stat-sub">{copy.statCardPriceSub}</span>
-              </article>
-            </section>
-
-            <section className="columns">
-              <article className="panel">
-                <div className="panel-title">
-                  <div>
-                    <small className="eyebrow">{copy.gameArenaEyebrow}</small>
-                    <h3>{copy.liveCallerTitle}</h3>
+                {/* Prominent Round Timer Display */}
+                <div
+                  data-testid="home-timer"
+                  className={`rounded-2xl border px-4 py-3 min-w-[165px] space-y-2 ${
+                    activeRoom.status === 'live'
+                      ? 'bg-rose-500/10 border-rose-400/40'
+                      : activeRoom.status === 'completed'
+                        ? 'bg-amber-500/10 border-amber-400/40'
+                        : isUrgentCountdown
+                          ? 'bg-amber-500/10 border-amber-400/50'
+                          : 'bg-[#091221] border-cyan-400/35'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wide">
+                    <span className="text-slate-400 flex items-center gap-1">
+                      <Clock
+                        size={13}
+                        className={
+                          isCardsLocked
+                            ? 'text-rose-400'
+                            : isUrgentCountdown
+                              ? 'text-amber-400'
+                              : 'text-cyan-400'
+                        }
+                      />
+                      {activeRoom.status === 'live'
+                        ? lang === 'am'
+                          ? 'ቀጥታ ጨዋታ'
+                          : 'LIVE ROUND'
+                        : activeRoom.status === 'completed'
+                          ? lang === 'am'
+                            ? 'ቀጣይ ዙር'
+                            : 'NEXT ROUND'
+                          : lang === 'am'
+                            ? 'የካርድ ሰዓት'
+                            : 'CARD TIMER'}
+                    </span>
                   </div>
-                  <span className="live">{copy.demoLiveBadge}</span>
+                  <div
+                    className={`font-mono text-2xl sm:text-3xl font-extrabold tabular-nums leading-none ${
+                      activeRoom.status === 'live'
+                        ? 'text-rose-300'
+                        : activeRoom.status === 'completed'
+                          ? 'text-amber-300'
+                          : isUrgentCountdown
+                            ? 'text-amber-300'
+                            : 'text-[#facc15]'
+                    }`}
+                  >
+                    {activeRoom.status === 'countdown'
+                      ? countdownLabel
+                      : activeRoom.status === 'live'
+                        ? `${calls.length}/75`
+                        : '00:05'}
+                  </div>
+                  <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-500 ${
+                        activeRoom.status === 'live'
+                          ? 'bg-rose-400 w-full animate-pulse'
+                          : activeRoom.status === 'completed'
+                            ? 'bg-amber-400 w-1/3'
+                            : isUrgentCountdown
+                              ? 'bg-amber-400'
+                              : 'bg-gradient-to-r from-[#22d3ee] to-[#facc15]'
+                      }`}
+                      style={
+                        activeRoom.status === 'countdown'
+                          ? { width: `${timerPercent}%` }
+                          : undefined
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Unboxed Metadata Line */}
+              <p className="text-xs text-slate-300 tabular-nums">
+                {activeRoom.activePlayers} {lang === 'am' ? 'ተጫዋቾች' : 'players'} ·{' '}
+                {activeRoom.status === 'live' ? (
+                  <b className="text-rose-300">
+                    {lang === 'am' ? 'ካርድ ተቆልፏል' : 'Cards Locked'}
+                  </b>
+                ) : activeRoom.status === 'completed' ? (
+                  <b className="text-amber-300">
+                    {lang === 'am' ? 'ዙሩ አልቋል · አዲስ ዙር ይጀምራል' : 'Round Over · Next Starting'}
+                  </b>
+                ) : (
+                  <>
+                    {lang === 'am' ? 'ቀሪ ጊዜ' : 'Time Left'}{' '}
+                    <b className="font-mono text-[#facc15]">{countdownLabel}</b>
+                  </>
+                )}{' '}
+                · {cardPrice} ETB / {lang === 'am' ? 'ካርድ' : 'card'}
+              </p>
+
+              {/* Primary Play Action */}
+              <div className="flex flex-wrap items-center gap-3 pt-1">
+                <button
+                  type="button"
+                  data-start="true"
+                  onClick={handleEnterLiveGame}
+                  className="px-6 py-3 rounded-2xl bg-gradient-to-r from-[#facc15] to-[#eab308] text-[#1e1402] font-['Outfit'] text-base font-extrabold flex items-center justify-center gap-2 shadow-sm hover:brightness-105 min-h-[48px] whitespace-nowrap"
+                >
+                  <Play size={18} />
+                  {isCardsLocked
+                    ? lang === 'am'
+                      ? 'ቀጥታ ጨዋታ ይመልከቱ'
+                      : 'Watch Live Game'
+                    : selectedCardIds.length > 0
+                    ? lang === 'am'
+                      ? `በ ${selectedCardIds.length} ካርድ ጨዋታ ጀምር`
+                      : `Start Game (${selectedCardIds.length} Card${selectedCardIds.length === 1 ? '' : 's'})`
+                    : lang === 'am'
+                    ? 'ጨዋታ ጀምር'
+                    : 'Start Game'}
+                </button>
+              </div>
+            </section>
+
+            {/* 2. All Cards Selector (1–600) */}
+            <section className="rounded-3xl bg-[#0f1a2e] border border-slate-700/60 p-4 sm:p-5 space-y-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="font-['Outfit'] text-base font-extrabold text-white">
+                    {lang === 'am'
+                      ? `ሁሉም ካርዶች (1–600) · ${selectedCardIds.length}/4`
+                      : `All Cards (1–600) · ${selectedCardIds.length}/4`}
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    {isCardsLocked
+                      ? lang === 'am'
+                        ? '60 ሰከንዱ አልቋል — ይህ ዙር እስኪያልቅ ድረስ ካርድ መምረጥ አይቻልም'
+                        : '60s closed — cards are locked until this round ends'
+                      : lang === 'am'
+                      ? 'የሚፈልጉትን ካርድ ቁጥር ይንኩ (እስከ 4 ካርዶች)'
+                      : 'Tap any card number below to choose (up to 4 cards)'}
+                  </p>
                 </div>
 
-                <div className="caller">
-                  <BingoBall3D
-                    number={latestBall}
-                    size="xl"
-                    animateEntry
-                    reducedMotion={reducedMotion}
-                  />
-                  <div>
-                    <b className="text-xs tracking-wider uppercase text-[#145b38] block">
-                      {copy.numberCalledLabel}
-                    </b>
-                    <p className="text-xs text-[#698072] mt-1 tabular-nums">
-                      {calls.length} {copy.numbersAnnouncedSuffix}
-                    </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative w-36 sm:w-44">
+                    <Search
+                      size={14}
+                      className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500"
+                    />
+                    <input
+                      type="search"
+                      value={homeCardSearch}
+                      onChange={(e) => setHomeCardSearch(e.target.value)}
+                      placeholder={lang === 'am' ? 'ካርድ ፈልግ...' : 'Search card...'}
+                      aria-label="Search card number 1 to 600"
+                      className="w-full pl-8 pr-2.5 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                    />
+                  </div>
+
+                  {selectedCardIds.length < 4 && (
                     <button
                       type="button"
-                      onClick={() => setScreen('game')}
-                      className="mt-2 text-xs font-extrabold text-[#087e50] underline"
+                      disabled={isCardsLocked}
+                      onClick={() =>
+                        selectedCardIds.length === 0
+                          ? handleQuickPickCards(1)
+                          : handleAddQuickCard()
+                      }
+                      className="px-3 py-2 rounded-xl bg-cyan-500/15 border border-cyan-400/30 text-cyan-300 text-xs font-extrabold flex items-center gap-1.5 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] whitespace-nowrap"
                     >
-                      {lang === 'am' ? 'ሙሉ የጨዋታ ስክሪን ክፈት →' : 'Open Full Arena →'}
+                      <Shuffle size={14} />
+                      {selectedCardIds.length === 0
+                        ? lang === 'am'
+                          ? 'ፈጣን ምርጫ'
+                          : 'Quick Pick'
+                        : lang === 'am'
+                        ? '+ ካርድ ጨምር'
+                        : '+ Add Card'}
                     </button>
-                  </div>
+                  )}
                 </div>
+              </div>
 
-                <small className="eyebrow">{copy.recentCallsLabel}</small>
-                <div className="flex flex-wrap gap-1.5 my-3">
-                  {calls
-                    .slice()
-                    .reverse()
-                    .slice(0, 8)
-                    .map((n, i) => (
-                      <b
-                        key={n}
-                        className={`w-8 h-8 rounded-full grid place-items-center font-['Outfit'] text-xs font-bold tabular-nums ${
-                          i === 0
-                            ? 'bg-[#0c965b] text-white'
-                            : 'bg-[#edf4ef] text-[#5b7664]'
-                        }`}
-                      >
-                        {n}
+              {isCardsLocked && (
+                <div className="rounded-xl bg-rose-500/10 border border-rose-400/30 px-3 py-2.5 text-xs text-rose-200 flex items-center justify-between gap-2">
+                  <span>
+                    {activeRoom.status === 'completed'
+                      ? lang === 'am'
+                        ? 'ዙሩ ተጠናቋል — አዲስ የ60 ሰከንድ ዙር በጥቂት ሰከንዶች ውስጥ ይጀምራል።'
+                        : 'Round completed — a fresh 60s card window starts automatically in seconds.'
+                      : lang === 'am'
+                      ? 'ጨዋታው ቀጥታ እየተካሄደ ነው — ዙሩ እስኪያልቅ ካርዶች ተቆልፈዋል።'
+                      : 'Live round in progress — cards are locked until this round finishes.'}
+                  </span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-12 gap-1.5 max-h-[360px] overflow-y-auto p-0.5">
+                {(homeCardSearch.trim()
+                  ? ALL_CARD_NUMBERS.filter((id) => String(id).includes(homeCardSearch.trim()))
+                  : ALL_CARD_NUMBERS
+                ).map((cardNum) => {
+                  const isSelected = selectedCardIds.includes(cardNum);
+                  const isTaken = activeRoom.takenCardIds.includes(cardNum);
+                  return (
+                    <button
+                      key={cardNum}
+                      type="button"
+                      disabled={isTaken || isCardsLocked}
+                      onClick={() => handleToggleCardId(cardNum)}
+                      aria-label={`Card ${cardNum}${isSelected ? ' selected' : isTaken ? ' taken' : isCardsLocked ? ' locked' : ''}`}
+                      className={`h-10 rounded-lg font-['Outfit'] text-xs font-bold tabular-nums transition-all flex items-center justify-center ${
+                        isSelected
+                          ? 'bg-[#22d3ee] text-[#041423] ring-2 ring-[#facc15]'
+                          : isTaken
+                            ? 'bg-slate-800/70 text-slate-600 line-through cursor-not-allowed'
+                            : isCardsLocked
+                              ? 'bg-[#14223b]/50 text-slate-500 border border-slate-800 cursor-not-allowed opacity-60'
+                              : 'bg-[#14223b] text-slate-200 border border-slate-700 hover:border-cyan-400'
+                      }`}
+                    >
+                      {cardNum}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {selectedCardIds.length > 0 && (
+                <div className="space-y-2 pt-2 border-t border-slate-800/80">
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-[#091221] border border-cyan-400/30 text-[11px]">
+                    <span className="text-slate-300">
+                      {lang === 'am' ? 'የተመረጡ ካርዶች፦' : 'Your Cards:'}{' '}
+                      <b className="text-cyan-300 font-mono">
+                        {selectedCardIds.join(', ')}
                       </b>
-                    ))}
-                </div>
-
-                <div className="controls">
-                  <button
-                    type="button"
-                    className="outline"
-                    onClick={handleResetRound}
-                  >
-                    {copy.resetDemoBtn}
-                  </button>
-                  <button
-                    type="button"
-                    className="green"
-                    onClick={handleCallNextNumber}
-                  >
-                    {copy.callNextBtn}
-                  </button>
-                </div>
-              </article>
-
-              <article className="panel">
-                <div className="panel-title">
-                  <div>
-                    <small className="eyebrow">{copy.playerCardEyebrow}</small>
-                    <h3>{copy.yourBingoCardTitle}</h3>
+                    </span>
+                    {!isCardsLocked && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCardIds([])}
+                        className="text-rose-400 font-bold hover:underline"
+                      >
+                        {lang === 'am' ? 'አጽዳ' : 'Clear'}
+                      </button>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setScreen('cards')}
-                    className="count hover:bg-[#d8f3e3]"
-                  >
-                    {selectedCardIds.length}/4 {lang === 'am' ? 'ካርድ (ቀይር)' : 'cards (Edit)'}
-                  </button>
-                </div>
 
-                <div className="my-3 max-w-[380px] mx-auto">
-                  <BingoCardView
-                    card={playerCards[0]}
-                    calledNumbers={calls}
-                    markedNumbers={marked}
-                    onToggleCell={handleToggleCellMark}
-                    lang={lang}
-                  />
-                </div>
-
-                <div className="text-center text-[11px] text-[#6d8375] my-2">
-                  {copy.legendCalled}　 {copy.legendMarked}　 {copy.legendFree}
-                </div>
-
-                <div className="controls">
-                  <button
-                    type="button"
-                    className="outline"
-                    onClick={handleAddQuickCard}
+                  {/* Small selected 5x5 cards displayed below the 1–600 grid */}
+                  <div
+                    className={`grid gap-1.5 ${
+                      playerCards.length === 1
+                        ? 'grid-cols-1 max-w-[140px]'
+                        : 'grid-cols-2 sm:grid-cols-4 max-w-[560px]'
+                    }`}
                   >
-                    {copy.addCardBtn}
-                  </button>
-                  <button
-                    type="button"
-                    className="green"
-                    onClick={handleClaimBingo}
-                  >
-                    {copy.claimBingoBtn}
-                  </button>
+                    {playerCards.map((card) => (
+                      <BingoCardView
+                        key={card.id}
+                        card={card}
+                        calledNumbers={calls}
+                        markedNumbers={marked}
+                        compact
+                        onRemoveCard={
+                          !isCardsLocked ? (cid) => void handleToggleCardId(cid) : undefined
+                        }
+                        lang={lang}
+                      />
+                    ))}
+                  </div>
                 </div>
-                <p className="text-center text-[11px] text-[#7a8f82] mt-2 mb-0">
-                  {copy.cardHint}
-                </p>
-              </article>
+              )}
             </section>
 
-            <section className="extras">
-              <article
+            {/* 3. Quiet Utility Links */}
+            <div className="flex flex-wrap items-center justify-between gap-3 px-1 text-xs text-slate-400">
+              <button
+                type="button"
                 onClick={() => setScreen('referral')}
-                className="cursor-pointer hover:border-[#12a566] transition-colors"
+                className="flex items-center gap-1.5 hover:text-cyan-300 bg-transparent border-0 p-1 min-h-[40px]"
               >
-                <Gift size={26} />
-                <div>
-                  <small>{copy.inviteEyebrow}</small>
-                  <b>{copy.inviteTitle}</b>
-                  <p>{copy.inviteDesc}</p>
-                </div>
-              </article>
-              <article
+                <Gift size={14} className="text-cyan-400" />
+                <span>{copy.inviteTitle}</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setScreen('support')}
-                className="cursor-pointer hover:border-[#12a566] transition-colors"
+                className="flex items-center gap-1.5 hover:text-cyan-300 bg-transparent border-0 p-1 min-h-[40px]"
               >
-                <Headphones size={26} />
-                <div>
-                  <small>{copy.supportEyebrow}</small>
-                  <b>{copy.supportTitle}</b>
-                  <p>{copy.supportDesc}</p>
-                </div>
-              </article>
-            </section>
-          </>
+                <Headphones size={14} className="text-cyan-400" />
+                <span>{copy.supportTitle}</span>
+              </button>
+            </div>
+          </div>
         )}
 
         {(screen === 'lobby' || screen === 'cards') && (
           <LobbyAndCardsScreen
             mode={screen}
             lang={lang}
-            rooms={rooms}
             activeRoom={activeRoom}
-            onSelectRoom={(id) => {
-              setActiveRoomId(id);
-              const rm = rooms.find((r) => r.id === id);
-              if (rm) setCardPrice(rm.cardPrice);
-            }}
+            roomPlayers={roomPlayers}
             selectedCardIds={selectedCardIds}
             onToggleCardId={handleToggleCardId}
             onQuickPickCards={handleQuickPickCards}
             onClearSelectedCards={() => setSelectedCardIds([])}
             countdown={countdown}
-            onResetCountdown={() => setCountdown(DEFAULT_GAME_RULES.lobbyCountdownSeconds)}
             cardPrice={cardPrice}
-            onChangeCardPrice={setCardPrice}
             demoBalance={demoBalance}
             onEnterLiveGame={handleEnterLiveGame}
             onNavigate={setScreen}
@@ -1512,7 +1850,10 @@ export default function App() {
           <LiveGameScreen
             lang={lang}
             activeRoom={activeRoom}
+            countdown={countdown}
             cardPrice={cardPrice}
+            selectedCardIds={selectedCardIds}
+            onToggleCardId={handleToggleCardId}
             playerCards={playerCards}
             calledNumbers={calls}
             markedNumbers={marked}
@@ -1522,13 +1863,17 @@ export default function App() {
             onToggleAutoCaller={() => setAutoCallerActive((v) => !v)}
             callerIntervalSec={callerIntervalSec}
             onChangeCallerInterval={setCallerIntervalSec}
-            onCallNextBall={handleCallNextNumber}
-            onCallHelpfulBall={handleCallHelpfulNumber}
             onResetRound={handleResetRound}
             onToggleMarkCell={handleToggleCellMark}
             onAddQuickCard={handleAddQuickCard}
-            onRemoveCard={(cid) => handleToggleCardId(cid)}
+            onRemoveCard={(cid) => void handleToggleCardId(cid)}
             onClaimBingo={handleClaimBingo}
+            voiceEnabled={voiceEnabled}
+            onToggleVoice={() => {
+              if (voiceEnabled) soundFX.stopVoice();
+              setVoiceEnabled((v) => !v);
+            }}
+            onSpeakBall={(ballNum) => void soundFX.speakBingoBall(ballNum, lang, true)}
             reducedMotion={reducedMotion}
             onNavigate={setScreen}
           />
@@ -1539,21 +1884,28 @@ export default function App() {
             mode={screen}
             lang={lang}
             demoBalance={demoBalance}
+            winningsBalance={winningsBalance}
+            referralCode={referralCode}
+            referredByCode={referredByCode}
             transactions={transactions}
-            onSimulateDeposit={handleSimulateDeposit}
-            onSimulateWithdraw={handleSimulateWithdraw}
+            depositRequests={depositRequests}
+            payoutRequests={payoutRequests}
+            onApplyPromoCode={handleApplyPromoCode}
+            onSubmitDepositRequest={handleSubmitDepositRequest}
+            onSubmitWithdrawRequest={handleSubmitWithdrawRequest}
             onNavigate={setScreen}
           />
         )}
 
-        {(screen === 'referral' ||
+        {(screen === 'leaderboard' ||
+          screen === 'referral' ||
           screen === 'profile' ||
           screen === 'support' ||
           screen === 'terms') && (
           <CommunityScreens
             mode={screen}
             lang={lang}
-            onChangeLang={setLang}
+            onChangeLang={handleChangeLanguage}
             user={user}
             firebaseUserEmail={fbUser?.email || null}
             firebaseUid={fbUser?.uid || null}
@@ -1567,8 +1919,11 @@ export default function App() {
             telegramBackendStatus={telegramBackendStatus}
             onValidateTelegramInitData={handleValidateTelegramInitData}
             demoBalance={demoBalance}
+            winningsBalance={winningsBalance}
+            referralCode={referralCode}
             referrals={referrals}
-            onSimulateFriendJoin={handleSimulateFriendJoin}
+            leaderboard={leaderboard}
+            onApplyPromoCode={handleApplyPromoCode}
             gameHistory={gameHistory}
             tickets={tickets}
             onSubmitSupportTicket={handleSubmitSupportTicket}
@@ -1587,10 +1942,13 @@ export default function App() {
       <WinnerModal
         open={winnerModalOpen}
         winResult={activeWinResult}
-        winningCard={winningCardObj}
+        winningCard={
+          winningCardOverride ? generateDeterministicCard(winningCardOverride) : winningCardObj
+        }
         calledNumbers={calls}
         markedNumbers={marked}
-        prizeDemoEtb={Math.max(50, effectiveCardIds.length * cardPrice * 4)}
+        prizeDemoEtb={lastVerifiedPrizeEtb}
+        winners={roundWinners}
         lang={lang}
         onPlayAgain={handleResetRound}
         onClose={() => setWinnerModalOpen(false)}
@@ -1606,101 +1964,76 @@ export default function App() {
             exit={{ opacity: 0 }}
           >
             <span>{toast}</span>
-            <button
-              type="button"
-              onClick={() => setToast('')}
-              aria-label="Dismiss notification"
-            >
+            <button type="button" onClick={() => setToast('')} aria-label="Dismiss notification">
               <X size={14} />
             </button>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Mobile-First Bottom Navigation Bar */}
+      {/* Compact 4-Tab Player Bottom Navigation Bar */}
       <nav className="bottom-nav" aria-label="Primary Bottom Navigation">
         <button
           type="button"
-          className={screen === 'home' ? 'selected' : ''}
-          onClick={() => setScreen('home')}
-        >
-          <Home />
-          {copy.navHome}
-        </button>
-        <button
-          type="button"
-          className={screen === 'lobby' ? 'selected' : ''}
-          onClick={() => setScreen('lobby')}
-        >
-          <Clock />
-          {copy.navLobby}
-        </button>
-        <button
-          type="button"
-          className={screen === 'cards' ? 'selected' : ''}
-          onClick={() => setScreen('cards')}
-        >
-          <Grid />
-          {copy.navCards}
-        </button>
-        <button
-          type="button"
-          className={screen === 'game' ? 'selected' : ''}
-          onClick={() => setScreen('game')}
-        >
-          <Sparkles />
-          {copy.navGame}
-        </button>
-        <button
-          type="button"
           className={
-            screen === 'wallet' || screen === 'deposit' || screen === 'withdraw'
+            screen === 'home' || screen === 'lobby' || screen === 'cards' || screen === 'game'
               ? 'selected'
               : ''
           }
-          onClick={() => setScreen('wallet')}
+          onClick={() => setScreen('home')}
         >
-          <Wallet />
-          {copy.navWallet}
+          <Home size={16} />
+          <span>{copy.navHome}</span>
         </button>
         <button
           type="button"
-          className={screen === 'referral' ? 'selected' : ''}
-          onClick={() => setScreen('referral')}
+          className={screen === 'leaderboard' ? 'selected' : ''}
+          onClick={() => setScreen('leaderboard')}
         >
-          <Users />
-          {copy.navFriends}
+          <Trophy size={16} />
+          <span>{copy.navRank}</span>
         </button>
         <button
           type="button"
           className={
-            screen === 'profile' || screen === 'support' || screen === 'terms'
+            screen === 'profile' ||
+            screen === 'referral' ||
+            screen === 'support' ||
+            screen === 'terms'
               ? 'selected'
               : ''
           }
           onClick={() => setScreen('profile')}
         >
-          <FileText />
-          {copy.navProfile}
+          <UserIcon size={16} />
+          <span>{copy.navProfile}</span>
+        </button>
+        <button
+          type="button"
+          className={
+            screen === 'wallet' || screen === 'deposit' || screen === 'withdraw' ? 'selected' : ''
+          }
+          onClick={() => setScreen('wallet')}
+        >
+          <Wallet size={16} />
+          <span>{copy.navWallet}</span>
         </button>
       </nav>
 
       <footer className="adey-footer">
         <div className="flex flex-wrap items-center justify-center gap-4">
-          <span>
-            © 2026 ADEYBINGO · FIREBASE PROJECT: gen-lang-client-0559010770 · DEMO SANDBOX
-          </span>
+          <span>© 2026 ADEYBINGO · FIREBASE PROJECT: gen-lang-client-0559010770 · DEMO SANDBOX</span>
           <button
             type="button"
             onClick={() => setScreen('terms')}
-            className="underline hover:text-[#087e50] bg-transparent border-0 p-0"
+            className="underline hover:text-cyan-300 bg-transparent border-0 p-0"
           >
             {lang === 'am' ? 'ህጎች እና ደንቦች' : 'Terms & Rules'}
           </button>
           <button
             type="button"
             onClick={() => setScreen('support')}
-            className="underline hover:text-[#087e50] bg-transparent border-0 p-0"
+            className="underline hover:text-cyan-300 bg-transparent border-0 p-0"
           >
             {lang === 'am' ? 'የተጫዋቾች ድጋፍ' : 'Player Support'}
           </button>

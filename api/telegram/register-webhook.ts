@@ -111,23 +111,51 @@ export function createRegisterWebhookHandler(deps: RegisterWebhookHandlerDeps = 
             commands: [
               {
                 command: 'start',
-                description: 'ቦቱን ይጀምሩ እና ስልክዎን ያረጋግጡ (Start ADEYBINGO & verify phone)',
+                description: 'ቦቱን ይጀምሩ እና ዋና ሜኑን ይክፈቱ (Start ADEYBINGO)',
               },
               {
-                command: 'help',
-                description: 'የጨዋታ መመሪያ እና እገዛ (Game guide & commands)',
+                command: 'wallet',
+                description: 'የእኔ ቦርሳ እና ቀሪ ሂሳብ (My Wallet)',
+              },
+              {
+                command: 'deposit',
+                description: 'ገንዘብ ያስገቡ (Demo Deposit)',
+              },
+              {
+                command: 'withdraw',
+                description: 'ገንዘብ ያውጡ (Demo Withdraw)',
+              },
+              {
+                command: 'invite',
+                description: 'ጓደኞችን ይጋብዙ (Invite Friends)',
+              },
+              {
+                command: 'leaderboard',
+                description: 'የደረጃ ሰንጠረዥ (Leaderboard)',
+              },
+              {
+                command: 'history',
+                description: 'የጨዋታ ታሪክ (Game History)',
+              },
+              {
+                command: 'profile',
+                description: 'የእኔ መገለጫ (My Profile)',
               },
               {
                 command: 'language',
-                description: 'ቋንቋ ቀይር / Switch language (አማርኛ / English)',
+                description: 'ቋንቋ ይምረጡ / Select Language (አማርኛ / English)',
               },
               {
                 command: 'support',
-                description: 'የደንበኞች ድጋፍ (Contact player support)',
+                description: 'እገዛ እና የደንበኞች ድጋፍ (Support)',
+              },
+              {
+                command: 'help',
+                description: 'የጨዋታ መመሪያ (Help & Guide)',
               },
               {
                 command: 'terms',
-                description: 'ህጎች እና የግላዊነት ጥበቃ (Terms, rules & privacy)',
+                description: 'ህጎች እና የግላዊነት ጥበቃ (Terms & Privacy)',
               },
             ],
           }),
@@ -143,7 +171,7 @@ export function createRegisterWebhookHandler(deps: RegisterWebhookHandlerDeps = 
           body: JSON.stringify({
             menu_button: {
               type: 'web_app',
-              text: '🎮 ጨዋታ ጀምር',
+              text: '🎱 ቢንጎ ይጫወቱ',
               web_app: { url: requestedBaseUrl },
             },
           }),

@@ -51,12 +51,12 @@ function buildSignedInitData(
   params.set('query_id', queryId);
   params.set('user', JSON.stringify(userObj));
 
-  const pairs: string[] = [];
+  const entries: Array<[string, string]> = [];
   params.forEach((value, key) => {
-    pairs.push(`${key}=${value}`);
+    entries.push([key, value]);
   });
-  pairs.sort((a, b) => a.localeCompare(b));
-  const dataCheckString = pairs.join('\n');
+  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const dataCheckString = entries.map(([k, v]) => `${k}=${v}`).join('\n');
 
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
   const hash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
@@ -1038,14 +1038,42 @@ test('Milestone 4.2: PersistentTelegramBotService handles all 7 inline callbacks
     assert.equal(res.ok, true, `Callback ${cb} should succeed`);
     assert.equal(
       res.securityCode,
-      cb === 'cb:language' ? 'language_updated' : `callback_${cb.replace('cb:', '')}`
+      `callback_${cb.replace('cb:', '')}`
     );
+    if (cb === 'cb:language') {
+      assert.match(res.text, /ቋንቋ ይምረጡ \/ Select Language/);
+    }
     if (cb === 'cb:game_history') {
       assert.match(res.text, /#11/);
       assert.doesNotMatch(res.text, /#G-4821/); // No fake hardcoded history!
     }
     seq += 1;
   }
+
+  // Selecting lang:en updates language in persistent Firestore store and preserves it across /start
+  const langEnRes = await bot.handleIncomingUpdate({
+    updateId: seq++,
+    callbackQueryId: 'cbq_lang_en',
+    senderTelegramId: 778899,
+    chatId: 778899,
+    chatType: 'private',
+    callbackData: 'lang:en',
+    nowUnixSeconds: nowUnix + 40,
+  });
+  assert.equal(langEnRes.ok, true);
+  assert.equal(langEnRes.securityCode, 'language_updated');
+  assert.equal(langEnRes.language, 'en');
+  assert.equal(store.get('users/tg_778899')?.language, 'en');
+
+  const restartEnRes = await bot.handleIncomingUpdate({
+    updateId: seq++,
+    senderTelegramId: 778899,
+    chatId: 778899,
+    chatType: 'private',
+    text: '/start',
+    nowUnixSeconds: nowUnix + 45,
+  });
+  assert.equal(restartEnRes.language, 'en');
 
   // Duplicate callbackQueryId is rejected with duplicate_callback_query
   const dupCb = await bot.handleIncomingUpdate({
@@ -1072,4 +1100,151 @@ test('Milestone 4.2: PersistentTelegramBotService handles all 7 inline callbacks
   assert.equal(adminSlash.ok, false);
   assert.equal(adminSlash.securityCode, 'admin_command_forbidden_in_player_bot');
 });
+
+test('Milestone 5: PersistentTelegramBotService persists demo depositRequests, payoutRequests, atomic referrals, and real leaderboard rankings in Firestore', async () => {
+  const { db, store } = createInMemoryFirestoreHarness();
+  const botStore = createFirestoreTelegramStore(db);
+  const bot = new PersistentTelegramBotService(
+    botStore,
+    new PersistentReplayGuard(createFirestoreReplayAdapter(db), 3600)
+  );
+  const nowUnix = Math.floor(Date.now() / 1000);
+
+  // 1. Inviter registers first in Amharic default
+  await bot.handleIncomingUpdate({
+    updateId: 8100,
+    senderTelegramId: 112233,
+    chatId: 112233,
+    chatType: 'private',
+    firstName: 'Hanna',
+    username: 'hanna_et',
+    text: '/start',
+    nowUnixSeconds: nowUnix,
+  });
+
+  // 2. Invitee joins via /start ADEY-112233 -> atomic referral credit (+20 / +15)
+  const inviteeStart = await bot.handleIncomingUpdate({
+    updateId: 8101,
+    senderTelegramId: 445566,
+    chatId: 445566,
+    chatType: 'private',
+    firstName: 'Yonas',
+    username: 'yonas_et',
+    text: '/start ADEY-112233',
+    nowUnixSeconds: nowUnix + 1,
+  });
+  assert.equal(inviteeStart.ok, true);
+  assert.equal(inviteeStart.language, 'am');
+  assert.equal(store.get('users/tg_112233')?.demoBalanceEtb, 270);
+  assert.equal(store.get('users/tg_445566')?.demoBalanceEtb, 265);
+  assert.equal(store.get('referrals/ref_tg_445566')?.inviterUid, 'tg_112233');
+
+  // Re-sending /start ADEY-112233 does NOT duplicate credit
+  await bot.handleIncomingUpdate({
+    updateId: 8102,
+    senderTelegramId: 445566,
+    chatId: 445566,
+    chatType: 'private',
+    text: '/start ADEY-112233',
+    nowUnixSeconds: nowUnix + 2,
+  });
+  assert.equal(store.get('users/tg_112233')?.demoBalanceEtb, 270);
+  assert.equal(store.get('users/tg_445566')?.demoBalanceEtb, 265);
+
+  // Self-referral is ignored without credit
+  await bot.handleIncomingUpdate({
+    updateId: 8103,
+    senderTelegramId: 778800,
+    chatId: 778800,
+    chatType: 'private',
+    firstName: 'SelfTest',
+    text: '/start ADEY-778800',
+    nowUnixSeconds: nowUnix + 3,
+  });
+  assert.equal(store.get('users/tg_778800')?.demoBalanceEtb, 250);
+
+  // 3. Demo deposit request via bot persists in depositRequests & appears in cb:deposit_status
+  await bot.handleIncomingUpdate({
+    updateId: 8104,
+    senderTelegramId: 445566,
+    chatId: 445566,
+    chatType: 'private',
+    callbackData: 'cb:deposit_method:telebirr',
+    nowUnixSeconds: nowUnix + 4,
+  });
+  const depRes = await bot.handleIncomingUpdate({
+    updateId: 8105,
+    senderTelegramId: 445566,
+    chatId: 445566,
+    chatType: 'private',
+    callbackData: 'cb:deposit_amount:200',
+    nowUnixSeconds: nowUnix + 5,
+  });
+  assert.equal(depRes.ok, true);
+  assert.equal(depRes.securityCode, 'deposit_request_created');
+  const depStatus = await bot.handleIncomingUpdate({
+    updateId: 8106,
+    senderTelegramId: 445566,
+    chatId: 445566,
+    chatType: 'private',
+    callbackData: 'cb:deposit_status',
+    nowUnixSeconds: nowUnix + 6,
+  });
+  assert.match(depStatus.text, /200\.00 ETB/);
+
+  // 4. Demo withdrawal request checks balance & persists in payoutRequests
+  const overWdr = await bot.handleIncomingUpdate({
+    updateId: 8107,
+    senderTelegramId: 445566,
+    chatId: 445566,
+    chatType: 'private',
+    callbackData: 'cb:withdraw_amount:5000',
+    nowUnixSeconds: nowUnix + 7,
+  });
+  assert.equal(overWdr.ok, false);
+  assert.equal(overWdr.securityCode, 'insufficient_demo_balance');
+
+  const okWdr = await bot.handleIncomingUpdate({
+    updateId: 8108,
+    senderTelegramId: 445566,
+    chatId: 445566,
+    chatType: 'private',
+    callbackData: 'cb:withdraw_amount:100',
+    nowUnixSeconds: nowUnix + 8,
+  });
+  assert.equal(okWdr.ok, true);
+  assert.equal(okWdr.securityCode, 'withdraw_request_created');
+
+  const wdrStatus = await bot.handleIncomingUpdate({
+    updateId: 8109,
+    senderTelegramId: 445566,
+    chatId: 445566,
+    chatType: 'private',
+    callbackData: 'cb:withdraw_status',
+    nowUnixSeconds: nowUnix + 9,
+  });
+  assert.match(wdrStatus.text, /100\.00 ETB/);
+
+  // 5. Real Firestore leaderboard aggregates bingo_win transactions
+  store.set('transactions/tx_win_yonas_1', {
+    transactionId: 'tx_win_yonas_1',
+    userId: 'tg_445566',
+    type: 'bingo_win',
+    amountEtb: 150,
+    status: 'demo_completed',
+    createdAtMs: Date.now(),
+  });
+  const lbRes = await bot.handleIncomingUpdate({
+    updateId: 8110,
+    senderTelegramId: 445566,
+    chatId: 445566,
+    chatType: 'private',
+    callbackData: 'cb:leaderboard',
+    nowUnixSeconds: nowUnix + 10,
+  });
+  assert.equal(lbRes.ok, true);
+  assert.match(lbRes.text, /Yonas/);
+  assert.match(lbRes.text, /150/);
+});
+
 

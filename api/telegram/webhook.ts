@@ -252,7 +252,12 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ callback_query_id: callbackQueryId }),
+              body: JSON.stringify({
+                callback_query_id: callbackQueryId,
+                ...(botResponse.callbackAnswerText
+                  ? { text: botResponse.callbackAnswerText }
+                  : {}),
+              }),
             }
           );
           callbackAnswered = Boolean(cbResp.ok);
@@ -288,6 +293,9 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
       replyMarkup: botResponse.replyMarkup,
       registrationStatus: botResponse.registrationStatus,
       securityCode: botResponse.securityCode,
+      ...(botResponse.callbackAnswerText
+        ? { callbackAnswerText: botResponse.callbackAnswerText }
+        : {}),
       callbackAnswered,
       deliveredToTelegramApi,
       telegramDeliveryNote,

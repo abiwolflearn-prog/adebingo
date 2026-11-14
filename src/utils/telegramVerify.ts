@@ -1,17 +1,55 @@
 import crypto from 'node:crypto';
 
+export type TelegramValidationReason =
+  | 'missing_init_data'
+  | 'missing_bot_token'
+  | 'missing_hash'
+  | 'malformed_init_data'
+  | 'expired_auth_date'
+  | 'future_auth_date'
+  | 'signature_mismatch'
+  | 'missing_telegram_user'
+  | 'replay_detected'
+  | 'telegram_id_mismatch';
+
+export type TelegramFailureCategory =
+  | 'missing_init_data'
+  | 'missing_bot_token'
+  | 'incorrect_bot_token_or_signature'
+  | 'missing_hash'
+  | 'expired_auth_date'
+  | 'future_auth_date'
+  | 'malformed_init_data'
+  | 'frontend_request_formatting'
+  | 'backend_environment_configuration'
+  | 'replay_detected'
+  | 'telegram_id_mismatch'
+  | 'missing_telegram_user';
+
+export interface TelegramValidationDiagnostics {
+  failureCategory: TelegramFailureCategory;
+  botTokenConfigured: boolean;
+  botTokenFormatValid: boolean;
+  initDataPresent: boolean;
+  initDataLength: number;
+  looksLikeJsonInsteadOfQueryString: boolean;
+  looksLikeInitDataUnsafe: boolean;
+  hasLeadingQuestionMarkOrHashPrefix: boolean;
+  hasHash: boolean;
+  hashFormatValid: boolean;
+  hasAuthDate: boolean;
+  authDateAgeSeconds?: number;
+  maxAgeSeconds: number;
+  hasUserField: boolean;
+  fieldKeysCount: number;
+  /** Parameter key names only (never values, tokens, or PII). */
+  fieldKeys: string[];
+}
+
 export interface TelegramValidationResult {
   valid: boolean;
-  reason?:
-    | 'missing_init_data'
-    | 'missing_bot_token'
-    | 'missing_hash'
-    | 'expired_auth_date'
-    | 'future_auth_date'
-    | 'signature_mismatch'
-    | 'missing_telegram_user'
-    | 'replay_detected'
-    | 'telegram_id_mismatch';
+  reason?: TelegramValidationReason;
+  diagnostics?: TelegramValidationDiagnostics;
   telegramUser?: {
     id: number;
     first_name: string;
@@ -35,6 +73,44 @@ export interface TelegramContactVerificationResult {
     | 'invalid_phone_format';
   verifiedPhoneNumber?: string;
   telegramUserId?: number;
+}
+
+const KNOWN_PLACEHOLDER_BOT_TOKENS = new Set([
+  'MY_TELEGRAM_BOT_TOKEN',
+  'YOUR_TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_BOT_TOKEN',
+  'REPLACE_ME',
+  'ADEYBINGO_SERVER_INITDATA_HMAC_KEY_V1',
+]);
+
+/**
+ * Checks whether a Telegram Bot Token is missing, whitespace, or a known placeholder.
+ * Never logs or exposes the token value.
+ */
+export function isPlaceholderOrEmptyBotToken(token: string | undefined): boolean {
+  if (typeof token !== 'string') return true;
+  const trimmed = token.trim();
+  if (!trimmed) return true;
+  const upper = trimmed.toUpperCase();
+  if (
+    KNOWN_PLACEHOLDER_BOT_TOKENS.has(upper) ||
+    upper.startsWith('PLACEHOLDER') ||
+    upper.startsWith('YOUR_') ||
+    upper.startsWith('MY_TELEGRAM_')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Telegram Bot API tokens issued by @BotFather follow `<numeric_bot_id>:<secret>`.
+ */
+export function hasValidTelegramBotTokenFormat(token: string | undefined): boolean {
+  if (typeof token !== 'string') return false;
+  const trimmed = token.trim();
+  if (isPlaceholderOrEmptyBotToken(trimmed)) return false;
+  return /^\d+:[^\s]{8,}$/.test(trimmed);
 }
 
 /**
@@ -103,15 +179,86 @@ export interface ValidateTelegramOptions {
 }
 
 /**
+ * Inspects raw query string structure before URLSearchParams normalizes away errors.
+ */
+function inspectRawQueryStringFormatting(trimmedInitData: string): {
+  looksLikeJsonInsteadOfQueryString: boolean;
+  looksLikeInitDataUnsafe: boolean;
+  hasLeadingQuestionMarkOrHashPrefix: boolean;
+  malformedSegments: boolean;
+} {
+  const looksLikeJsonInsteadOfQueryString =
+    trimmedInitData.startsWith('{') || trimmedInitData.startsWith('[');
+  const hasLeadingQuestionMarkOrHashPrefix =
+    trimmedInitData.startsWith('?') || trimmedInitData.startsWith('#');
+  const looksLikeInitDataUnsafe =
+    looksLikeJsonInsteadOfQueryString &&
+    (trimmedInitData.includes('"user"') || trimmedInitData.includes('"auth_date"'));
+
+  if (looksLikeJsonInsteadOfQueryString || hasLeadingQuestionMarkOrHashPrefix) {
+    return {
+      looksLikeJsonInsteadOfQueryString,
+      looksLikeInitDataUnsafe,
+      hasLeadingQuestionMarkOrHashPrefix,
+      malformedSegments: true,
+    };
+  }
+
+  const segments = trimmedInitData.split('&').filter((seg) => seg.length > 0);
+  if (segments.length === 0) {
+    return {
+      looksLikeJsonInsteadOfQueryString: false,
+      looksLikeInitDataUnsafe: false,
+      hasLeadingQuestionMarkOrHashPrefix: false,
+      malformedSegments: true,
+    };
+  }
+
+  for (const seg of segments) {
+    const eqIdx = seg.indexOf('=');
+    if (eqIdx <= 0) {
+      // Missing '=' or empty key (e.g. "not_a_query_string" or "=value")
+      return {
+        looksLikeJsonInsteadOfQueryString: false,
+        looksLikeInitDataUnsafe: false,
+        hasLeadingQuestionMarkOrHashPrefix: false,
+        malformedSegments: true,
+      };
+    }
+    const rawKey = seg.slice(0, eqIdx);
+    const rawVal = seg.slice(eqIdx + 1);
+    try {
+      decodeURIComponent(rawKey.replace(/\+/g, '%20'));
+      decodeURIComponent(rawVal.replace(/\+/g, '%20'));
+    } catch {
+      return {
+        looksLikeJsonInsteadOfQueryString: false,
+        looksLikeInitDataUnsafe: false,
+        hasLeadingQuestionMarkOrHashPrefix: false,
+        malformedSegments: true,
+      };
+    }
+  }
+
+  return {
+    looksLikeJsonInsteadOfQueryString: false,
+    looksLikeInitDataUnsafe: false,
+    hasLeadingQuestionMarkOrHashPrefix: false,
+    malformedSegments: false,
+  };
+}
+
+/**
  * Validates Telegram Mini App initData using the official HMAC-SHA256 algorithm:
- * 1. Parse URLSearchParams from raw initData query string.
- * 2. Extract `hash` and sort all remaining key=value pairs alphabetically by key, joined with `\n`.
- * 3. Verify `auth_date` is neither expired nor forged in the future (>60s skew).
- * 4. Compute secretKey = HMAC_SHA256(key="WebAppData", data=botToken).
- * 5. Compute expectedHash = HMAC_SHA256(key=secretKey, data=dataCheckString).hex().
- * 6. Compare expectedHash with `hash` using timingSafeEqual.
- * 7. Require a valid `user` JSON payload with a positive integer `id`.
- * 8. Enforce optional expectedTelegramUserId ownership binding and replay protection.
+ * 1. Parse original raw initData query string cleanly without altering field encoding.
+ * 2. Extract `hash` and exclude it from data_check_string.
+ * 3. Sort remaining entries alphabetically by **key** using ASCII/UTF-8 code-unit order and join with `\n`.
+ * 4. Derive secretKey = HMAC_SHA256(key="WebAppData", message=TELEGRAM_BOT_TOKEN) as raw 32-byte digest.
+ * 5. Compute expectedHash = HMAC_SHA256(key=secretKey, message=dataCheckString).hex().
+ * 6. Compare expectedHash with `hash` using constant-time crypto.timingSafeEqual.
+ * 7. Verify `auth_date` is neither expired nor forged in the future (>60s skew).
+ * 8. Require a valid `user` JSON payload with a positive integer `id`.
+ * 9. Enforce optional expectedTelegramUserId ownership binding and replay protection.
  */
 export function validateTelegramWebAppInitData(
   rawInitData: string,
@@ -131,40 +278,137 @@ export function validateTelegramWebAppInitData(
   const nowUnixSeconds = opts.nowUnixSeconds ?? Math.floor(Date.now() / 1000);
   const maxFutureSkewSeconds = opts.maxFutureSkewSeconds ?? 60;
 
-  if (!rawInitData || typeof rawInitData !== 'string' || rawInitData.trim() === '') {
-    return { valid: false, reason: 'missing_init_data' };
-  }
-  if (!botToken || typeof botToken !== 'string' || botToken.trim() === '') {
-    return { valid: false, reason: 'missing_bot_token' };
+  const trimmedBotToken = typeof botToken === 'string' ? botToken.trim() : '';
+  const botTokenConfigured = !isPlaceholderOrEmptyBotToken(trimmedBotToken);
+  const botTokenFormatValid = hasValidTelegramBotTokenFormat(trimmedBotToken);
+
+  const trimmedInitData = typeof rawInitData === 'string' ? rawInitData.trim() : '';
+  const initDataPresent = trimmedInitData.length > 0;
+
+  if (!initDataPresent) {
+    return {
+      valid: false,
+      reason: 'missing_init_data',
+      diagnostics: {
+        failureCategory: 'missing_init_data',
+        botTokenConfigured,
+        botTokenFormatValid,
+        initDataPresent: false,
+        initDataLength: 0,
+        looksLikeJsonInsteadOfQueryString: false,
+        looksLikeInitDataUnsafe: false,
+        hasLeadingQuestionMarkOrHashPrefix: false,
+        hasHash: false,
+        hashFormatValid: false,
+        hasAuthDate: false,
+        maxAgeSeconds,
+        hasUserField: false,
+        fieldKeysCount: 0,
+        fieldKeys: [],
+      },
+    };
   }
 
-  const params = new URLSearchParams(rawInitData);
+  const formatCheck = inspectRawQueryStringFormatting(trimmedInitData);
+  const params = formatCheck.malformedSegments
+    ? new URLSearchParams()
+    : new URLSearchParams(trimmedInitData);
+
+  const fieldKeys = Array.from(new Set(Array.from(params.keys()))).sort((a, b) =>
+    a < b ? -1 : a > b ? 1 : 0
+  );
   const receivedHash = params.get('hash');
-  if (!receivedHash || !/^[0-9a-f]{64}$/i.test(receivedHash)) {
-    return { valid: false, reason: 'missing_hash' };
+  const hasHash = Boolean(receivedHash && receivedHash.trim().length > 0);
+  const hashFormatValid = Boolean(receivedHash && /^[0-9a-f]{64}$/i.test(receivedHash));
+  const authDateParam = params.get('auth_date');
+  const authDateRaw = authDateParam !== null ? Number(authDateParam) : Number.NaN;
+  const hasAuthDate = authDateParam !== null && authDateParam.trim() !== '';
+  const authDateAgeSeconds =
+    Number.isInteger(authDateRaw) && authDateRaw > 0
+      ? nowUnixSeconds - authDateRaw
+      : undefined;
+  const hasUserField = Boolean(params.get('user'));
+
+  const buildDiagnostics = (
+    failureCategory: TelegramFailureCategory
+  ): TelegramValidationDiagnostics => ({
+    failureCategory,
+    botTokenConfigured,
+    botTokenFormatValid,
+    initDataPresent,
+    initDataLength: trimmedInitData.length,
+    looksLikeJsonInsteadOfQueryString: formatCheck.looksLikeJsonInsteadOfQueryString,
+    looksLikeInitDataUnsafe: formatCheck.looksLikeInitDataUnsafe,
+    hasLeadingQuestionMarkOrHashPrefix: formatCheck.hasLeadingQuestionMarkOrHashPrefix,
+    hasHash,
+    hashFormatValid,
+    hasAuthDate,
+    ...(authDateAgeSeconds !== undefined ? { authDateAgeSeconds } : {}),
+    maxAgeSeconds,
+    hasUserField,
+    fieldKeysCount: fieldKeys.length,
+    fieldKeys,
+  });
+
+  if (!botTokenConfigured) {
+    return {
+      valid: false,
+      reason: 'missing_bot_token',
+      diagnostics: buildDiagnostics('backend_environment_configuration'),
+    };
   }
 
-  const authDateRaw = Number(params.get('auth_date') || '0');
+  if (formatCheck.malformedSegments) {
+    return {
+      valid: false,
+      reason: 'malformed_init_data',
+      diagnostics: buildDiagnostics(
+        formatCheck.looksLikeJsonInsteadOfQueryString ||
+          formatCheck.hasLeadingQuestionMarkOrHashPrefix
+          ? 'frontend_request_formatting'
+          : 'malformed_init_data'
+      ),
+    };
+  }
+
+  if (!hasHash) {
+    return {
+      valid: false,
+      reason: 'missing_hash',
+      diagnostics: buildDiagnostics('missing_hash'),
+    };
+  }
+
+  if (!hashFormatValid || !receivedHash) {
+    return {
+      valid: false,
+      reason: 'malformed_init_data',
+      diagnostics: buildDiagnostics('malformed_init_data'),
+    };
+  }
+
   if (!Number.isInteger(authDateRaw) || authDateRaw <= 0) {
-    return { valid: false, reason: 'expired_auth_date' };
-  }
-  if (authDateRaw > nowUnixSeconds + maxFutureSkewSeconds) {
-    return { valid: false, reason: 'future_auth_date' };
-  }
-  if (maxAgeSeconds > 0 && nowUnixSeconds - authDateRaw > maxAgeSeconds) {
-    return { valid: false, reason: 'expired_auth_date' };
+    return {
+      valid: false,
+      reason: 'malformed_init_data',
+      diagnostics: buildDiagnostics('malformed_init_data'),
+    };
   }
 
-  const pairs: string[] = [];
+  // Sort strictly alphabetically by parameter KEY (ASCII/UTF-8 code-unit order), never by "key=value" with localeCompare.
+  const entries: Array<[string, string]> = [];
   params.forEach((value, key) => {
     if (key !== 'hash') {
-      pairs.push(`${key}=${value}`);
+      entries.push([key, value]);
     }
   });
-  pairs.sort((a, b) => a.localeCompare(b));
-  const dataCheckString = pairs.join('\n');
+  entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const dataCheckString = entries.map(([k, v]) => `${k}=${v}`).join('\n');
 
-  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+  // Official Telegram algorithm:
+  // secret_key = HMAC-SHA256(key="WebAppData", message=bot_token) -> raw binary Buffer (never hex)
+  // hash = HMAC-SHA256(key=secret_key, message=data_check_string).hex()
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(trimmedBotToken).digest();
   const computedHash = crypto
     .createHmac('sha256', secretKey)
     .update(dataCheckString)
@@ -173,7 +417,30 @@ export function validateTelegramWebAppInitData(
   const aBuf = Buffer.from(computedHash, 'hex');
   const bBuf = Buffer.from(receivedHash.toLowerCase(), 'hex');
   if (aBuf.length !== bBuf.length || !crypto.timingSafeEqual(aBuf, bBuf)) {
-    return { valid: false, reason: 'signature_mismatch' };
+    return {
+      valid: false,
+      reason: 'signature_mismatch',
+      diagnostics: buildDiagnostics(
+        botTokenFormatValid
+          ? 'incorrect_bot_token_or_signature'
+          : 'backend_environment_configuration'
+      ),
+    };
+  }
+
+  if (authDateRaw > nowUnixSeconds + maxFutureSkewSeconds) {
+    return {
+      valid: false,
+      reason: 'future_auth_date',
+      diagnostics: buildDiagnostics('future_auth_date'),
+    };
+  }
+  if (maxAgeSeconds > 0 && nowUnixSeconds - authDateRaw > maxAgeSeconds) {
+    return {
+      valid: false,
+      reason: 'expired_auth_date',
+      diagnostics: buildDiagnostics('expired_auth_date'),
+    };
   }
 
   let parsedUser: TelegramValidationResult['telegramUser'];
@@ -182,7 +449,11 @@ export function validateTelegramWebAppInitData(
     try {
       parsedUser = JSON.parse(userJson);
     } catch {
-      return { valid: false, reason: 'missing_telegram_user' };
+      return {
+        valid: false,
+        reason: 'malformed_init_data',
+        diagnostics: buildDiagnostics('malformed_init_data'),
+      };
     }
   }
 
@@ -192,14 +463,22 @@ export function validateTelegramWebAppInitData(
     !Number.isInteger(parsedUser.id) ||
     parsedUser.id <= 0
   ) {
-    return { valid: false, reason: 'missing_telegram_user' };
+    return {
+      valid: false,
+      reason: 'missing_telegram_user',
+      diagnostics: buildDiagnostics('missing_telegram_user'),
+    };
   }
 
   if (
     opts.expectedTelegramUserId !== undefined &&
     parsedUser.id !== opts.expectedTelegramUserId
   ) {
-    return { valid: false, reason: 'telegram_id_mismatch' };
+    return {
+      valid: false,
+      reason: 'telegram_id_mismatch',
+      diagnostics: buildDiagnostics('telegram_id_mismatch'),
+    };
   }
 
   const queryId = params.get('query_id') || undefined;
@@ -213,7 +492,11 @@ export function validateTelegramWebAppInitData(
       Math.max(60, maxAgeSeconds)
     );
     if (!isFresh) {
-      return { valid: false, reason: 'replay_detected' };
+      return {
+        valid: false,
+        reason: 'replay_detected',
+        diagnostics: buildDiagnostics('replay_detected'),
+      };
     }
   }
 

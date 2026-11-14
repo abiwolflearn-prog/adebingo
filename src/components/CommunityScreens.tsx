@@ -3,7 +3,6 @@ import {
   Gift,
   Copy,
   Check,
-  UserPlus,
   User,
   History,
   Headphones,
@@ -17,19 +16,26 @@ import {
   LogOut,
   Database,
   Lock,
+  Trophy,
+  TicketPercent,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import {
   GameHistoryItem,
   Language,
+  LeaderboardEntry,
   ReferralRecord,
   ScreenId,
   SupportTicket,
 } from '../types/bingo';
+import { t } from '../utils/i18n';
 import { TelegramUserProfile } from '../utils/telegram';
 import { TelegramBotConsole } from './TelegramBotConsole';
 
 interface CommunityScreensProps {
-  mode: 'referral' | 'profile' | 'support' | 'terms';
+  mode: 'leaderboard' | 'referral' | 'profile' | 'support' | 'terms';
   lang: Language;
   onChangeLang: (lang: Language) => void;
   user: TelegramUserProfile;
@@ -45,8 +51,11 @@ interface CommunityScreensProps {
   telegramBackendStatus: string;
   onValidateTelegramInitData: () => Promise<void>;
   demoBalance: number;
+  winningsBalance: number;
+  referralCode?: string;
   referrals: ReferralRecord[];
-  onSimulateFriendJoin: (friendName: string) => void;
+  leaderboard: LeaderboardEntry[];
+  onApplyPromoCode?: (code: string) => Promise<{ ok: boolean; message: string }>;
   gameHistory: GameHistoryItem[];
   tickets: SupportTicket[];
   onSubmitSupportTicket: (category: string, subject: string, message: string) => void;
@@ -97,8 +106,11 @@ export function CommunityScreens({
   telegramBackendStatus,
   onValidateTelegramInitData,
   demoBalance,
+  winningsBalance,
+  referralCode,
   referrals,
-  onSimulateFriendJoin,
+  leaderboard,
+  onApplyPromoCode,
   gameHistory,
   tickets,
   onSubmitSupportTicket,
@@ -110,9 +122,12 @@ export function CommunityScreens({
   onToggleReducedMotion,
   onNavigate,
 }: CommunityScreensProps) {
+  const copy = t(lang);
   const [copied, setCopied] = useState(false);
   const [copiedTelegramId, setCopiedTelegramId] = useState(false);
-  const [newFriendName, setNewFriendName] = useState('');
+  const [promoCodeInput, setPromoCodeInput] = useState('');
+  const [promoFeedback, setPromoFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [promoBusy, setPromoBusy] = useState(false);
 
   const [phoneInput, setPhoneInput] = useState(phoneNumber || '+251911223344');
   const [phoneMethod, setPhoneMethod] = useState<'telegram_contact' | 'sms_otp_demo'>(
@@ -125,8 +140,10 @@ export function CommunityScreens({
   const [ticketSubject, setTicketSubject] = useState('');
   const [ticketMessage, setTicketMessage] = useState('');
   const [ticketError, setTicketError] = useState('');
+  const [showAdvancedBot, setShowAdvancedBot] = useState(false);
 
-  const inviteLink = `https://t.me/AdeyBingoBot?start=ADEY-${user.id}`;
+  const effectiveRefCode = referralCode || `ADEY-${user.id}`;
+  const inviteLink = `https://t.me/AdeyBingoBot?start=${effectiveRefCode}`;
 
   const copyTextSafely = async (value: string) => {
     try {
@@ -162,6 +179,22 @@ export function CommunityScreens({
     void copyTextSafely(String(serverVerifiedTelegramId));
     setCopiedTelegramId(true);
     setTimeout(() => setCopiedTelegramId(false), 2000);
+  };
+
+  const handleApplyReferralSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onApplyPromoCode) return;
+    const trimmed = promoCodeInput.trim();
+    if (!trimmed) return;
+    setPromoBusy(true);
+    setPromoFeedback(null);
+    try {
+      const res = await onApplyPromoCode(trimmed);
+      setPromoFeedback({ ok: res.ok, text: res.message });
+      if (res.ok) setPromoCodeInput('');
+    } finally {
+      setPromoBusy(false);
+    }
   };
 
   const handlePhoneSubmit = async (e: React.FormEvent) => {
@@ -203,15 +236,16 @@ export function CommunityScreens({
   };
 
   return (
-    <div className="space-y-5">
-      {/* Sub-navigation bar across Referral, Profile, Support, and Terms */}
-      <div className="flex flex-wrap items-center gap-1.5 bg-white border border-[#e3ede6] rounded-2xl p-2">
+    <div className="space-y-4">
+      {/* Sub-navigation bar across Leaderboard, Profile, Referral, Support, and Terms */}
+      <div className="flex flex-wrap items-center gap-1.5 bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-2">
         {(
           [
-            { id: 'referral', icon: Gift, am: 'ጓደኛ ይጋብዙ (Referral)', en: 'Referral System' },
-            { id: 'profile', icon: User, am: 'መገለጫ እና ደህንነት (Profile)', en: 'Profile & Security' },
-            { id: 'support', icon: Headphones, am: 'ድጋፍ (Support)', en: 'Help & Support' },
-            { id: 'terms', icon: FileText, am: 'ህጎች እና ደንቦች (Terms)', en: 'Terms & Rules' },
+            { id: 'leaderboard', icon: Trophy, am: 'የደረጃ ሰንጠረዥ', en: 'Leaderboard' },
+            { id: 'profile', icon: User, am: 'መገለጫ እና ደህንነት', en: 'Profile & Security' },
+            { id: 'referral', icon: Gift, am: 'ጓደኛ ይጋብዙ', en: 'Referrals' },
+            { id: 'support', icon: Headphones, am: 'እገዛ', en: 'Support' },
+            { id: 'terms', icon: FileText, am: 'ደንቦች', en: 'Terms' },
           ] as const
         ).map((tab) => {
           const Icon = tab.icon;
@@ -221,10 +255,10 @@ export function CommunityScreens({
               key={tab.id}
               type="button"
               onClick={() => onNavigate(tab.id)}
-              className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
+              className={`px-3 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
                 active
-                  ? 'bg-[#087e50] text-white'
-                  : 'text-[#3d5f4c] hover:bg-[#eff7f2]'
+                  ? 'bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421]'
+                  : 'text-slate-300 hover:bg-[#14223b]'
               }`}
             >
               <Icon size={14} />
@@ -234,36 +268,169 @@ export function CommunityScreens({
         })}
       </div>
 
+      {/* 0. LEADERBOARD & GAME HISTORY SCREEN */}
+      {mode === 'leaderboard' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+          <section className="lg:col-span-7 bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-400/30 flex items-center justify-center text-[#facc15]">
+                  <Trophy size={20} />
+                </div>
+                <div>
+                  <h2 className="font-['Outfit'] text-xl font-extrabold text-white">
+                    {copy.leaderboardTitle}
+                  </h2>
+                  <p className="text-xs text-slate-400">{copy.leaderboardSub}</p>
+                </div>
+              </div>
+              <span className="px-2.5 py-1 rounded-lg bg-[#14223b] border border-slate-700 text-xs font-extrabold text-cyan-300 tabular-nums">
+                {leaderboard.length}
+              </span>
+            </div>
+
+            {leaderboard.length === 0 ? (
+              <div
+                data-testid="leaderboard-empty-state"
+                className="p-8 rounded-2xl bg-[#14223b] border border-slate-700/50 text-center space-y-2"
+              >
+                <div className="w-11 h-11 rounded-2xl bg-slate-800/80 border border-slate-700 mx-auto flex items-center justify-center text-slate-400">
+                  <Trophy size={20} />
+                </div>
+                <p className="text-sm font-extrabold text-slate-200">
+                  {copy.emptyLeaderboardTitle}
+                </p>
+                <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                  {copy.emptyLeaderboardDesc}
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-800/80">
+                {leaderboard.map((entry, idx) => {
+                  const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
+                  return (
+                    <div
+                      key={entry.uid}
+                      className="py-3 flex items-center justify-between gap-3"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="w-8 h-8 rounded-xl bg-[#14223b] border border-slate-700 flex items-center justify-center text-sm font-extrabold text-[#facc15] shrink-0">
+                          {medal}
+                        </span>
+                        <div className="min-w-0">
+                          <b className="text-sm font-extrabold text-white block truncate">
+                            {entry.displayName}
+                          </b>
+                          <small className="text-[11px] font-mono text-slate-400">
+                            {entry.wins} {lang === 'am' ? 'ድሎች' : 'wins'}
+                          </small>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <b className="font-['Outfit'] text-sm font-extrabold text-[#facc15] tabular-nums block">
+                          {entry.winningsEtb.toFixed(2)} ETB
+                        </b>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          <section className="lg:col-span-5 bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-['Outfit'] text-lg font-extrabold text-white flex items-center gap-2">
+                <History size={18} className="text-cyan-400" />
+                {lang === 'am' ? 'የእኔ የጨዋታ ታሪክ' : 'My Game History'}
+              </h3>
+              <span className="text-xs font-bold text-slate-400 tabular-nums">
+                {gameHistory.length} {lang === 'am' ? 'ዙሮች' : 'rounds'}
+              </span>
+            </div>
+
+            {gameHistory.length === 0 ? (
+              <div className="p-6 rounded-2xl bg-[#14223b] border border-slate-700/50 text-center space-y-1.5">
+                <Sparkles size={20} className="mx-auto text-slate-500" />
+                <p className="text-xs font-extrabold text-slate-200">
+                  {lang === 'am' ? 'ምንም የጨዋታ ታሪክ የለም' : 'No game history yet'}
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  {lang === 'am'
+                    ? 'ጨዋታ ሲያጠናቅቁ ውጤቶችዎ እዚህ ይቀመጣሉ።'
+                    : 'Completed Bingo rounds will appear here automatically.'}
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-800/80">
+                {gameHistory.map((item) => (
+                  <div key={item.id} className="py-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <b className="text-xs font-extrabold text-white block truncate">
+                        {lang === 'am' ? item.roomNameAm : item.roomNameEn}
+                      </b>
+                      <div className="text-[11px] text-slate-400 mt-0.5">
+                        <span>{item.playedAt}</span>
+                        {item.cardIds.length > 0 && (
+                          <>
+                            <span aria-hidden="true"> · </span>
+                            <span>
+                              {lang === 'am' ? 'ካርድ፦' : 'Cards:'}{' '}
+                              {item.cardIds.map((c) => `#${c}`).join(', ')}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <b
+                        className={`font-['Outfit'] text-sm font-extrabold tabular-nums block ${
+                          item.outcome === 'won' ? 'text-[#facc15]' : 'text-slate-400'
+                        }`}
+                      >
+                        {item.outcome === 'won'
+                          ? `+${item.prizeDemo.toFixed(2)} ETB`
+                          : `${item.entryFeeDemo.toFixed(2)} ETB`}
+                      </b>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
       {/* 1. REFERRAL SYSTEM SCREEN */}
       {mode === 'referral' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          <section className="lg:col-span-5 bg-gradient-to-br from-[#075d3c] via-[#087e50] to-[#15a466] text-white rounded-3xl p-6 space-y-4 shadow-md">
-            <span className="text-xs font-extrabold uppercase tracking-wider text-[#fde047]">
+          <section className="lg:col-span-5 bg-gradient-to-br from-[#0e203d] via-[#13294b] to-[#0d2d45] border border-cyan-500/30 text-white rounded-3xl p-6 space-y-4 shadow-xl">
+            <span className="text-xs font-extrabold uppercase tracking-wider text-[#facc15]">
               ✦ {lang === 'am' ? 'ይጋብዙ እና ያድጉ' : 'INVITE & GROW'}
             </span>
-            <h2 className="font-['Outfit'] text-3xl font-extrabold leading-tight">
+            <h2 className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold leading-tight">
               {lang === 'am'
-                ? 'ለእርስዎ 20 ETB · ለጓደኛዎ 15 ETB የሙከራ ቦነስ!'
-                : 'Earn 20 ETB Inviter & 15 ETB Invitee Demo Bonus!'}
+                ? 'ለእርስዎ 20 ETB · ለጓደኛዎ 15 ETB ቦነስ!'
+                : 'Earn 20 ETB Inviter & 15 ETB Invitee Bonus!'}
             </h2>
-            <p className="text-xs text-[#d6f5e3] leading-relaxed">
+            <p className="text-xs text-slate-300 leading-relaxed">
               {lang === 'am'
-                ? 'የቴሌግራም መጋበዣ ሊንክዎን ለጓደኞችዎ ያጋሩ። ሲቀላቀሉ የሙከራ ክሬዲት ወዲያውኑ ይጨመራል።'
-                : 'Share your unique Telegram Mini App invite link. Both you and your friend receive demo credits.'}
+                ? 'የቴሌግራም መጋበዣ ሊንክዎን ወይም ኮድዎን ለጓደኞችዎ ያጋሩ። በትክክል ሲቀላቀሉ ቦነሱ በሰርቨር ይረጋገጣል።'
+                : 'Share your personal Telegram Mini App invite link or code. Bonuses are verified and credited on the server.'}
             </p>
 
-            <div className="bg-black/20 p-3 rounded-2xl space-y-2">
-              <small className="text-[10px] uppercase tracking-wider text-[#c8f6d9] block">
+            <div className="bg-[#070d19]/75 border border-slate-700/60 p-3.5 rounded-2xl space-y-2">
+              <small className="text-[10px] uppercase tracking-wider text-cyan-300 block font-bold">
                 {lang === 'am' ? 'የእርስዎ የግብዣ ሊንክ' : 'YOUR PERSONAL INVITE LINK'}
               </small>
               <div className="flex items-center gap-2">
-                <code className="flex-1 text-xs font-mono truncate bg-white/10 px-3 py-2 rounded-xl">
+                <code className="flex-1 text-xs font-mono truncate bg-[#14223b] text-slate-100 px-3 py-2 rounded-xl border border-slate-700/70">
                   {inviteLink}
                 </code>
                 <button
                   type="button"
                   onClick={handleCopyInvite}
-                  className="px-3.5 py-2 rounded-xl bg-[#f2c24b] text-[#452c04] text-xs font-extrabold flex items-center gap-1 shrink-0"
+                  className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-[#facc15] to-[#f59e0b] text-[#1e1402] text-xs font-extrabold flex items-center gap-1 shrink-0"
                 >
                   {copied ? <Check size={14} /> : <Copy size={14} />}
                   {copied
@@ -275,90 +442,114 @@ export function CommunityScreens({
                     : 'Copy'}
                 </button>
               </div>
-            </div>
-
-            <div className="bg-white/10 border border-white/20 rounded-2xl p-3.5 space-y-2.5">
-              <small className="text-[11px] font-bold text-[#fde047] block">
-                {lang === 'am'
-                  ? 'የሙከራ ግብዣ ማስመሰያ (Simulate Friend Referral)'
-                  : 'Test Referral Flow (Demo Simulator)'}
-              </small>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newFriendName}
-                  onChange={(e) => setNewFriendName(e.target.value)}
-                  placeholder={lang === 'am' ? 'የጓደኛ ስም (ምሳሌ፦ ሜሮን)...' : 'Friend name (e.g. Meron)...'}
-                  aria-label="Friend name to simulate referral"
-                  className="flex-1 px-3 py-2 rounded-xl bg-white text-[#193b2b] text-xs font-bold placeholder:text-[#7e9487]"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    onSimulateFriendJoin(newFriendName.trim() || 'Marta G.');
-                    setNewFriendName('');
-                  }}
-                  className="px-3.5 py-2 rounded-xl bg-white text-[#087e50] text-xs font-extrabold flex items-center gap-1 shrink-0"
-                >
-                  <UserPlus size={14} />
-                  +20 ETB
-                </button>
+              <div className="text-[11px] font-mono text-slate-400">
+                {lang === 'am' ? 'የእርስዎ ኮድ፦' : 'Your code:'}{' '}
+                <b className="text-cyan-300">{effectiveRefCode}</b>
               </div>
             </div>
+
+            {onApplyPromoCode && (
+              <form
+                onSubmit={handleApplyReferralSubmit}
+                className="bg-[#070d19]/60 border border-slate-700/60 rounded-2xl p-3.5 space-y-2.5"
+              >
+                <small className="text-[11px] font-bold text-cyan-300 flex items-center gap-1.5">
+                  <TicketPercent size={14} />
+                  {copy.promoSectionTitle}
+                </small>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={promoCodeInput}
+                    onChange={(e) => setPromoCodeInput(e.target.value)}
+                    placeholder={copy.promoPlaceholder}
+                    aria-label={copy.promoSectionTitle}
+                    className="flex-1 min-w-0 px-3 py-2 rounded-xl bg-[#14223b] border border-slate-700 text-white text-xs font-mono font-bold placeholder:text-slate-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={promoBusy || !promoCodeInput.trim()}
+                    className="px-3.5 py-2 rounded-xl bg-cyan-400 text-[#041421] text-xs font-extrabold shrink-0 disabled:opacity-50"
+                  >
+                    {promoBusy ? '...' : copy.applyPromoBtn}
+                  </button>
+                </div>
+                {promoFeedback && (
+                  <p
+                    className={`text-xs font-bold ${
+                      promoFeedback.ok ? 'text-emerald-300' : 'text-rose-300'
+                    }`}
+                  >
+                    {promoFeedback.text}
+                  </p>
+                )}
+              </form>
+            )}
           </section>
 
-          <section className="lg:col-span-7 bg-white border border-[#e3ede6] rounded-2xl p-5 space-y-4">
+          <section className="lg:col-span-7 bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="font-['Outfit'] text-xl font-extrabold text-[#193b2b]">
+              <h3 className="font-['Outfit'] text-xl font-extrabold text-white">
                 {lang === 'am'
-                  ? `የተጋበዙ ጓደኞች ዝርዝር (${referrals.length})`
+                  ? `የተጋበዙ ጓደኞች (${referrals.length})`
                   : `Invited Friends (${referrals.length})`}
               </h3>
-              <span className="text-xs font-extrabold text-[#087e50] tabular-nums">
+              <span className="text-xs font-extrabold text-[#facc15] tabular-nums">
                 +
                 {referrals
                   .filter((r) => r.status === 'qualified')
                   .reduce((sum, r) => sum + r.inviterBonus, 0)}{' '}
-                ETB (Demo)
+                ETB
               </span>
             </div>
 
-            <div className="divide-y divide-[#edf4ef]">
-              {referrals.map((ref) => (
-                <div
-                  key={ref.id}
-                  className="py-3.5 flex items-center justify-between gap-3"
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="w-9 h-9 rounded-full bg-[#e4f7ec] text-[#087e50] font-extrabold text-xs flex items-center justify-center">
-                      {ref.friendName.slice(0, 2).toUpperCase()}
-                    </span>
-                    <div>
-                      <b className="text-xs font-extrabold text-[#193b2b] block">
-                        {ref.friendName}{' '}
-                        <span className="font-normal text-[#6f8578]">{ref.handle}</span>
+            {referrals.length === 0 ? (
+              <div className="p-8 rounded-2xl bg-[#14223b] border border-slate-700/50 text-center space-y-1.5">
+                <Gift size={22} className="mx-auto text-slate-500" />
+                <p className="text-sm font-extrabold text-slate-200">
+                  {lang === 'am' ? 'እስካሁን የተጋበዙ ጓደኞች የሉም' : 'No referred friends yet'}
+                </p>
+                <p className="text-xs text-slate-400">
+                  {lang === 'am'
+                    ? 'ሊንክዎን ሲያጋሩ እና ጓደኛዎ ሲቀላቀል እዚህ ይታያል።'
+                    : 'Share your personal link above to track verified friend referrals here.'}
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-800/80">
+                {referrals.map((ref) => (
+                  <div key={ref.id} className="py-3.5 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className="w-9 h-9 rounded-full bg-cyan-500/15 border border-cyan-400/30 text-cyan-300 font-extrabold text-xs flex items-center justify-center">
+                        {ref.friendName.slice(0, 2).toUpperCase()}
+                      </span>
+                      <div>
+                        <b className="text-xs font-extrabold text-white block">
+                          {ref.friendName}{' '}
+                          <span className="font-normal text-slate-400">{ref.handle}</span>
+                        </b>
+                        <small className="text-[11px] text-slate-400">{ref.joinedAt}</small>
+                      </div>
+                    </div>
+
+                    <div className="text-right">
+                      <b className="font-['Outfit'] text-sm font-extrabold text-[#facc15] tabular-nums block">
+                        +{ref.inviterBonus} ETB
                       </b>
-                      <small className="text-[11px] text-[#7a9082]">{ref.joinedAt}</small>
+                      <small className="text-[10px] text-emerald-300">
+                        {ref.status === 'qualified'
+                          ? lang === 'am'
+                            ? '✓ የተረጋገጠ'
+                            : '✓ Qualified'
+                          : lang === 'am'
+                          ? 'በመጠባበቅ ላይ'
+                          : 'Pending'}
+                      </small>
                     </div>
                   </div>
-
-                  <div className="text-right">
-                    <b className="font-['Outfit'] text-sm font-extrabold text-[#087e50] tabular-nums block">
-                      +{ref.inviterBonus} ETB
-                    </b>
-                    <small className="text-[10px] text-[#6d8375]">
-                      {ref.status === 'qualified'
-                        ? lang === 'am'
-                          ? '✓ የተረጋገጠ (Demo)'
-                          : '✓ Qualified (Demo)'
-                        : lang === 'am'
-                        ? 'በመጠባበቅ ላይ'
-                        : 'Pending'}
-                    </small>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </section>
         </div>
       )}
@@ -368,52 +559,71 @@ export function CommunityScreens({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
           <section className="lg:col-span-5 space-y-4 min-w-0">
             {/* Player Identity & Firebase Authentication Card */}
-            <div className="bg-white border border-[#e3ede6] rounded-2xl p-5 space-y-4">
+            <div className="bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-4">
               <div className="flex items-center gap-4">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#19bb70] to-[#087e50] text-white font-['Outfit'] text-2xl font-extrabold flex items-center justify-center shadow-md shrink-0">
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-400 to-sky-600 text-[#041421] font-['Outfit'] text-2xl font-extrabold flex items-center justify-center shadow-md shrink-0">
                   {user.initials}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <span className="text-[10px] font-extrabold uppercase text-[#12a566] block truncate">
+                  <span className="text-[10px] font-extrabold uppercase text-cyan-400 block truncate">
                     {firebaseUid
                       ? 'TELEGRAM MINI APP · CLOUD SYNC ACTIVE'
-                      : 'TELEGRAM MINI APP · SANDBOX SESSION'}
+                      : 'TELEGRAM MINI APP · SESSION'}
                   </span>
-                  <h2 className="font-['Outfit'] text-2xl font-extrabold text-[#193b2b] truncate">
+                  <h2 className="font-['Outfit'] text-2xl font-extrabold text-white truncate">
                     {user.firstName} {user.lastName}
                   </h2>
-                  <p className="text-xs text-[#698072] font-mono truncate">
+                  <p className="text-xs text-slate-400 font-mono truncate">
                     {user.username} · TG #{user.id}
                   </p>
                   {firebaseUserEmail && (
-                    <p className="text-[11px] text-[#087e50] font-bold truncate mt-0.5">
+                    <p className="text-[11px] text-emerald-300 font-bold truncate mt-0.5">
                       ✓ {firebaseUserEmail}
                     </p>
                   )}
                 </div>
               </div>
 
+              <div className="grid grid-cols-2 gap-2">
+                <div className="p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
+                  <small className="text-[10px] font-bold text-slate-400 block">
+                    {copy.availableBalanceTitle}
+                  </small>
+                  <b className="font-['Outfit'] text-base font-extrabold text-cyan-300 tabular-nums">
+                    {demoBalance.toFixed(2)} ETB
+                  </b>
+                </div>
+                <div className="p-3 rounded-xl bg-[#14223b] border border-amber-400/25">
+                  <small className="text-[10px] font-bold text-amber-300 block">
+                    {copy.winningsBalanceTitle}
+                  </small>
+                  <b className="font-['Outfit'] text-base font-extrabold text-[#facc15] tabular-nums">
+                    {winningsBalance.toFixed(2)} ETB
+                  </b>
+                </div>
+              </div>
+
               {/* Telegram Mini App Server Auth / Sign-Out Action */}
-              <div className="p-3.5 rounded-2xl bg-[#f4faf6] border border-[#dcece1] space-y-2.5">
+              <div className="p-3.5 rounded-2xl bg-[#14223b] border border-slate-700/60 space-y-2.5">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-bold text-[#254936] flex items-center gap-1.5">
-                    <Database size={14} className="text-[#087e50]" />
+                  <span className="font-bold text-slate-200 flex items-center gap-1.5">
+                    <Database size={14} className="text-cyan-400" />
                     {lang === 'am' ? 'Cloud Firestore ግንኙነት' : 'Cloud Firestore Status'}
                   </span>
-                  <span className="font-mono text-[11px] font-bold text-[#087e50]">
+                  <span className="font-mono text-[11px] font-bold text-cyan-300">
                     {firestoreConnected ? 'CONNECTED' : 'CHECKING'}
                   </span>
                 </div>
 
                 {firebaseUid ? (
                   <div className="flex items-center justify-between gap-2 pt-1">
-                    <span className="text-[11px] font-mono text-[#52705f] truncate">
+                    <span className="text-[11px] font-mono text-slate-400 truncate">
                       UID: {firebaseUid.slice(0, 14)}...
                     </span>
                     <button
                       type="button"
                       onClick={onSignOutFirebase}
-                      className="px-3 py-1.5 rounded-xl border border-[#d5e5db] bg-white text-[#355644] text-xs font-extrabold flex items-center gap-1.5 hover:bg-[#eef6f1]"
+                      className="px-3 py-1.5 rounded-xl border border-slate-600 bg-[#0b1322] text-slate-200 text-xs font-extrabold flex items-center gap-1.5 hover:border-cyan-400/40"
                     >
                       <LogOut size={13} />
                       {lang === 'am' ? 'ውጣ' : 'Disconnect'}
@@ -423,7 +633,7 @@ export function CommunityScreens({
                   <button
                     type="button"
                     onClick={onSignInGoogle}
-                    className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-[#12ad68] to-[#087e50] text-white text-xs font-extrabold flex items-center justify-center gap-2 shadow-xs hover:brightness-105"
+                    className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421] text-xs font-extrabold flex items-center justify-center gap-2 shadow-xs hover:brightness-105"
                   >
                     <LogIn size={15} />
                     {lang === 'am'
@@ -432,51 +642,30 @@ export function CommunityScreens({
                   </button>
                 )}
               </div>
-
-              {/* Telegram Mini App Backend initData Validator */}
-              <div className="p-3.5 rounded-2xl bg-[#f8fbf9] border border-[#e3eee7] space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-extrabold text-[#193b2b]">
-                    {lang === 'am'
-                      ? 'የቴሌግራም initData የሰርቨር ማረጋገጫ'
-                      : 'Telegram initData Backend Check'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={onValidateTelegramInitData}
-                    className="px-2.5 py-1 rounded-lg bg-[#e7f8ed] text-[#087e50] text-[11px] font-extrabold hover:bg-[#d5f2e0] shrink-0"
-                  >
-                    {lang === 'am' ? 'አሁን ፈትሽ' : 'Verify on Server'}
-                  </button>
-                </div>
-                <p className="text-[11px] text-[#5e7768] font-mono leading-relaxed break-words">
-                  {telegramBackendStatus}
-                </p>
-              </div>
             </div>
 
             {/* Temporary "My Telegram ID" Section (Server-Verified initData Only) */}
             <div
               data-testid="my-telegram-id-section"
-              className="bg-white border-2 border-[#cce8d7] rounded-2xl p-5 space-y-3 shadow-xs"
+              className="bg-[#0f1a2e] border border-cyan-500/35 rounded-2xl p-5 space-y-3 shadow-xs"
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <span className="text-[10px] font-extrabold uppercase text-[#087e50] flex items-center gap-1">
+                  <span className="text-[10px] font-extrabold uppercase text-cyan-400 flex items-center gap-1">
                     <ShieldCheck size={12} />
                     {lang === 'am'
-                      ? 'ጊዜያዊ · በሰርቨር የተረጋገጠ (SERVER-VERIFIED INITDATA)'
-                      : 'TEMPORARY · SERVER-VERIFIED INITDATA'}
+                      ? 'በሰርቨር የተረጋገጠ (SERVER-VERIFIED INITDATA)'
+                      : 'SERVER-VERIFIED INITDATA'}
                   </span>
-                  <h3 className="font-['Outfit'] text-lg font-extrabold text-[#193b2b]">
+                  <h3 className="font-['Outfit'] text-lg font-extrabold text-white">
                     {lang === 'am' ? 'የእኔ የቴሌግራም መለያ (My Telegram ID)' : 'My Telegram ID'}
                   </h3>
                 </div>
                 <span
                   className={`text-[11px] font-extrabold px-2.5 py-1 rounded-lg shrink-0 ${
                     serverVerifiedTelegramId !== null
-                      ? 'bg-[#e7f8ed] text-[#087e50]'
-                      : 'bg-[#fef5dc] text-[#8a6109]'
+                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
                   }`}
                 >
                   {serverVerifiedTelegramId !== null
@@ -489,20 +678,20 @@ export function CommunityScreens({
                 </span>
               </div>
 
-              <p className="text-xs text-[#5d7667] leading-relaxed">
+              <p className="text-xs text-slate-400 leading-relaxed">
                 {lang === 'am'
                   ? 'ይህ ቁጥር የሚገኘው ከቴሌግራም Mini App የተፈረመ initData በሰርቨር ላይ ከተረጋገጠ በኋላ ብቻ ነው። ከፍሮንትኤንድ የሚላክ መለያ ቁጥር ተቀባይነት የለውም።'
                   : 'Retrieved exclusively from cryptographically verified Telegram Mini App initData on the server. Frontend-supplied IDs are never accepted.'}
               </p>
 
-              <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-[#f4faf6] border border-[#d7eadf]">
+              <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-[#14223b] border border-slate-700/70">
                 <div className="min-w-0">
-                  <span className="text-[10px] font-bold uppercase text-[#5e7768] block">
+                  <span className="text-[10px] font-bold uppercase text-slate-400 block">
                     {lang === 'am' ? 'የተረጋገጠ የቴሌግራም ቁጥር' : 'Verified Numeric Telegram ID'}
                   </span>
                   <code
                     data-testid="verified-telegram-id-value"
-                    className="font-mono text-base font-extrabold text-[#193b2b] select-all block truncate"
+                    className="font-mono text-base font-extrabold text-white select-all block truncate"
                   >
                     {serverVerifiedTelegramId !== null
                       ? String(serverVerifiedTelegramId)
@@ -520,8 +709,8 @@ export function CommunityScreens({
                     onClick={handleCopyTelegramId}
                     className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
                       serverVerifiedTelegramId !== null
-                        ? 'bg-[#087e50] text-white hover:brightness-105 cursor-pointer'
-                        : 'bg-[#e3eee7] text-[#7a9082] cursor-not-allowed'
+                        ? 'bg-cyan-400 text-[#041421] hover:brightness-105 cursor-pointer'
+                        : 'bg-slate-800 text-slate-500 cursor-not-allowed'
                     }`}
                   >
                     {copiedTelegramId ? <Check size={14} /> : <Copy size={14} />}
@@ -540,23 +729,23 @@ export function CommunityScreens({
             {/* Secure Phone Number Registration & Verification (PII-Isolated Subcollection) */}
             <form
               onSubmit={handlePhoneSubmit}
-              className="bg-white border border-[#e3ede6] rounded-2xl p-5 space-y-3.5"
+              className="bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-3.5"
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <span className="text-[10px] font-extrabold uppercase text-[#12a566] flex items-center gap-1">
+                  <span className="text-[10px] font-extrabold uppercase text-cyan-400 flex items-center gap-1">
                     <Lock size={12} />
                     {lang === 'am' ? 'የግል መረጃ ጥበቃ (PII ISOLATED)' : 'PII-ISOLATED SUBCOLLECTION'}
                   </span>
-                  <h3 className="font-['Outfit'] text-lg font-extrabold text-[#193b2b]">
+                  <h3 className="font-['Outfit'] text-lg font-extrabold text-white">
                     {lang === 'am' ? 'የስልክ ቁጥር ምዝገባ እና ማረጋገጫ' : 'Phone Registration & Verification'}
                   </h3>
                 </div>
                 <span
                   className={`text-[11px] font-extrabold px-2.5 py-1 rounded-lg shrink-0 ${
                     phoneVerified
-                      ? 'bg-[#e7f8ed] text-[#087e50]'
-                      : 'bg-[#fef5dc] text-[#8a6109]'
+                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
                   }`}
                 >
                   {phoneVerified
@@ -569,25 +758,23 @@ export function CommunityScreens({
                 </span>
               </div>
 
-              <p className="text-xs text-[#5d7667] leading-relaxed break-words">
+              <p className="text-xs text-slate-400 leading-relaxed break-words">
                 {lang === 'am'
                   ? 'ስልክ ቁጥርዎ በ /users/{uid}/private/contact ውስጥ በጥብቅ ደህንነት ይቀመጣል።'
                   : 'Stored strictly in /users/{uid}/private/contact — inaccessible to other players.'}
               </p>
 
               <div>
-                <label className="block text-xs font-bold text-[#355644] mb-1">
+                <label className="block text-xs font-bold text-slate-300 mb-1">
                   {lang === 'am' ? 'የማረጋገጫ ዘዴ' : 'Verification Method'}
                 </label>
                 <select
                   value={phoneMethod}
                   onChange={(e) =>
-                    setPhoneMethod(
-                      e.target.value as 'telegram_contact' | 'sms_otp_demo'
-                    )
+                    setPhoneMethod(e.target.value as 'telegram_contact' | 'sms_otp_demo')
                   }
                   aria-label="Phone Verification Method"
-                  className="w-full px-3 py-2 rounded-xl border border-[#d7e6dc] bg-[#f9fcfa] text-xs font-bold text-[#193b2b]"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-700 bg-[#14223b] text-xs font-bold text-white"
                 >
                   <option value="telegram_contact">
                     {lang === 'am'
@@ -601,7 +788,7 @@ export function CommunityScreens({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-[#355644] mb-1">
+                <label className="block text-xs font-bold text-slate-300 mb-1">
                   {lang === 'am' ? 'የስልክ ቁጥር' : 'Phone Number'}
                 </label>
                 <div className="flex gap-2">
@@ -611,59 +798,41 @@ export function CommunityScreens({
                     onChange={(e) => setPhoneInput(e.target.value)}
                     placeholder="+251911223344"
                     aria-label="Phone Number for Verification"
-                    className="flex-1 min-w-0 px-3 py-2 rounded-xl border border-[#d7e6dc] bg-white text-xs font-mono font-bold text-[#193b2b]"
+                    className="flex-1 min-w-0 px-3 py-2 rounded-xl border border-slate-700 bg-[#14223b] text-xs font-mono font-bold text-white"
                   />
                   <button
                     type="submit"
                     disabled={phoneBusy}
-                    className="px-4 py-2 rounded-xl bg-[#087e50] text-white text-xs font-extrabold flex items-center gap-1.5 shrink-0"
+                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421] text-xs font-extrabold flex items-center gap-1.5 shrink-0"
                   >
                     <Phone size={13} />
-                    {phoneBusy
-                      ? '...'
-                      : lang === 'am'
-                      ? 'አረጋግጥ'
-                      : 'Verify'}
+                    {phoneBusy ? '...' : lang === 'am' ? 'አረጋግጥ' : 'Verify'}
                   </button>
                 </div>
               </div>
 
-              {phoneError && (
-                <p className="text-xs font-bold text-red-600">{phoneError}</p>
-              )}
+              {phoneError && <p className="text-xs font-bold text-rose-400">{phoneError}</p>}
             </form>
           </section>
 
           <section className="lg:col-span-7 space-y-4 min-w-0">
-            {/* Milestone 3: Telegram Bot & Mini App Integration Console */}
-            <TelegramBotConsole
-              lang={lang}
-              user={user}
-              firebaseUid={firebaseUid}
-              onSyncLanguage={onChangeLang}
-              onPhoneVerifiedFromBot={(phone) => {
-                setPhoneInput(phone);
-                onVerifyPhone(phone, 'telegram_contact').catch(() => {});
-              }}
-            />
-
             {/* Game Preferences Card */}
-            <div className="bg-white border border-[#e3ede6] rounded-2xl p-5 space-y-3">
-              <h3 className="font-['Outfit'] text-lg font-extrabold text-[#193b2b]">
+            <div className="bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-3">
+              <h3 className="font-['Outfit'] text-lg font-extrabold text-white">
                 {lang === 'am' ? 'የጨዋታ ምርጫዎች' : 'Game Preferences'}
               </h3>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="flex items-center justify-between p-3 rounded-xl bg-[#f6fbf8] border border-[#e2efe6]">
-                  <span className="text-xs font-bold text-[#2b4d3b]">
+                <div className="flex items-center justify-between p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
+                  <span className="text-xs font-bold text-slate-200">
                     {lang === 'am' ? 'ቋንቋ (Language)' : 'App Language'}
                   </span>
-                  <div className="flex gap-1 bg-white p-1 rounded-lg border border-[#dce8df]">
+                  <div className="flex gap-1 bg-[#070d19] p-1 rounded-lg border border-slate-700">
                     <button
                       type="button"
                       onClick={() => onChangeLang('am')}
                       className={`px-2.5 py-1 rounded text-xs font-extrabold ${
-                        lang === 'am' ? 'bg-[#087e50] text-white' : 'text-[#496554]'
+                        lang === 'am' ? 'bg-cyan-400 text-[#041421]' : 'text-slate-400'
                       }`}
                     >
                       አማርኛ
@@ -672,7 +841,7 @@ export function CommunityScreens({
                       type="button"
                       onClick={() => onChangeLang('en')}
                       className={`px-2.5 py-1 rounded text-xs font-extrabold ${
-                        lang === 'en' ? 'bg-[#087e50] text-white' : 'text-[#496554]'
+                        lang === 'en' ? 'bg-cyan-400 text-[#041421]' : 'text-slate-400'
                       }`}
                     >
                       EN
@@ -680,9 +849,9 @@ export function CommunityScreens({
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between p-3 rounded-xl bg-[#f6fbf8] border border-[#e2efe6]">
-                  <span className="text-xs font-bold text-[#2b4d3b] flex items-center gap-1.5">
-                    <Volume2 size={15} className="text-[#087e50]" />
+                <div className="flex items-center justify-between p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
+                  <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                    <Volume2 size={15} className="text-cyan-400" />
                     {lang === 'am' ? 'ድምፅ (Sound FX)' : 'Sound Effects'}
                   </span>
                   <button
@@ -690,17 +859,17 @@ export function CommunityScreens({
                     onClick={onToggleSound}
                     className={`px-3 py-1 rounded-lg text-xs font-extrabold ${
                       soundEnabled
-                        ? 'bg-[#087e50] text-white'
-                        : 'bg-white text-[#6d8375] border border-[#dce8df]'
+                        ? 'bg-cyan-400 text-[#041421]'
+                        : 'bg-[#070d19] text-slate-400 border border-slate-700'
                     }`}
                   >
                     {soundEnabled ? 'ON' : 'OFF'}
                   </button>
                 </div>
 
-                <div className="flex items-center justify-between p-3 rounded-xl bg-[#f6fbf8] border border-[#e2efe6]">
-                  <span className="text-xs font-bold text-[#2b4d3b] flex items-center gap-1.5">
-                    <CheckSquare size={15} className="text-[#087e50]" />
+                <div className="flex items-center justify-between p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
+                  <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                    <CheckSquare size={15} className="text-cyan-400" />
                     {lang === 'am' ? 'አውቶ ምልክት' : 'Auto-Mark'}
                   </span>
                   <button
@@ -708,16 +877,16 @@ export function CommunityScreens({
                     onClick={onToggleAutoMark}
                     className={`px-3 py-1 rounded-lg text-xs font-extrabold ${
                       autoMark
-                        ? 'bg-[#087e50] text-white'
-                        : 'bg-white text-[#6d8375] border border-[#dce8df]'
+                        ? 'bg-cyan-400 text-[#041421]'
+                        : 'bg-[#070d19] text-slate-400 border border-slate-700'
                     }`}
                   >
                     {autoMark ? 'AUTO' : 'MANUAL'}
                   </button>
                 </div>
 
-                <div className="flex items-center justify-between p-3 rounded-xl bg-[#f6fbf8] border border-[#e2efe6]">
-                  <span className="text-xs font-bold text-[#2b4d3b]">
+                <div className="flex items-center justify-between p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
+                  <span className="text-xs font-bold text-slate-200">
                     {lang === 'am' ? 'እንቅስቃሴ ቀንስ' : 'Reduced Motion'}
                   </span>
                   <button
@@ -725,8 +894,8 @@ export function CommunityScreens({
                     onClick={onToggleReducedMotion}
                     className={`px-3 py-1 rounded-lg text-xs font-extrabold ${
                       reducedMotion
-                        ? 'bg-[#087e50] text-white'
-                        : 'bg-white text-[#6d8375] border border-[#dce8df]'
+                        ? 'bg-cyan-400 text-[#041421]'
+                        : 'bg-[#070d19] text-slate-400 border border-slate-700'
                     }`}
                   >
                     {reducedMotion ? 'ON' : 'OFF'}
@@ -736,63 +905,127 @@ export function CommunityScreens({
             </div>
 
             {/* Game History Card */}
-            <div className="bg-white border border-[#e3ede6] rounded-2xl p-5 space-y-4">
+            <div className="bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="font-['Outfit'] text-xl font-extrabold text-[#193b2b] flex items-center gap-2">
-                  <History size={18} className="text-[#087e50]" />
+                <h3 className="font-['Outfit'] text-xl font-extrabold text-white flex items-center gap-2">
+                  <History size={18} className="text-cyan-400" />
                   {lang === 'am' ? 'የጨዋታ ታሪክ (Game History)' : 'Recent Game History'}
                 </h3>
-                <span className="text-xs text-[#698072] tabular-nums">
-                  {gameHistory.length} {lang === 'am' ? 'ዙሮች' : 'rounds'} ·{' '}
-                  {demoBalance.toFixed(0)} ETB
+                <span className="text-xs text-slate-400 tabular-nums">
+                  {gameHistory.length} {lang === 'am' ? 'ዙሮች' : 'rounds'}
                 </span>
               </div>
 
-              <div className="divide-y divide-[#edf4ef]">
-                {gameHistory.map((item) => (
-                  <div
-                    key={item.id}
-                    className="py-3.5 flex items-center justify-between gap-3"
-                  >
-                    <div>
-                      <b className="text-xs font-extrabold text-[#193b2b] block">
-                        {lang === 'am' ? item.roomNameAm : item.roomNameEn}
-                      </b>
-                      <div className="text-[11px] text-[#6d8375] mt-0.5">
-                        <span>{item.playedAt}</span>
-                        <span aria-hidden="true"> · </span>
-                        <span>
-                          {lang === 'am' ? 'ካርዶች፦' : 'Cards:'}{' '}
-                          {item.cardIds.map((c) => `#${c}`).join(', ')}
-                        </span>
-                        {item.winningBall && (
-                          <>
-                            <span aria-hidden="true"> · </span>
-                            <span>
-                              {lang === 'am' ? 'ኳስ፦' : 'Ball:'} {item.winningBall}
-                            </span>
-                          </>
-                        )}
+              {gameHistory.length === 0 ? (
+                <div className="p-6 rounded-2xl bg-[#14223b] border border-slate-700/50 text-center space-y-1">
+                  <p className="text-xs font-extrabold text-slate-200">
+                    {lang === 'am' ? 'ምንም የጨዋታ ታሪክ የለም' : 'No game history yet'}
+                  </p>
+                  <p className="text-[11px] text-slate-400">
+                    {lang === 'am'
+                      ? 'የተጠናቀቁ ዙሮች እዚህ ይታያሉ።'
+                      : 'Completed rounds will appear here automatically.'}
+                  </p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-800/80">
+                  {gameHistory.map((item) => (
+                    <div key={item.id} className="py-3.5 flex items-center justify-between gap-3">
+                      <div>
+                        <b className="text-xs font-extrabold text-white block">
+                          {lang === 'am' ? item.roomNameAm : item.roomNameEn}
+                        </b>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          <span>{item.playedAt}</span>
+                          {item.cardIds.length > 0 && (
+                            <>
+                              <span aria-hidden="true"> · </span>
+                              <span>
+                                {lang === 'am' ? 'ካርዶች፦' : 'Cards:'}{' '}
+                                {item.cardIds.map((c) => `#${c}`).join(', ')}
+                              </span>
+                            </>
+                          )}
+                          {item.winningBall && (
+                            <>
+                              <span aria-hidden="true"> · </span>
+                              <span>
+                                {lang === 'am' ? 'ኳስ፦' : 'Ball:'} {item.winningBall}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <b
+                          className={`font-['Outfit'] text-sm font-extrabold tabular-nums block ${
+                            item.outcome === 'won' ? 'text-[#facc15]' : 'text-slate-400'
+                          }`}
+                        >
+                          {item.outcome === 'won'
+                            ? `+${item.prizeDemo.toFixed(2)} ETB (BINGO)`
+                            : `${item.entryFeeDemo.toFixed(2)} ETB`}
+                        </b>
+                        <small className="text-[10px] text-slate-500 tabular-nums">
+                          {item.callsCount} {lang === 'am' ? 'ጥሪዎች' : 'calls'}
+                        </small>
                       </div>
                     </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
-                    <div className="text-right">
-                      <b
-                        className={`font-['Outfit'] text-sm font-extrabold tabular-nums block ${
-                          item.outcome === 'won' ? 'text-[#087e50]' : 'text-[#5b7565]'
-                        }`}
+            {/* Collapsible Advanced Telegram Bot & Diagnostics */}
+            <div className="bg-[#0f1a2e] border border-slate-700/50 rounded-2xl overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowAdvancedBot((prev) => !prev)}
+                className="w-full px-5 py-3.5 flex items-center justify-between text-xs font-bold text-slate-300 hover:bg-[#14223b] min-h-[44px]"
+              >
+                <span>
+                  {lang === 'am'
+                    ? 'የቴሌግራም ቦት እና የቴክኒክ ምርመራ'
+                    : 'Telegram Bot & Diagnostics'}
+                </span>
+                {showAdvancedBot ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+              </button>
+
+              {showAdvancedBot && (
+                <div className="p-4 pt-2 space-y-4 border-t border-slate-800/70">
+                  <div className="p-3.5 rounded-2xl bg-[#0b1322] border border-slate-700/60 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-extrabold text-white">
+                        {lang === 'am'
+                          ? 'የቴሌግራም initData የሰርቨር ማረጋገጫ'
+                          : 'Telegram initData Backend Check'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={onValidateTelegramInitData}
+                        className="px-2.5 py-1.5 rounded-lg bg-cyan-500/15 border border-cyan-400/30 text-cyan-300 text-[11px] font-extrabold hover:bg-cyan-500/25 shrink-0"
                       >
-                        {item.outcome === 'won'
-                          ? `+${item.prizeDemo} ETB (BINGO)`
-                          : `${item.entryFeeDemo} ETB`}
-                      </b>
-                      <small className="text-[10px] text-[#7a9082] tabular-nums">
-                        {item.callsCount} {lang === 'am' ? 'ጥሪዎች' : 'calls'}
-                      </small>
+                        {lang === 'am' ? 'አሁን ፈትሽ' : 'Verify on Server'}
+                      </button>
                     </div>
+                    <p className="text-[11px] text-slate-400 font-mono leading-relaxed break-words">
+                      {telegramBackendStatus}
+                    </p>
                   </div>
-                ))}
-              </div>
+
+                  <TelegramBotConsole
+                    lang={lang}
+                    user={user}
+                    firebaseUid={firebaseUid}
+                    onSyncLanguage={onChangeLang}
+                    onPhoneVerifiedFromBot={(phone) => {
+                      setPhoneInput(phone);
+                      onVerifyPhone(phone, 'telegram_contact').catch(() => {});
+                    }}
+                  />
+                </div>
+              )}
             </div>
           </section>
         </div>
@@ -801,20 +1034,20 @@ export function CommunityScreens({
       {/* 3. SUPPORT SCREEN */}
       {mode === 'support' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          <section className="lg:col-span-6 bg-white border border-[#e3ede6] rounded-2xl p-5 space-y-4">
-            <h3 className="font-['Outfit'] text-xl font-extrabold text-[#193b2b]">
+          <section className="lg:col-span-6 bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-4">
+            <h3 className="font-['Outfit'] text-xl font-extrabold text-white">
               {lang === 'am' ? 'ተደጋጋሚ ጥያቄዎች (FAQ)' : 'Frequently Asked Questions'}
             </h3>
             <div className="space-y-3">
               {FAQ_ITEMS.map((faq, idx) => (
                 <div
                   key={idx}
-                  className="p-4 rounded-2xl bg-[#f6fbf8] border border-[#e0ede4] space-y-1.5"
+                  className="p-4 rounded-2xl bg-[#14223b] border border-slate-700/60 space-y-1.5"
                 >
-                  <b className="text-xs font-extrabold text-[#11422b] block">
+                  <b className="text-xs font-extrabold text-cyan-300 block">
                     {lang === 'am' ? faq.qAm : faq.qEn}
                   </b>
-                  <p className="text-xs text-[#4f6b5b] leading-relaxed">
+                  <p className="text-xs text-slate-300 leading-relaxed">
                     {lang === 'am' ? faq.aAm : faq.aEn}
                   </p>
                 </div>
@@ -822,27 +1055,27 @@ export function CommunityScreens({
             </div>
           </section>
 
-          <section className="lg:col-span-6 bg-white border border-[#e3ede6] rounded-2xl p-5 space-y-4">
-            <h3 className="font-['Outfit'] text-xl font-extrabold text-[#193b2b]">
+          <section className="lg:col-span-6 bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-4">
+            <h3 className="font-['Outfit'] text-xl font-extrabold text-white">
               {lang === 'am' ? 'የድጋፍ መልዕክት ይላኩ' : 'Contact Player Support'}
             </h3>
 
             <form onSubmit={handleSupportSubmit} className="space-y-3">
               <div>
-                <label className="block text-xs font-bold text-[#355644] mb-1">
+                <label className="block text-xs font-bold text-slate-300 mb-1">
                   {lang === 'am' ? 'ምድብ' : 'Topic'}
                 </label>
                 <select
                   value={ticketCategory}
                   onChange={(e) => setTicketCategory(e.target.value)}
                   aria-label="Support Topic"
-                  className="w-full px-3 py-2.5 rounded-xl border border-[#d7e6dc] bg-[#f9fcfa] text-xs font-bold text-[#193b2b]"
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-700 bg-[#14223b] text-xs font-bold text-white"
                 >
                   <option value="game_rules">
                     {lang === 'am' ? 'የጨዋታ ህጎች እና ካርዶች' : 'Game Rules & Cards'}
                   </option>
                   <option value="demo_wallet">
-                    {lang === 'am' ? 'የሙከራ ቦርሳ (Demo Wallet)' : 'Demo Wallet & Credits'}
+                    {lang === 'am' ? 'ቦርሳ እና ግብይቶች' : 'Wallet & Credits'}
                   </option>
                   <option value="technical">
                     {lang === 'am' ? 'የቴክኒክ እገዛ' : 'Technical Feedback'}
@@ -851,7 +1084,7 @@ export function CommunityScreens({
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-[#355644] mb-1">
+                <label className="block text-xs font-bold text-slate-300 mb-1">
                   {lang === 'am' ? 'ርዕስ' : 'Subject'}
                 </label>
                 <input
@@ -860,12 +1093,12 @@ export function CommunityScreens({
                   onChange={(e) => setTicketSubject(e.target.value)}
                   placeholder={lang === 'am' ? 'አጭር ርዕስ ይጻፉ...' : 'Brief summary...'}
                   aria-label="Support Subject"
-                  className="w-full px-3 py-2.5 rounded-xl border border-[#d7e6dc] bg-white text-xs font-bold text-[#193b2b]"
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-700 bg-[#14223b] text-xs font-bold text-white placeholder:text-slate-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-[#355644] mb-1">
+                <label className="block text-xs font-bold text-slate-300 mb-1">
                   {lang === 'am' ? 'መልዕክት' : 'Message'}
                 </label>
                 <textarea
@@ -878,17 +1111,15 @@ export function CommunityScreens({
                       : 'Describe your question or feedback...'
                   }
                   aria-label="Support Message"
-                  className="w-full px-3 py-2.5 rounded-xl border border-[#d7e6dc] bg-white text-xs font-medium text-[#193b2b]"
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-700 bg-[#14223b] text-xs font-medium text-white placeholder:text-slate-500"
                 />
               </div>
 
-              {ticketError && (
-                <p className="text-xs font-bold text-red-600">{ticketError}</p>
-              )}
+              {ticketError && <p className="text-xs font-bold text-rose-400">{ticketError}</p>}
 
               <button
                 type="submit"
-                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#12ad68] to-[#087e50] text-white text-xs font-extrabold flex items-center justify-center gap-1.5"
+                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421] text-xs font-extrabold flex items-center justify-center gap-1.5"
               >
                 <Send size={14} />
                 {lang === 'am' ? 'የድጋፍ ጥያቄ ላክ' : 'Submit Support Ticket'}
@@ -896,22 +1127,22 @@ export function CommunityScreens({
             </form>
 
             {tickets.length > 0 && (
-              <div className="pt-3 border-t border-[#edf4ef] space-y-2">
-                <small className="text-[10px] font-extrabold uppercase text-[#6e8577] block">
+              <div className="pt-3 border-t border-slate-700/60 space-y-2">
+                <small className="text-[10px] font-extrabold uppercase text-slate-400 block">
                   {lang === 'am' ? 'የእርስዎ የድጋፍ ጥያቄዎች' : 'YOUR SUPPORT TICKETS'} ({tickets.length})
                 </small>
                 {tickets.map((tkt) => (
                   <div
                     key={tkt.id}
-                    className="p-3 rounded-xl bg-[#f5faf7] border border-[#e3efe7] flex items-center justify-between text-xs"
+                    className="p-3 rounded-xl bg-[#14223b] border border-slate-700/60 flex items-center justify-between text-xs"
                   >
                     <div>
-                      <b className="text-[#193b2b] block">{tkt.subject}</b>
-                      <small className="text-[#6f8578]">
+                      <b className="text-white block">{tkt.subject}</b>
+                      <small className="text-slate-400">
                         {tkt.id} · {tkt.createdAt}
                       </small>
                     </div>
-                    <span className="font-bold text-[#087e50]">
+                    <span className="font-bold text-cyan-300">
                       {tkt.status === 'answered'
                         ? lang === 'am'
                           ? 'ተመልሷል'
@@ -930,19 +1161,19 @@ export function CommunityScreens({
 
       {/* 4. TERMS & CONDITIONS SCREEN */}
       {mode === 'terms' && (
-        <section className="bg-white border border-[#e3ede6] rounded-2xl p-6 space-y-5 max-w-4xl">
-          <div className="flex items-center gap-2 text-[#087e50]">
+        <section className="bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-6 space-y-5 max-w-4xl">
+          <div className="flex items-center gap-2 text-cyan-400">
             <ShieldCheck size={22} />
-            <h2 className="font-['Outfit'] text-2xl font-extrabold text-[#193b2b]">
+            <h2 className="font-['Outfit'] text-2xl font-extrabold text-white">
               {lang === 'am'
                 ? 'ADEYBINGO — የጨዋታ ህጎች፣ ደንቦች እና የህግ ማሳሰቢያ'
                 : 'ADEYBINGO — Game Rules, Terms & Compliance Notice'}
             </h2>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-[#3b5948] leading-relaxed">
-            <div className="p-4 rounded-2xl bg-[#f6fbf8] border border-[#e0ede4] space-y-2">
-              <b className="text-sm font-extrabold text-[#11422b] block">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-slate-300 leading-relaxed">
+            <div className="p-4 rounded-2xl bg-[#14223b] border border-slate-700/60 space-y-2">
+              <b className="text-sm font-extrabold text-cyan-300 block">
                 {lang === 'am' ? '1. የጨዋታ ስርዓት እና Firebase ደህንነት' : '1. Game System & Firebase Security'}
               </b>
               <ul className="space-y-1 list-disc pl-4">
@@ -969,8 +1200,8 @@ export function CommunityScreens({
               </ul>
             </div>
 
-            <div className="p-4 rounded-2xl bg-[#fef8e6] border border-[#f3d683] space-y-2 text-[#5c4209]">
-              <b className="text-sm font-extrabold text-[#453003] block">
+            <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-400/25 space-y-2 text-amber-200">
+              <b className="text-sm font-extrabold text-[#facc15] block">
                 {lang === 'am'
                   ? '2. የህግ፣ የፈቃድ እና የሙከራ (Sandbox) ገደብ'
                   : '2. Regulatory & Sandbox Compliance Notice'}
@@ -980,7 +1211,7 @@ export function CommunityScreens({
                   ? 'ይህ የADEYBINGO እትም የሙከራ (Demo Sandbox) ነው። የኢትዮጵያ የህግ፣ የፈቃድ እና የክፍያ ተቋማት ማረጋገጫ እስኪጠናቀቅ ድረስ እውነተኛ ገንዘብ ማስገባት፣ ማውጣት ወይም የገንዘብ ሽልማት አይሰራም።'
                   : 'This release operates strictly in Demo Sandbox Mode. Real-money deposits, withdrawals, and cash prizes are disabled pending full legal, licensing, and payment-provider verification.'}
               </p>
-              <p className="font-bold">
+              <p className="font-bold text-[#facc15]">
                 {lang === 'am'
                   ? 'ዕድሜያቸው ከ18 ዓመት በላይ ለሆኑ ተሳታፊዎች ብቻ የተዘጋጀ።'
                   : '18+ Responsible Gaming & Fair Play Policy.'}
