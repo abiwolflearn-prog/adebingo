@@ -92,7 +92,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
           firstName: user.firstName,
           lastName: user.lastName || '',
           username: user.username.replace(/^@/, ''),
-          firebaseUid: extra.overrideUid || firebaseUid || `tg_uid_${user.id}`,
+          firebaseUid: extra.overrideUid || firebaseUid || `tg_${user.id}`,
           text,
           contact: extra.contact ?? null,
         }),

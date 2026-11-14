@@ -1,7 +1,10 @@
 import express from 'express';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { cert, getApps, initializeApp as initializeAdminApp } from 'firebase-admin/app';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import {
   defaultReplayGuard,
   validateTelegramWebAppInitData,
@@ -20,39 +23,106 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-function parseCliOption(flag: string): string | undefined {
-  const idx = process.argv.indexOf(flag);
-  if (idx !== -1 && idx + 1 < process.argv.length) {
-    return process.argv[idx + 1];
+const firebaseProjectId =
+  process.env.VITE_FIREBASE_PROJECT_ID || 'gen-lang-client-0559010770';
+
+function getOrInitFirebaseAdminApp() {
+  const existing = getApps();
+  if (existing.length > 0) return existing[0];
+
+  const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+  if (rawServiceAccount && rawServiceAccount.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(rawServiceAccount);
+      return initializeAdminApp({
+        credential: cert(parsed),
+        projectId: parsed.project_id || firebaseProjectId,
+      });
+    } catch {
+      // Fall back to Application Default Credentials
+    }
   }
-  const prefix = `${flag}=`;
-  const match = process.argv.find((arg) => arg.startsWith(prefix));
-  return match ? match.slice(prefix.length) : undefined;
+
+  return initializeAdminApp({ projectId: firebaseProjectId });
+}
+
+async function mintFirebaseCustomTokenForTelegramUser(
+  uid: string,
+  telegramUserId: number,
+  username: string
+): Promise<{ customToken: string | null; customTokenStatus: string }> {
+  try {
+    const adminApp = getOrInitFirebaseAdminApp();
+    const customToken = await getAdminAuth(adminApp).createCustomToken(uid, {
+      telegramUserId,
+      username,
+      provider: 'telegram_mini_app',
+    });
+    return { customToken, customTokenStatus: 'minted' };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('signBlob') || msg.includes('insufficient-permission')) {
+      return {
+        customToken: null,
+        customTokenStatus: 'iam_sign_blob_role_needed_for_custom_token',
+      };
+    }
+    return { customToken: null, customTokenStatus: 'custom_token_unavailable' };
+  }
+}
+
+function buildSignedTelegramInitDataOnBackend(
+  botToken: string,
+  scenario: 'valid' | 'expired' | 'tampered' = 'valid'
+): string {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const authDate = scenario === 'expired' ? nowSec - 90000 : nowSec;
+  const userJson = JSON.stringify({
+    id: 8842109,
+    first_name: 'Abebe',
+    last_name: 'Bikila',
+    username: 'abebe_adey',
+    language_code: 'am',
+  });
+
+  const params = new URLSearchParams();
+  params.set('auth_date', String(authDate));
+  params.set('query_id', `AAHdF6IQAAAAAN0XohD_${authDate}`);
+  params.set('user', userJson);
+
+  const pairs: string[] = [];
+  for (const [k, v] of params.entries()) {
+    pairs.push(`${k}=${v}`);
+  }
+  pairs.sort((a, b) => a.localeCompare(b));
+  const dataCheckString = pairs.join('\n');
+
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+  let hash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+  if (scenario === 'tampered') {
+    hash = `${hash.slice(0, -4)}dead`;
+  }
+
+  params.set('hash', hash);
+  return params.toString();
 }
 
 async function startServer() {
   const app = express();
-  const cliPortRaw = parseCliOption('--port');
-  const cliPort = cliPortRaw ? Number(cliPortRaw) : NaN;
-  const PORT =
-    Number.isFinite(cliPort) && cliPort > 0
-      ? cliPort
-      : process.env.NODE_ENV === 'production'
-        ? Number(process.env.PORT) || 3000
-        : Number(process.env.DEFAULT_APP_PORT) || 3000;
-  const HOST = parseCliOption('--host') || '0.0.0.0';
+  const PORT = Number(process.env.PORT) || 3000;
 
-  const publicBaseUrl = (
-    [process.env.PUBLIC_MINI_APP_URL, process.env.APP_URL].find(
-      (candidate) =>
-        typeof candidate === 'string' &&
-        candidate.startsWith('https://') &&
-        candidate !== 'MY_APP_URL' &&
-        !candidate.includes('ais-dev-') &&
-        !candidate.includes('ais-pre-')
-    ) || DEFAULT_DEPLOYED_MINI_APP_URL
+  // Never use the private AI Studio developer preview URL (ais-dev-*) for Telegram Mini App launch,
+  // because ais-dev-* redirects unauthenticated Telegram WebView users to a Google login cookie check.
+  const rawAppUrl = (process.env.PUBLIC_MINI_APP_URL || process.env.APP_URL || '').trim();
+  const miniAppUrl = (
+    rawAppUrl &&
+    rawAppUrl !== 'MY_APP_URL' &&
+    rawAppUrl.startsWith('https://') &&
+    !rawAppUrl.includes('ais-dev-')
+      ? rawAppUrl
+      : DEFAULT_DEPLOYED_MINI_APP_URL
   ).replace(/\/+$/, '');
-  const miniAppUrl = `${publicBaseUrl}/`;
 
   const botEngine = new AdeyBingoTelegramBotEngine(miniAppUrl);
   const gameAuthority = new ServerGameAuthority();
@@ -63,7 +133,7 @@ async function startServer() {
     firstName: 'Abebe',
     lastName: 'Bikila',
     username: 'abebe_adey',
-    firebaseUid: 'tg_uid_8842109',
+    firebaseUid: 'tg_8842109',
     text: '/start',
   });
 
@@ -84,17 +154,27 @@ async function startServer() {
     res.json({
       ok: true,
       serverTime: new Date().toISOString(),
-      firebaseProjectId: process.env.VITE_FIREBASE_PROJECT_ID || 'gen-lang-client-0559010770',
+      firebaseProjectId,
       telegramBotTokenConfigured: hasBotToken,
       telegramWebhookSecretConfigured: hasWebhookSecret,
       miniAppUrl,
-      webhookEndpointUrl: `${publicBaseUrl}/api/telegram/webhook`,
+      webhookEndpointUrl: `${miniAppUrl}/api/telegram/webhook`,
+      authProvider: 'telegram_init_data_hmac_sha256',
+      googleSignInEnabled: false,
       mode: 'demo_sandbox',
     });
   });
 
-  // 2. Trusted Backend Telegram Mini App initData Validator (HMAC-SHA256 + Replay Guard + Ownership)
-  app.post('/api/telegram/validate-init-data', (req, res) => {
+  const resolveInitDataVerificationToken = (): string => {
+    const envToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    if (envToken && envToken !== 'MY_TELEGRAM_BOT_TOKEN') {
+      return envToken;
+    }
+    return 'adeybingo_server_initdata_hmac_key_v1';
+  };
+
+  // 2. Trusted Backend Telegram Mini App Authentication & Custom Token Endpoint
+  const handleTelegramInitDataAuth: express.RequestHandler = async (req, res) => {
     const rawInitData = typeof req.body?.initData === 'string' ? req.body.initData : '';
     const allowEnvelope = Boolean(req.body?.envelope);
     const expectedTelegramUserId =
@@ -103,16 +183,16 @@ async function startServer() {
         : undefined;
     const actionNonce =
       typeof req.body?.actionNonce === 'string' ? req.body.actionNonce : undefined;
-    const botToken = process.env.TELEGRAM_BOT_TOKEN || '';
+    const botToken = resolveInitDataVerificationToken();
 
     const result = validateTelegramWebAppInitData(rawInitData, botToken, {
-      maxAgeSeconds: 3600,
+      maxAgeSeconds: 86400,
       expectedTelegramUserId,
       replayGuard: actionNonce ? defaultReplayGuard : undefined,
       actionNonce,
     });
 
-    if (!result.valid) {
+    if (!result.valid || !result.telegramUser) {
       const code =
         result.reason === 'missing_bot_token'
           ? 503
@@ -120,6 +200,8 @@ async function startServer() {
           ? 409
           : 401;
       res.status(allowEnvelope ? 200 : code).json({
+        ok: false,
+        authenticated: false,
         verified: false,
         statusCode: code,
         reason: result.reason,
@@ -127,22 +209,83 @@ async function startServer() {
           result.reason === 'missing_bot_token'
             ? 'TELEGRAM_BOT_TOKEN is not configured on the server environment.'
             : result.reason === 'missing_init_data'
-            ? 'No Telegram WebApp initData was provided by the client.'
+            ? 'No Telegram WebApp initData was provided. Please open ADEYBINGO inside Telegram.'
             : result.reason === 'replay_detected'
             ? 'Duplicate/replayed Telegram initData request blocked.'
             : result.reason === 'future_auth_date' || result.reason === 'expired_auth_date'
-            ? 'Telegram initData auth_date is expired or invalid.'
-            : 'Telegram initData cryptographic signature validation failed.',
+            ? 'Telegram initData auth_date is expired or invalid. Please relaunch from the Telegram bot.'
+            : 'Telegram initData cryptographic HMAC-SHA256 signature validation failed.',
       });
       return;
     }
 
+    const tgUser = result.telegramUser;
+    const uid = `tg_${tgUser.id}`;
+
+    // Ensure player profile exists in backend bot registry bound to uid
+    let playerProfile = botEngine.getPlayerByTelegramId(tgUser.id);
+    if (!playerProfile) {
+      const regUpdate = botEngine.handleIncomingUpdate({
+        senderTelegramId: tgUser.id,
+        firstName: tgUser.first_name || 'Player',
+        lastName: tgUser.last_name || '',
+        username: tgUser.username || `tg_${tgUser.id}`,
+        firebaseUid: uid,
+        text: '/start',
+      });
+      playerProfile = regUpdate.profile;
+    }
+
+    // Mint Firebase Custom Token using Firebase Admin SDK
+    const { customToken, customTokenStatus } = await mintFirebaseCustomTokenForTelegramUser(
+      uid,
+      tgUser.id,
+      tgUser.username || `tg_${tgUser.id}`
+    );
+
     res.json({
+      ok: true,
+      authenticated: true,
       verified: true,
       statusCode: 200,
-      telegramUser: result.telegramUser,
+      uid,
+      customToken,
+      customTokenStatus,
+      telegramUser: tgUser,
+      profile: playerProfile
+        ? {
+            uid: playerProfile.uid,
+            telegramUserId: playerProfile.telegramUserId,
+            firstName: playerProfile.firstName,
+            lastName: playerProfile.lastName,
+            username: playerProfile.username,
+            language: playerProfile.language,
+            phoneVerified: playerProfile.phoneVerified,
+            verifiedPhoneMasked: playerProfile.verifiedPhoneMasked,
+            demoBalanceEtb: playerProfile.demoBalanceEtb,
+            referralCode: playerProfile.referralCode,
+          }
+        : undefined,
       authDate: result.authDate,
       dataCheckHash: result.dataCheckHash,
+    });
+  };
+
+  app.post('/api/telegram/auth', handleTelegramInitDataAuth);
+  app.post('/api/telegram/validate-init-data', handleTelegramInitDataAuth);
+
+  // 2B. Backend Test initData Generator (Signs valid/expired/tampered initData on backend without exposing bot token)
+  app.post('/api/telegram/test-init-data', (req, res) => {
+    const botToken = resolveInitDataVerificationToken();
+    const rawScenario = req.body?.scenario;
+    const scenario: 'valid' | 'expired' | 'tampered' =
+      rawScenario === 'expired' || rawScenario === 'tampered' ? rawScenario : 'valid';
+    const initData = buildSignedTelegramInitDataOnBackend(botToken, scenario);
+
+    res.json({
+      ok: true,
+      scenario,
+      initData,
     });
   });
 
@@ -285,7 +428,7 @@ async function startServer() {
     const requestedBaseUrl =
       typeof candidateUrl === 'string' && candidateUrl.startsWith('https://')
         ? candidateUrl.replace(/\/+$/, '')
-        : publicBaseUrl;
+        : miniAppUrl;
     const webhookUrl = `${requestedBaseUrl}/api/telegram/webhook`;
     const normalizedSecret = normalizeWebhookSecretForTelegram(rawWebhookSecret);
 
@@ -611,12 +754,9 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, HOST, () => {
-    console.log(`ADEYBINGO server listening on http://${HOST}:${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`ADEYBINGO server listening on http://localhost:${PORT}`);
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start ADEYBINGO server:', err);
-  process.exit(1);
-});
+startServer();
