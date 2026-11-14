@@ -20,6 +20,24 @@ import { createStartGameHandler } from '../game/start.ts';
 import { createDrawBallHandler } from '../game/draw-ball.ts';
 import { createResetRoundHandler } from '../game/reset-round.ts';
 import { createVerifyWinnerHandler } from '../game/verify-winner.ts';
+import {
+  createAdminBotAnnounceHandler,
+  createAdminBotConfigHandler,
+  createAdminDepositReviewHandler,
+  createAdminDepositsHandler,
+  createAdminNotificationsHandler,
+  createAdminNotificationsSendHandler,
+  createAdminOverviewHandler,
+  createAdminPayoutReviewHandler,
+  createAdminPayoutsHandler,
+  createAdminReferralsHandler,
+  createAdminRoomUpdateHandler,
+  createAdminRoomsHandler,
+  createAdminSessionExchangeHandler,
+  createAdminSettingsHandler,
+  createAdminUserStatusHandler,
+  createAdminUsersHandler,
+} from './adminHandler.ts';
 import { checkCardWin, generateDeterministicCard } from '../../src/game/rules.ts';
 
 type DocData = Record<string, unknown>;
@@ -409,7 +427,7 @@ test('Telegram auth & initData validation reject invalid, expired, replayed, and
   assert.equal(overrideAttempt.statusCode, 400);
   assert.equal(overrideAttempt.body.reason, 'client_identity_override_rejected');
 
-  // Valid initData -> 200 with canonical tg_<id> and Firebase customToken
+  // Valid initData -> 200 with canonical tg_<id>, verifiedTelegramId, and Firebase customToken
   const okRes = await invokeHandler(authHandler, {
     method: 'POST',
     body: { initData: validInit },
@@ -417,6 +435,7 @@ test('Telegram auth & initData validation reject invalid, expired, replayed, and
   assert.equal(okRes.statusCode, 200);
   assert.equal(okRes.body.ok, true);
   assert.equal(okRes.body.uid, 'tg_778899');
+  assert.equal(okRes.body.verifiedTelegramId, 778899);
   assert.equal(okRes.body.customToken, 'custom_token_for_tg_778899');
   assert.equal(store.get('telegramBindings/tg_778899')?.uid, 'tg_778899');
   assert.equal(store.get('users/tg_778899')?.demoBalanceEtb, 250);
@@ -429,7 +448,7 @@ test('Telegram auth & initData validation reject invalid, expired, replayed, and
   assert.equal(replayRes.statusCode, 409);
   assert.equal(replayRes.body.reason, 'replay_detected');
 
-  // Validate-init-data endpoint also enforces persistent replay & rejects actionNonce override
+  // Validate-init-data endpoint also enforces persistent replay & rejects actionNonce / telegramId override
   const validateHandler = createValidateInitDataHandler({
     getDb: () => db,
     getBotToken: () => botToken,
@@ -444,6 +463,13 @@ test('Telegram auth & initData validation reject invalid, expired, replayed, and
   assert.equal(nonceBypass.statusCode, 400);
   assert.equal(nonceBypass.body.reason, 'client_identity_override_rejected');
 
+  const tgIdBypass = await invokeHandler(validateHandler, {
+    method: 'POST',
+    body: { initData: validInit, telegramId: 999999 },
+  });
+  assert.equal(tgIdBypass.statusCode, 400);
+  assert.equal(tgIdBypass.body.reason, 'client_identity_override_rejected');
+
   const secondInit = buildSignedInitData(botToken, nowUnix - 5, {
     id: 554433,
     first_name: 'Dawit',
@@ -454,6 +480,7 @@ test('Telegram auth & initData validation reject invalid, expired, replayed, and
   });
   assert.equal(valOk.statusCode, 200);
   assert.equal(valOk.body.verified, true);
+  assert.equal(valOk.body.verifiedTelegramId, 554433);
   const valReplay = await invokeHandler(validateHandler, {
     method: 'POST',
     body: { initData: secondInit },
@@ -1095,3 +1122,326 @@ test('API handlers enforce Content-Type, payload limits, malformed JSON rejectio
   assert.equal(throttled.body.reason, 'rate_limit_exceeded');
   assert.ok(Number(throttled.headers['retry-after']) >= 1);
 });
+
+test('Milestone 4.2: Admin Serverless API blocks preset identityMode bypass (403), enforces 401/403/200 RBAC, executes transactional deposit credits & payout refunds, chains SHA-256 audit logs, and processes Telegram callbacks with replay protection', async () => {
+  const { db, store } = createStrictInMemoryFirestore();
+  const botToken = '123456:TEST_ADEYBINGO_BOT_TOKEN';
+  const sessionSecret = 'test_milestone_4_2_session_secret';
+  const webhookSecret = 'webhook_secret_m42';
+  const nowUnix = Math.floor(Date.now() / 1000);
+
+  const authDeps: AuthBackendDeps = {
+    ...createMockAuthDeps(
+      {
+        'tok-admin-fb': {
+          uid: 'tg_8842109',
+          email: 'abelbimrew868@gmail.com',
+          email_verified: true,
+          name: 'Abebe Bikila (Lead Admin)',
+        },
+        'tok-player-fb': {
+          uid: 'tg_7777777',
+          telegram_verified: true,
+          telegram_id: 7777777,
+          name: 'Dawit Mekonnen',
+        },
+      },
+      ['tg_8842109']
+    ),
+    getSessionSecret: () => sessionSecret,
+  };
+
+  const sharedDeps = {
+    getDb: () => db,
+    getBotToken: () => botToken,
+    authDeps,
+    limiter: new BoundedRateLimiter(),
+  };
+
+  const sessionExchangeHandler = createAdminSessionExchangeHandler(sharedDeps);
+  const overviewHandler = createAdminOverviewHandler(sharedDeps);
+  const usersHandler = createAdminUsersHandler(sharedDeps);
+  const userStatusHandler = createAdminUserStatusHandler(sharedDeps);
+  const depositsHandler = createAdminDepositsHandler(sharedDeps);
+  const depositReviewHandler = createAdminDepositReviewHandler(sharedDeps);
+  const payoutsHandler = createAdminPayoutsHandler(sharedDeps);
+  const payoutReviewHandler = createAdminPayoutReviewHandler(sharedDeps);
+  const roomsAdminHandler = createAdminRoomsHandler(sharedDeps);
+  const roomUpdateHandler = createAdminRoomUpdateHandler(sharedDeps);
+  const referralsHandler = createAdminReferralsHandler(sharedDeps);
+  const botConfigHandler = createAdminBotConfigHandler(sharedDeps);
+  const botAnnounceHandler = createAdminBotAnnounceHandler(sharedDeps);
+  const notificationsHandler = createAdminNotificationsHandler(sharedDeps);
+  const notificationSendHandler = createAdminNotificationsSendHandler(sharedDeps);
+  const settingsHandler = createAdminSettingsHandler(sharedDeps);
+
+  // 1. Unauthenticated access to /api/admin/overview -> 401
+  const unauthOverview = await invokeHandler(overviewHandler, { method: 'GET' });
+  assert.equal(unauthOverview.statusCode, 401);
+
+  // 2. Normal player access to /api/admin/overview -> 403
+  const playerOverview = await invokeHandler(overviewHandler, {
+    method: 'GET',
+    headers: { authorization: 'Bearer tok-player-fb' },
+  });
+  assert.equal(playerOverview.statusCode, 403);
+  assert.equal(playerOverview.body.reason, 'admin_required');
+
+  // 3. Preset identityMode: "admin" request -> rejected (403)
+  const presetBypass = await invokeHandler(sessionExchangeHandler, {
+    method: 'POST',
+    body: { identityMode: 'admin', role: 'admin' },
+  });
+  assert.equal(presetBypass.statusCode, 403);
+  assert.equal(presetBypass.body.ok, false);
+  assert.equal(presetBypass.body.reason, 'preset_identity_bypass_removed');
+
+  // 4. Verified admin access to /api/admin/overview -> 200
+  const adminOverview = await invokeHandler(overviewHandler, {
+    method: 'GET',
+    headers: { authorization: 'Bearer tok-admin-fb' },
+  });
+  assert.equal(adminOverview.statusCode, 200);
+  assert.equal(adminOverview.body.ok, true);
+  assert.ok(adminOverview.body.overview);
+
+  // Also verify signed Telegram initData exchange for allowlisted admin TG #8842109
+  const adminInitData = buildSignedInitData(botToken, nowUnix - 5, {
+    id: 8842109,
+    first_name: 'Abebe',
+    last_name: 'Bikila',
+    username: 'abebe_adey',
+    language_code: 'am',
+  });
+  const exchangeAdminRes = await invokeHandler(sessionExchangeHandler, {
+    method: 'POST',
+    body: { initData: adminInitData },
+  });
+  assert.equal(exchangeAdminRes.statusCode, 200);
+  assert.equal(exchangeAdminRes.body.authorized, true);
+  const mintedAdminToken = String(exchangeAdminRes.body.token);
+  assert.ok(mintedAdminToken.length > 20);
+
+  // 5. Admin deposit approval updates user balance transactionally in Firestore
+  const listDeps = await invokeHandler(depositsHandler, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+  });
+  assert.equal(listDeps.statusCode, 200);
+  const dawitBalBeforeDep = Number(store.get('users/tg_7777777')?.demoBalanceEtb);
+  assert.equal(dawitBalBeforeDep, 185);
+
+  const approveDepRes = await invokeHandler(depositReviewHandler, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+    query: { depositId: 'DEP-2026-401' },
+    body: {
+      nextStatus: 'Approved',
+      reviewNotes: 'Approved Telebirr Demo Receipt in Milestone 4.2 test',
+    },
+  });
+  assert.equal(approveDepRes.statusCode, 200);
+  assert.equal((approveDepRes.body.deposit as { status: string }).status, 'Approved');
+  assert.equal(Number(store.get('users/tg_7777777')?.demoBalanceEtb), dawitBalBeforeDep + 100);
+  assert.equal(store.get('depositRequests/DEP-2026-401')?.status, 'Approved');
+
+  // Re-reviewing an already-approved deposit is rejected (409) so balance cannot be double-credited
+  const duplicateApproveDep = await invokeHandler(depositReviewHandler, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+    query: { depositId: 'DEP-2026-401' },
+    body: { nextStatus: 'Approved', reviewNotes: 'Duplicate attempt' },
+  });
+  assert.equal(duplicateApproveDep.statusCode, 409);
+  assert.equal(Number(store.get('users/tg_7777777')?.demoBalanceEtb), dawitBalBeforeDep + 100);
+
+  // 6. Admin payout rejection refunds user balance transactionally in Firestore
+  const listPayouts = await invokeHandler(payoutsHandler, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+  });
+  assert.equal(listPayouts.statusCode, 200);
+  const dawitBalBeforePayout = Number(store.get('users/tg_7777777')?.demoBalanceEtb);
+  assert.equal(dawitBalBeforePayout, 285);
+
+  const rejectPayoutRes = await invokeHandler(payoutReviewHandler, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+    query: { requestId: 'PO-2026-901' },
+    body: {
+      nextStatus: 'Rejected',
+      reviewNotes: 'Rejected in Demo Sandbox & refunded 75 ETB to player',
+    },
+  });
+  assert.equal(rejectPayoutRes.statusCode, 200);
+  assert.equal((rejectPayoutRes.body.payout as { status: string }).status, 'Rejected');
+  assert.equal(Number(store.get('users/tg_7777777')?.demoBalanceEtb), dawitBalBeforePayout + 75);
+  assert.equal(store.get('payoutRequests/PO-2026-901')?.status, 'Rejected');
+
+  // Self-suspension is blocked (403) while suspending a player succeeds
+  const selfSuspend = await invokeHandler(userStatusHandler, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+    query: { uid: 'tg_8842109' },
+    body: { accountStatus: 'suspended', reason: 'Attempt self-suspend' },
+  });
+  assert.equal(selfSuspend.statusCode, 403);
+  assert.equal(selfSuspend.body.reason, 'self_suspension_forbidden');
+
+  const suspendPlayer = await invokeHandler(userStatusHandler, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+    query: { uid: 'tg_7777777' },
+    body: { accountStatus: 'suspended', reason: 'Test suspension' },
+  });
+  assert.equal(suspendPlayer.statusCode, 200);
+  assert.equal(store.get('users/tg_7777777')?.accountStatus, 'suspended');
+
+  // Verify remaining admin endpoints (users, rooms, referrals, bot config, announce, notifications)
+  const usersList = await invokeHandler(usersHandler, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+    query: { q: '7777777' },
+  });
+  assert.equal(usersList.statusCode, 200);
+
+  const roomsList = await invokeHandler(roomsAdminHandler, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+  });
+  assert.equal(roomsList.statusCode, 200);
+
+  const roomUpd = await invokeHandler(roomUpdateHandler, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+    query: { roomId: 'adey-main' },
+    body: { cardPriceEtb: 15, status: 'countdown' },
+  });
+  assert.equal(roomUpd.statusCode, 200);
+  assert.equal(store.get('rooms/adey-main')?.cardPriceEtb, 15);
+
+  const refList = await invokeHandler(referralsHandler, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+  });
+  assert.equal(refList.statusCode, 200);
+
+  const botCfgUpd = await invokeHandler(botConfigHandler, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+    body: {
+      customWelcomeAm: '🌟 አዲስ የአደይ ቢንጎ አቀባበል!',
+      customWelcomeEn: '🌟 Custom ADEYBINGO Welcome!',
+    },
+  });
+  assert.equal(botCfgUpd.statusCode, 200);
+  assert.equal(store.get('botConfig/default')?.customWelcomeEn, '🌟 Custom ADEYBINGO Welcome!');
+
+  const announceRes = await invokeHandler(botAnnounceHandler, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+    body: {
+      titleAm: 'ልዩ ዙር',
+      titleEn: 'Special Round',
+      bodyAm: 'አሁን ይቀላቀሉ',
+      bodyEn: 'Join now',
+    },
+  });
+  assert.equal(announceRes.statusCode, 200);
+
+  const notifList = await invokeHandler(notificationsHandler, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+  });
+  assert.equal(notifList.statusCode, 200);
+
+  const notifSend = await invokeHandler(notificationSendHandler, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+    body: {
+      telegramUserId: 7777777,
+      title: 'Admin Alert',
+      body: 'Hello Dawit',
+    },
+  });
+  assert.equal(notifSend.statusCode, 200);
+
+  // 7. Admin actions create SHA-256 chained audit logs in Firestore
+  const settingsRes = await invokeHandler(settingsHandler, {
+    method: 'GET',
+    headers: { authorization: `Bearer ${mintedAdminToken}` },
+  });
+  assert.equal(settingsRes.statusCode, 200);
+  const settingsObj = settingsRes.body.settings as {
+    auditChainIntegrity: { valid: boolean; totalEntries: number };
+  };
+  assert.equal(settingsObj.auditChainIntegrity.valid, true);
+  assert.ok(settingsObj.auditChainIntegrity.totalEntries >= 6);
+
+  // 8 & 9. Telegram webhook processes cb:my_wallet (200), calls answerCallbackQuery, and rejects duplicate callback_query.id (409)
+  const telegramApiCalls: string[] = [];
+  const webhookHandler = createTelegramWebhookHandler({
+    getDb: () => db,
+    getBotToken: () => botToken,
+    getWebhookSecret: () => webhookSecret,
+    isAdminReady: () => true,
+    nowUnixSeconds: () => nowUnix,
+    limiter: new BoundedRateLimiter(),
+    fetchImpl: async (url) => {
+      telegramApiCalls.push(String(url));
+      return {
+        ok: true,
+        json: async () => ({ ok: true, result: true }),
+      } as unknown as Response;
+    },
+  });
+
+  const walletCallbackRes = await invokeHandler(webhookHandler, {
+    method: 'POST',
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
+    body: {
+      update_id: 9001,
+      callback_query: {
+        id: 'cbq_wallet_unique_1',
+        from: {
+          id: 7777777,
+          first_name: 'Dawit',
+          username: 'dawit_m',
+        },
+        message: {
+          chat: { id: 7777777, type: 'private' },
+        },
+        data: 'cb:my_wallet',
+      },
+    },
+  });
+  assert.equal(walletCallbackRes.statusCode, 200);
+  assert.equal(walletCallbackRes.body.ok, true);
+  assert.match(String(walletCallbackRes.body.text), /360\.00 ETB/);
+  assert.ok(telegramApiCalls.some((u) => u.includes('/sendMessage')));
+  assert.ok(telegramApiCalls.some((u) => u.includes('/answerCallbackQuery')));
+
+  // Duplicate callback_query.id with a new update_id is rejected with 409
+  const dupCallbackRes = await invokeHandler(webhookHandler, {
+    method: 'POST',
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
+    body: {
+      update_id: 9002,
+      callback_query: {
+        id: 'cbq_wallet_unique_1',
+        from: {
+          id: 7777777,
+          first_name: 'Dawit',
+          username: 'dawit_m',
+        },
+        message: {
+          chat: { id: 7777777, type: 'private' },
+        },
+        data: 'cb:my_wallet',
+      },
+    },
+  });
+  assert.equal(dupCallbackRes.statusCode, 409);
+  assert.equal(dupCallbackRes.body.reason, 'duplicate_callback_query');
+});
+

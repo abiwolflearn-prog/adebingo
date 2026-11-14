@@ -1,5 +1,11 @@
+import crypto from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { verifyWebhookSecretHeader } from '../../src/utils/telegramBot.ts';
+import {
+  AUTHORIZED_ADMIN_EMAILS,
+  AUTHORIZED_ADMIN_TELEGRAM_IDS,
+  verifyServerSessionToken,
+} from '../../src/utils/adminAuthority.ts';
 import {
   getAdminAuth,
   getAdminDb,
@@ -21,16 +27,93 @@ export interface DecodedIdTokenLike {
 export interface AuthenticatedCaller {
   uid: string;
   telegramId?: number;
+  email?: string;
   displayName: string;
   isTelegramVerified: boolean;
   isEmailVerified: boolean;
   isAdmin: boolean;
+  authMethod?: 'firebase_id_token' | 'admin_session_token';
+  issuedAt?: number;
+  expiresAt?: number;
 }
 
 export interface AuthBackendDeps {
-  verifyIdToken: (idToken: string, checkRevoked?: boolean) => Promise<DecodedIdTokenLike>;
-  isAdminUid: (uid: string) => Promise<boolean>;
+  verifyIdToken?: (idToken: string, checkRevoked?: boolean) => Promise<DecodedIdTokenLike>;
+  isAdminUid?: (uid: string) => Promise<boolean>;
   getUserDisplayName?: (uid: string) => Promise<string | null>;
+  getDb?: () => unknown;
+  sessionSecret?: string;
+  getSessionSecret?: () => string | undefined;
+  nowUnixSeconds?: () => number;
+}
+
+export function resolveAdminSessionSecret(
+  explicitSecretOrDeps?: string | AuthBackendDeps
+): string | null {
+  const explicitSecret =
+    typeof explicitSecretOrDeps === 'string'
+      ? explicitSecretOrDeps
+      : explicitSecretOrDeps?.sessionSecret ||
+        (typeof explicitSecretOrDeps?.getSessionSecret === 'function'
+          ? explicitSecretOrDeps.getSessionSecret()
+          : undefined);
+  if (typeof explicitSecret === 'string' && explicitSecret.trim().length >= 16) {
+    return explicitSecret.trim();
+  }
+  const envAdminSecret = (process.env.ADMIN_SESSION_SECRET || '').trim();
+  if (envAdminSecret.length >= 16) {
+    return envAdminSecret;
+  }
+  const webhookSecret = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+  if (webhookSecret.length >= 8 && webhookSecret !== 'MY_TELEGRAM_WEBHOOK_SECRET') {
+    return crypto
+      .createHash('sha256')
+      .update(`adeybingo_admin_session_v2:${webhookSecret}`)
+      .digest('hex');
+  }
+  const botToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  if (botToken.length >= 10 && botToken !== 'MY_TELEGRAM_BOT_TOKEN') {
+    return crypto
+      .createHash('sha256')
+      .update(`adeybingo_admin_session_v2:${botToken}`)
+      .digest('hex');
+  }
+  return null;
+}
+
+export function isServerAllowlistedAdmin(params: {
+  uid?: string;
+  telegramId?: number;
+  email?: string;
+  isEmailVerified?: boolean;
+}): boolean {
+  if (
+    params.isEmailVerified &&
+    typeof params.email === 'string' &&
+    AUTHORIZED_ADMIN_EMAILS.includes(params.email.toLowerCase())
+  ) {
+    return true;
+  }
+
+  const envTgIds = (process.env.ADEY_ADMIN_TELEGRAM_IDS || '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
+  if (
+    typeof params.telegramId === 'number' &&
+    Number.isInteger(params.telegramId) &&
+    params.telegramId > 0
+  ) {
+    if (
+      AUTHORIZED_ADMIN_TELEGRAM_IDS.includes(params.telegramId) ||
+      envTgIds.includes(params.telegramId)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 export function createDefaultAuthDeps(): AuthBackendDeps {
@@ -56,10 +139,15 @@ export function createDefaultAuthDeps(): AuthBackendDeps {
 
 export function extractBearerToken(req: VercelRequest): string | null {
   const header = getHeaderValue(req, 'authorization');
-  if (!header) return null;
-  const match = /^Bearer\s+([^\s]+)$/i.exec(header.trim());
-  if (!match || !match[1]) return null;
-  return match[1];
+  if (header) {
+    const match = /^Bearer\s+([^\s]+)$/i.exec(header.trim());
+    if (match && match[1]) return match[1];
+  }
+  const sessionHeader = getHeaderValue(req, 'x-adey-session-token');
+  if (sessionHeader && sessionHeader.trim()) {
+    return sessionHeader.trim();
+  }
+  return null;
 }
 
 export async function authenticateRequest(
@@ -82,21 +170,93 @@ export async function authenticateRequest(
     return null;
   }
 
+  const nowUnixSeconds = deps?.nowUnixSeconds
+    ? deps.nowUnixSeconds()
+    : Math.floor(Date.now() / 1000);
+
+  // 1. First check if the token is a signed server session token (format: base64url.hmacSig)
+  const sessionSecret = resolveAdminSessionSecret(deps);
+  if (sessionSecret && token.includes('.') && token.split('.').length === 2) {
+    const verifiedSession = verifyServerSessionToken(
+      token,
+      sessionSecret,
+      3600,
+      nowUnixSeconds
+    );
+    if (verifiedSession) {
+      let isAdmin = isServerAllowlistedAdmin({
+        uid: verifiedSession.uid,
+        telegramId: verifiedSession.telegramUserId,
+        email: verifiedSession.email,
+        isEmailVerified: Boolean(verifiedSession.email),
+      });
+
+      if (!isAdmin && deps?.isAdminUid) {
+        try {
+          isAdmin = await deps.isAdminUid(verifiedSession.uid);
+        } catch {
+          isAdmin = false;
+        }
+      }
+
+      if (options.requireTelegramVerified && !verifiedSession.telegramUserId) {
+        sendError(
+          res,
+          403,
+          'telegram_verification_required',
+          'This endpoint requires a verified Telegram Mini App session.'
+        );
+        return null;
+      }
+
+      if (options.requireAdmin && !isAdmin) {
+        sendError(
+          res,
+          403,
+          'admin_required',
+          'Administrator authorization is required for this operation.'
+        );
+        return null;
+      }
+
+      return {
+        uid: verifiedSession.uid,
+        telegramId: verifiedSession.telegramUserId || undefined,
+        email: verifiedSession.email,
+        displayName: verifiedSession.displayName || `Player ${verifiedSession.uid}`,
+        isTelegramVerified: Boolean(verifiedSession.telegramUserId),
+        isEmailVerified: Boolean(verifiedSession.email),
+        isAdmin,
+        authMethod: 'admin_session_token',
+        issuedAt: verifiedSession.issuedAt,
+        expiresAt: verifiedSession.expiresAt,
+      };
+    }
+  }
+
+  // 2. Otherwise verify as a Firebase ID Token
   let resolvedDeps: AuthBackendDeps;
   try {
-    resolvedDeps = deps ?? createDefaultAuthDeps();
+    resolvedDeps = deps?.verifyIdToken ? deps : { ...createDefaultAuthDeps(), ...deps };
   } catch {
-    sendError(
-      res,
-      503,
-      'auth_service_unavailable',
-      'Server authentication service is not configured.'
-    );
-    return null;
+    if (deps?.verifyIdToken) {
+      resolvedDeps = deps;
+    } else {
+      sendError(
+        res,
+        503,
+        'auth_service_unavailable',
+        'Server authentication service is not configured.'
+      );
+      return null;
+    }
   }
 
   let decoded: DecodedIdTokenLike;
   try {
+    if (!resolvedDeps.verifyIdToken) {
+      throw new Error('verifyIdToken not available');
+    }
     decoded = await resolvedDeps.verifyIdToken(token, true);
   } catch {
     sendError(
@@ -143,14 +303,14 @@ export async function authenticateRequest(
     return null;
   }
 
-  let isAdmin = false;
-  if (
-    isEmailVerified &&
-    typeof decoded.email === 'string' &&
-    decoded.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL
-  ) {
-    isAdmin = true;
-  } else {
+  let isAdmin = isServerAllowlistedAdmin({
+    uid,
+    telegramId: isTelegramVerified ? tgIdNum : undefined,
+    email: decoded.email,
+    isEmailVerified,
+  });
+
+  if (!isAdmin && resolvedDeps.isAdminUid) {
     try {
       isAdmin = await resolvedDeps.isAdminUid(uid);
     } catch {
@@ -186,10 +346,12 @@ export async function authenticateRequest(
   return {
     uid,
     telegramId: isTelegramVerified ? tgIdNum : undefined,
+    email: decoded.email,
     displayName,
     isTelegramVerified,
     isEmailVerified,
     isAdmin,
+    authMethod: 'firebase_id_token',
   };
 }
 

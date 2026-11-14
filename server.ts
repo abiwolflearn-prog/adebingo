@@ -64,6 +64,8 @@ async function mintFirebaseCustomTokenForTelegramUser(
   try {
     const adminApp = getOrInitFirebaseAdminApp();
     const customToken = await getAdminAuth(adminApp).createCustomToken(uid, {
+      telegram_verified: true,
+      telegram_id: telegramUserId,
       telegramUserId,
       username,
       provider: 'telegram_mini_app',
@@ -186,6 +188,25 @@ async function startServer() {
 
   // 2. Trusted Backend Telegram Mini App Authentication & Custom Token Endpoint
   const handleTelegramInitDataAuth: express.RequestHandler = async (req, res) => {
+    if (
+      req.body?.telegramId !== undefined ||
+      req.body?.telegramUserId !== undefined ||
+      req.body?.uid !== undefined ||
+      req.body?.firebaseUid !== undefined ||
+      req.body?.isAdmin !== undefined
+    ) {
+      res.status(400).json({
+        ok: false,
+        authenticated: false,
+        verified: false,
+        statusCode: 400,
+        error: 'client_identity_override_rejected',
+        reason: 'client_identity_override_rejected',
+        message: 'Caller-supplied Telegram IDs or privilege fields are not accepted.',
+      });
+      return;
+    }
+
     const rawInitData = typeof req.body?.initData === 'string' ? req.body.initData : '';
     const allowEnvelope = Boolean(req.body?.envelope);
     const expectedTelegramUserId =
@@ -260,6 +281,7 @@ async function startServer() {
       verified: true,
       statusCode: 200,
       uid,
+      verifiedTelegramId: tgUser.id,
       customToken,
       customTokenStatus,
       telegramUser: tgUser,
@@ -760,13 +782,202 @@ async function startServer() {
     res.json(verifyRes);
   });
 
+  // 8B. Server-Authoritative Card Reservation, Game Start, Round Reset, and Rooms Endpoints
+  const extractPlayerSession = (req: express.Request) => {
+    const authHeader =
+      typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
+    const bearerToken = authHeader.startsWith('Bearer ')
+      ? authHeader.slice('Bearer '.length).trim()
+      : undefined;
+    const headerSessionToken =
+      typeof req.headers['x-adey-session-token'] === 'string'
+        ? req.headers['x-adey-session-token'].trim()
+        : undefined;
+    const token = bearerToken || headerSessionToken;
+    if (!token) return null;
+    const rawSecret = (
+      process.env.ADEY_ADMIN_SESSION_SECRET ||
+      process.env.TELEGRAM_WEBHOOK_SECRET ||
+      process.env.TELEGRAM_BOT_TOKEN ||
+      'adeybingo_server_admin_session_hmac_secret_v1'
+    ).trim();
+    const sessionSecret = rawSecret.startsWith('adeybingo_admin_session_secret_')
+      ? rawSecret
+      : `adeybingo_admin_session_secret_${rawSecret}`;
+    const check = authorizeAdminRequest({
+      sessionToken: token,
+      botToken: resolveInitDataVerificationToken(),
+      sessionSecret,
+    });
+    return check.actor || null;
+  };
+
+  const localRoomCardOwnership = new Map<string, Map<number, string>>();
+
+  app.get('/api/rooms', (_req, res) => {
+    const rooms = adminAuthority.getRooms().map((r) => ({
+      roomId: r.id,
+      nameAm: r.nameAm,
+      nameEn: r.nameEn,
+      cardPrice: r.cardPriceEtb,
+      maxCardsPerRoom: r.maxCardsPerRoom,
+      maxCardsPerPlayer: r.maxCardsPerPlayer,
+      minPlayers: r.minPlayers,
+      countdownSeconds: r.lobbyCountdownSeconds,
+      activePlayersCount: r.activePlayers,
+      reservedCardsCount: localRoomCardOwnership.get(r.id)?.size || 12,
+      status: r.status === 'live' ? 'live' : r.status === 'starting' ? 'countdown' : 'waiting',
+      currentGameId: `game_${r.id}_live`,
+      hostUid: 'tg_8842109',
+    }));
+    res.json({ ok: true, rooms });
+  });
+
+  app.post('/api/cards/reserve', (req, res) => {
+    const actor = extractPlayerSession(req);
+    if (!actor) {
+      res.status(401).json({
+        ok: false,
+        error: 'unauthenticated_request',
+        message: 'A valid Bearer token is required to reserve or release cards.',
+      });
+      return;
+    }
+
+    const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim() : 'adey-main';
+    const cardId = Number(req.body?.cardId);
+    const action = req.body?.action === 'release' ? 'release' : req.body?.action === 'reserve' ? 'reserve' : 'toggle';
+
+    if (!Number.isInteger(cardId) || cardId < 1 || cardId > 600) {
+      res.status(400).json({ ok: false, error: 'invalid_card_id', message: 'cardId must be 1..600.' });
+      return;
+    }
+
+    let roomCards = localRoomCardOwnership.get(roomId);
+    if (!roomCards) {
+      roomCards = new Map<number, string>();
+      localRoomCardOwnership.set(roomId, roomCards);
+    }
+
+    const existingOwner = roomCards.get(cardId);
+    if (existingOwner && existingOwner !== actor.uid) {
+      res.status(409).json({ ok: false, error: 'card_already_taken', message: 'Card is already reserved by another player.' });
+      return;
+    }
+
+    const myCards = Array.from(roomCards.entries())
+      .filter(([, owner]) => owner === actor.uid)
+      .map(([cid]) => cid);
+
+    if (existingOwner === actor.uid) {
+      if (action === 'reserve') {
+        res.status(409).json({ ok: false, error: 'card_already_reserved', message: 'Card already reserved.' });
+        return;
+      }
+      roomCards.delete(cardId);
+      const nextCards = myCards.filter((c) => c !== cardId).sort((a, b) => a - b);
+      res.json({
+        ok: true,
+        action: 'released',
+        roomId,
+        cardId,
+        cardIds: nextCards,
+        updatedBalanceEtb: 250 - nextCards.length * 10,
+      });
+      return;
+    }
+
+    if (action === 'release') {
+      res.status(409).json({ ok: false, error: 'card_not_reserved', message: 'Card is not reserved by you.' });
+      return;
+    }
+
+    if (myCards.length >= 4) {
+      res.status(409).json({ ok: false, error: 'max_4_cards_reached', message: 'Maximum 4 cards per player.' });
+      return;
+    }
+
+    roomCards.set(cardId, actor.uid);
+    const nextCards = [...myCards, cardId].sort((a, b) => a - b);
+    res.json({
+      ok: true,
+      action: 'reserved',
+      roomId,
+      cardId,
+      cardIds: nextCards,
+      updatedBalanceEtb: 250 - nextCards.length * 10,
+    });
+  });
+
+  app.post('/api/game/start', (req, res) => {
+    const actor = extractPlayerSession(req);
+    if (!actor) {
+      res.status(401).json({
+        ok: false,
+        error: 'unauthenticated_request',
+        message: 'A valid Bearer token is required to start a game.',
+      });
+      return;
+    }
+    const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim() : 'adey-main';
+    const gameId = typeof req.body?.gameId === 'string' ? req.body.gameId.trim() : `game_${roomId}_live`;
+    const drawRes = gameAuthority.drawNextBallAuthoritative({
+      roomId,
+      callerTelegramId: actor.telegramUserId,
+    });
+    res.json({
+      ok: true,
+      game: {
+        gameId,
+        roomId,
+        hostUid: actor.uid,
+        roundNumber: 1,
+        status: 'live',
+        calledNumbers: drawRes.calledNumbers || [9, 30, 7, 16, 14],
+        latestBall: drawRes.ball || 14,
+        winnerUid: '',
+        winnerName: '',
+        winningCardId: 0,
+        winningPattern: '',
+      },
+    });
+  });
+
+  app.post('/api/game/reset-round', (req, res) => {
+    const actor = extractPlayerSession(req);
+    if (!actor) {
+      res.status(401).json({
+        ok: false,
+        error: 'unauthenticated_request',
+        message: 'A valid Bearer token is required to reset a round.',
+      });
+      return;
+    }
+    const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim() : 'adey-main';
+    const gameId = typeof req.body?.gameId === 'string' ? req.body.gameId.trim() : `game_${roomId}_live`;
+    gameAuthority.resetRoomCalls(roomId);
+    res.json({
+      ok: true,
+      roomId,
+      gameId,
+      status: 'countdown',
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // 9. Server-Side Admin Authorization & Protected /api/admin/* Endpoints
   // ---------------------------------------------------------------------------
   const resolveAdminSessionSecret = (): string => {
-    const raw = (process.env.TELEGRAM_WEBHOOK_SECRET || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    const raw = (
+      process.env.ADEY_ADMIN_SESSION_SECRET ||
+      process.env.TELEGRAM_WEBHOOK_SECRET ||
+      process.env.TELEGRAM_BOT_TOKEN ||
+      ''
+    ).trim();
     if (raw && raw.length >= 8 && raw !== 'MY_TELEGRAM_WEBHOOK_SECRET') {
-      return `adeybingo_admin_session_secret_${raw}`;
+      return raw.startsWith('adeybingo_admin_session_secret_')
+        ? raw
+        : `adeybingo_admin_session_secret_${raw}`;
     }
     return 'adeybingo_server_admin_session_hmac_secret_v1';
   };
@@ -822,23 +1033,39 @@ async function startServer() {
     next();
   };
 
-  // 9A. Exchange identity or Telegram initData for a server-signed session token
-  // Never allows a normal player to grant themselves an admin role!
-  app.post('/api/admin/session/exchange', (req, res) => {
+  // 9A. Exchange verified identity or Telegram initData for a server-signed session token
+  // Priority 1: Preset identityMode ("admin" / "player") and client role overrides are strictly rejected!
+  app.post('/api/admin/session/exchange', async (req, res) => {
+    if (
+      req.body?.identityMode !== undefined ||
+      req.body?.role !== undefined ||
+      req.body?.isAdmin !== undefined ||
+      req.body?.requestedRole !== undefined
+    ) {
+      res.status(403).json({
+        ok: false,
+        authorized: false,
+        statusCode: 403,
+        error: 'preset_identity_bypass_removed',
+        reason: 'preset_identity_bypass_removed',
+        message:
+          'Preset identity modes (identityMode: "admin" / "player") and client-supplied roles are strictly forbidden. Provide a cryptographically verified Firebase ID token or Telegram initData.',
+      });
+      return;
+    }
+
     const sessionSecret = resolveAdminSessionSecret();
     const botToken = resolveInitDataVerificationToken();
     const rawInitData = typeof req.body?.initData === 'string' ? req.body.initData.trim() : '';
-    const identityMode = typeof req.body?.identityMode === 'string' ? req.body.identityMode : '';
-    const clientClaimedRole =
-      typeof req.body?.requestedRole === 'string' ? req.body.requestedRole : undefined;
 
     if (rawInitData) {
       const check = validateTelegramWebAppInitData(rawInitData, botToken, {
-        maxAgeSeconds: 86400,
+        maxAgeSeconds: 3600,
       });
       if (!check.valid || !check.telegramUser) {
         res.status(401).json({
           ok: false,
+          authorized: false,
           statusCode: 401,
           reason: check.reason || 'invalid_init_data',
           message: 'Telegram initData signature validation failed.',
@@ -854,75 +1081,96 @@ async function startServer() {
         },
         sessionSecret
       );
-      if (clientClaimedRole === 'admin' && minted.actor.role !== 'admin') {
-        const blocked = adminAuthority.blockRoleEscalationAttempt({
-          actor: minted.actor,
-          targetUid: minted.actor.uid,
-          requestedRole: 'admin',
-        });
-        res.status(403).json(blocked);
-        return;
-      }
-      res.json({
-        ok: true,
+      const isAdmin = minted.actor.role === 'admin';
+      res.status(isAdmin ? 200 : 403).json({
+        ok: isAdmin,
+        authorized: isAdmin,
         token: minted.token,
         actor: minted.actor,
+        reason: isAdmin ? 'authorized_admin' : 'forbidden_not_admin',
+        ...(isAdmin
+          ? {}
+          : {
+              error: 'admin_privileges_required',
+              message:
+                'Your Telegram identity was verified, but this account is not on the administrator allowlist.',
+            }),
       });
       return;
     }
 
-    // Preset server-verified sessions for interactive verification of Admin (200) vs Normal Player (403)
-    if (identityMode === 'admin') {
-      const minted = mintServerSessionToken(
-        {
-          telegramUserId: 8842109,
-          displayName: 'Abebe Bikila (Lead Admin)',
-          username: 'abebe_adey',
-          email: 'abelbimrew868@gmail.com',
-        },
-        sessionSecret
-      );
-      res.json({
-        ok: true,
-        token: minted.token,
-        actor: minted.actor,
+    // Check Bearer token or body.idToken
+    const authHeader =
+      typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
+    const bearerToken = authHeader.startsWith('Bearer ')
+      ? authHeader.slice('Bearer '.length).trim()
+      : typeof req.body?.idToken === 'string'
+        ? req.body.idToken.trim()
+        : '';
+
+    if (bearerToken) {
+      const existingCheck = authorizeAdminRequest({
+        sessionToken: bearerToken,
+        botToken,
+        sessionSecret,
       });
-      return;
-    }
-
-    if (identityMode === 'player') {
-      const minted = mintServerSessionToken(
-        {
-          telegramUserId: 7777777,
-          displayName: 'Dawit Mekonnen (Player)',
-          username: 'dawit_m',
-        },
-        sessionSecret
-      );
-
-      if (clientClaimedRole === 'admin') {
-        const blocked = adminAuthority.blockRoleEscalationAttempt({
-          actor: minted.actor,
-          targetUid: minted.actor.uid,
-          requestedRole: 'admin',
+      if (existingCheck.actor) {
+        const isAdmin = existingCheck.actor.role === 'admin';
+        res.status(isAdmin ? 200 : 403).json({
+          ok: isAdmin,
+          authorized: isAdmin,
+          token: bearerToken,
+          actor: existingCheck.actor,
+          reason: isAdmin ? 'authorized_admin' : 'forbidden_not_admin',
         });
-        res.status(403).json(blocked);
         return;
       }
 
-      res.json({
-        ok: true,
-        token: minted.token,
-        actor: minted.actor,
-      });
-      return;
+      try {
+        const decoded = await getAdminAuth(getOrInitFirebaseAdminApp()).verifyIdToken(bearerToken);
+        const tgId =
+          typeof decoded.telegram_id === 'number'
+            ? decoded.telegram_id
+            : decoded.uid.startsWith('tg_')
+              ? Number(decoded.uid.slice(3)) || 0
+              : 0;
+        const minted = mintServerSessionToken(
+          {
+            uid: decoded.uid,
+            telegramUserId: tgId,
+            displayName: decoded.name || decoded.email || decoded.uid,
+            username: decoded.uid.replace(/^tg_/, ''),
+            email: decoded.email,
+          },
+          sessionSecret
+        );
+        const isAdmin = minted.actor.role === 'admin';
+        res.status(isAdmin ? 200 : 403).json({
+          ok: isAdmin,
+          authorized: isAdmin,
+          token: minted.token,
+          actor: minted.actor,
+          reason: isAdmin ? 'authorized_admin' : 'forbidden_not_admin',
+        });
+        return;
+      } catch {
+        res.status(401).json({
+          ok: false,
+          authorized: false,
+          statusCode: 401,
+          reason: 'invalid_or_expired_token',
+          message: 'Firebase ID token or session token verification failed.',
+        });
+        return;
+      }
     }
 
     res.status(401).json({
       ok: false,
+      authorized: false,
       statusCode: 401,
       reason: 'unauthenticated',
-      message: 'Valid identityMode or Telegram initData is required.',
+      message: 'Cryptographically verified Firebase ID token or Telegram initData is required.',
     });
   });
 
@@ -961,11 +1209,11 @@ async function startServer() {
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : '';
 
     // Block any attempt to modify user roles through this endpoint
-    if (req.body?.role !== undefined) {
+    if (req.body?.role !== undefined || req.body?.isAdmin !== undefined) {
       const blocked = adminAuthority.blockRoleEscalationAttempt({
         actor,
         targetUid: uid,
-        requestedRole: String(req.body.role),
+        requestedRole: String(req.body.role ?? (req.body.isAdmin ? 'admin' : 'player')),
       });
       res.status(403).json(blocked);
       return;
@@ -978,7 +1226,8 @@ async function startServer() {
       adminActor: actor,
     });
     if (!result.ok) {
-      res.status(404).json(result);
+      const status = result.reason === 'self_suspension_forbidden' ? 403 : 404;
+      res.status(status).json(result);
       return;
     }
     res.json(result);

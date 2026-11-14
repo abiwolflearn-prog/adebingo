@@ -938,31 +938,30 @@ export class AdeyBingoTelegramBotEngine {
       callbackData === 'cb:game_history' ||
       callbackData === 'menu:game_history'
     ) {
+      const bal = existingPlayer?.demoBalanceEtb ?? 250;
       const historyText =
         currentLang === 'am'
           ? [
-              '📜 *የእርስዎ የቅርብ ጊዜ የADEYBINGO የጨዋታ ታሪክ*',
+              '📜 *የእርስዎ የADEYBINGO የጨዋታ ታሪክ*',
               '',
-              '1️⃣ *አደይ ዋና አዳራሽ (Adey Main Hall)* — 🏆 *አሸናፊ (+80 ETB Demo)*',
-              '   • ካርዶች፦ `#14, #108` · አሸናፊ ኳስ፦ `N-35` (አግድም መስመር)',
-              '2️⃣ *አደይ ፈጣን 30 (Adey Fast 30)* — 🎲 *ተሳትፎ (-10 ETB Demo)*',
-              '   • ካርድ፦ `#42` · የተጠሩ ቁጥሮች፦ `28/75`',
-              '3️⃣ *አደይ ዋና አዳራሽ (Adey Main Hall)* — 🏆 *አሸናፊ (+50 ETB Demo)*',
-              '   • ካርድ፦ `#1` · አሸናፊ ኳስ፦ `G-52` (4 ማዕዘኖች)',
+              existingPlayer
+                ? `• ተጫዋች፦ *${existingPlayer.firstName} ${existingPlayer.lastName || ''}* (\`TG #${senderTelegramId}\`)`
+                : `• የቴሌግራም መለያ፦ \`TG #${senderTelegramId}\``,
+              `• የአሁን የሙከራ ቀሪ ሂሳብ፦ *${bal.toFixed(2)} ETB (Demo)*`,
+              '• የተጠናቀቁ ዙሮች በሙከራ (Demo Sandbox) መዝገብዎ ውስጥ ይቀመጣሉ።',
               '',
-              '💡 ሙሉ ታሪክዎን ለማየት ከታች *🎮 ቢንጎ ይጫወቱ (PLAY BINGO)* የሚለውን ይጫኑ።',
+              '💡 ቀጥታ የቢንጎ ዙር ለመጀመር ከታች *🎮 ቢንጎ ይጫወቱ (PLAY BINGO)* የሚለውን ይጫኑ።',
             ].join('\n')
           : [
-              '📜 *Your Recent ADEYBINGO Game History*',
+              '📜 *Your ADEYBINGO Game History*',
               '',
-              '1️⃣ *Adey Main Hall* — 🏆 *WON (+80 ETB Demo)*',
-              '   • Cards: `#14, #108` · Winning Ball: `N-35` (Horizontal Line)',
-              '2️⃣ *Adey Fast 30* — 🎲 *Played (-10 ETB Demo)*',
-              '   • Card: `#42` · Total Calls: `28/75`',
-              '3️⃣ *Adey Main Hall* — 🏆 *WON (+50 ETB Demo)*',
-              '   • Card: `#1` · Winning Ball: `G-52` (4 Corners)',
+              existingPlayer
+                ? `• Player: *${existingPlayer.firstName} ${existingPlayer.lastName || ''}* (\`TG #${senderTelegramId}\`)`
+                : `• Telegram ID: \`TG #${senderTelegramId}\``,
+              `• Current Demo Balance: *${bal.toFixed(2)} ETB (Demo)*`,
+              '• Completed rounds and verified Bingo wins are recorded in your Demo Sandbox ledger.',
               '',
-              '💡 Tap *🎮 Play Bingo (PLAY BINGO)* below to view full round details inside the Mini App.',
+              '💡 Tap *🎮 Play Bingo (PLAY BINGO)* below to join a live round in the Mini App.',
             ].join('\n');
 
       return {
@@ -1409,6 +1408,14 @@ export class ServerGameAuthority {
 
   public getRoomSession(roomId: string): AuthoritativeRoomGameSession {
     return this.ensureRoomSession(roomId);
+  }
+
+  public resetRoomCalls(roomId: string, initialCalls: number[] = [9, 30, 7, 16, 14]): void {
+    const sess = this.ensureRoomSession(roomId);
+    sess.status = 'countdown';
+    sess.calledNumbers = [...initialCalls];
+    sess.latestBall = initialCalls[initialCalls.length - 1] ?? null;
+    sess.winner = undefined;
   }
 
   /**

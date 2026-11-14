@@ -87,6 +87,10 @@ export function createBotCommandHandler(deps: BotCommandHandlerDeps = {}) {
     const text = typeof body.text === 'string' ? body.text.slice(0, 256) : '';
     const callbackData =
       typeof body.callbackData === 'string' ? body.callbackData.slice(0, 128) : '';
+    const callbackQueryId =
+      typeof body.callbackQueryId === 'string' && body.callbackQueryId.trim() !== ''
+        ? body.callbackQueryId.trim().slice(0, 128)
+        : undefined;
     const updateId =
       typeof body.updateId === 'number' && Number.isInteger(body.updateId) && body.updateId > 0
         ? body.updateId
@@ -102,6 +106,7 @@ export function createBotCommandHandler(deps: BotCommandHandlerDeps = {}) {
 
     const botResponse = await botService.handleIncomingUpdate({
       updateId,
+      callbackQueryId,
       senderTelegramId: caller.telegramId,
       chatId: caller.telegramId,
       chatType: 'private',
@@ -111,8 +116,16 @@ export function createBotCommandHandler(deps: BotCommandHandlerDeps = {}) {
       callbackData,
     });
 
-    if (botResponse.securityCode === 'replay_detected') {
-      sendError(res, 409, 'replay_detected', 'Duplicate command update blocked.');
+    if (
+      botResponse.securityCode === 'replay_detected' ||
+      botResponse.securityCode === 'duplicate_callback_query'
+    ) {
+      sendError(
+        res,
+        409,
+        botResponse.securityCode,
+        'Duplicate command or callback query blocked.'
+      );
       return;
     }
 

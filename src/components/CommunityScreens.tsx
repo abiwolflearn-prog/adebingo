@@ -41,6 +41,7 @@ interface CommunityScreensProps {
   phoneNumber: string;
   phoneVerified: boolean;
   onVerifyPhone: (phone: string, method: 'telegram_contact' | 'sms_otp_demo') => Promise<void>;
+  serverVerifiedTelegramId: number | null;
   telegramBackendStatus: string;
   onValidateTelegramInitData: () => Promise<void>;
   demoBalance: number;
@@ -92,6 +93,7 @@ export function CommunityScreens({
   phoneNumber,
   phoneVerified,
   onVerifyPhone,
+  serverVerifiedTelegramId,
   telegramBackendStatus,
   onValidateTelegramInitData,
   demoBalance,
@@ -109,6 +111,7 @@ export function CommunityScreens({
   onNavigate,
 }: CommunityScreensProps) {
   const [copied, setCopied] = useState(false);
+  const [copiedTelegramId, setCopiedTelegramId] = useState(false);
   const [newFriendName, setNewFriendName] = useState('');
 
   const [phoneInput, setPhoneInput] = useState(phoneNumber || '+251911223344');
@@ -125,14 +128,40 @@ export function CommunityScreens({
 
   const inviteLink = `https://t.me/AdeyBingoBot?start=ADEY-${user.id}`;
 
-  const handleCopyInvite = () => {
+  const copyTextSafely = async (value: string) => {
     try {
-      navigator.clipboard?.writeText(inviteLink);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return;
+      }
     } catch {
-      // Ignore clipboard errors in iframe
+      // Fallback below for restricted WebViews / iframes
     }
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    } catch {
+      // Ignore in restricted environments
+    }
+  };
+
+  const handleCopyInvite = () => {
+    void copyTextSafely(inviteLink);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleCopyTelegramId = () => {
+    if (serverVerifiedTelegramId === null) return;
+    void copyTextSafely(String(serverVerifiedTelegramId));
+    setCopiedTelegramId(true);
+    setTimeout(() => setCopiedTelegramId(false), 2000);
   };
 
   const handlePhoneSubmit = async (e: React.FormEvent) => {
@@ -347,8 +376,8 @@ export function CommunityScreens({
                 <div className="min-w-0 flex-1">
                   <span className="text-[10px] font-extrabold uppercase text-[#12a566] block truncate">
                     {firebaseUid
-                      ? 'FIREBASE AUTH · CLOUD SYNC ACTIVE'
-                      : 'LOCAL DEMO SESSION · SIGN IN FOR CLOUD'}
+                      ? 'TELEGRAM MINI APP · CLOUD SYNC ACTIVE'
+                      : 'TELEGRAM MINI APP · SANDBOX SESSION'}
                   </span>
                   <h2 className="font-['Outfit'] text-2xl font-extrabold text-[#193b2b] truncate">
                     {user.firstName} {user.lastName}
@@ -364,7 +393,7 @@ export function CommunityScreens({
                 </div>
               </div>
 
-              {/* Firebase Sign-In / Sign-Out Action */}
+              {/* Telegram Mini App Server Auth / Sign-Out Action */}
               <div className="p-3.5 rounded-2xl bg-[#f4faf6] border border-[#dcece1] space-y-2.5">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-bold text-[#254936] flex items-center gap-1.5">
@@ -387,7 +416,7 @@ export function CommunityScreens({
                       className="px-3 py-1.5 rounded-xl border border-[#d5e5db] bg-white text-[#355644] text-xs font-extrabold flex items-center gap-1.5 hover:bg-[#eef6f1]"
                     >
                       <LogOut size={13} />
-                      {lang === 'am' ? 'ውጣ' : 'Sign Out'}
+                      {lang === 'am' ? 'ውጣ' : 'Disconnect'}
                     </button>
                   </div>
                 ) : (
@@ -398,8 +427,8 @@ export function CommunityScreens({
                   >
                     <LogIn size={15} />
                     {lang === 'am'
-                      ? 'በGoogle ይግቡ (Firebase Cloud Sync)'
-                      : 'Sign In with Google (Enable Firestore Sync)'}
+                      ? 'በቴሌግራም ያረጋግጡ (Telegram Mini App Auth)'
+                      : 'Authenticate via Telegram Mini App'}
                   </button>
                 )}
               </div>
@@ -423,6 +452,88 @@ export function CommunityScreens({
                 <p className="text-[11px] text-[#5e7768] font-mono leading-relaxed break-words">
                   {telegramBackendStatus}
                 </p>
+              </div>
+            </div>
+
+            {/* Temporary "My Telegram ID" Section (Server-Verified initData Only) */}
+            <div
+              data-testid="my-telegram-id-section"
+              className="bg-white border-2 border-[#cce8d7] rounded-2xl p-5 space-y-3 shadow-xs"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="text-[10px] font-extrabold uppercase text-[#087e50] flex items-center gap-1">
+                    <ShieldCheck size={12} />
+                    {lang === 'am'
+                      ? 'ጊዜያዊ · በሰርቨር የተረጋገጠ (SERVER-VERIFIED INITDATA)'
+                      : 'TEMPORARY · SERVER-VERIFIED INITDATA'}
+                  </span>
+                  <h3 className="font-['Outfit'] text-lg font-extrabold text-[#193b2b]">
+                    {lang === 'am' ? 'የእኔ የቴሌግራም መለያ (My Telegram ID)' : 'My Telegram ID'}
+                  </h3>
+                </div>
+                <span
+                  className={`text-[11px] font-extrabold px-2.5 py-1 rounded-lg shrink-0 ${
+                    serverVerifiedTelegramId !== null
+                      ? 'bg-[#e7f8ed] text-[#087e50]'
+                      : 'bg-[#fef5dc] text-[#8a6109]'
+                  }`}
+                >
+                  {serverVerifiedTelegramId !== null
+                    ? lang === 'am'
+                      ? '✓ የተረጋገጠ'
+                      : '✓ Verified'
+                    : lang === 'am'
+                    ? 'በቴሌግራም ይክፈቱ'
+                    : 'Awaiting Telegram'}
+                </span>
+              </div>
+
+              <p className="text-xs text-[#5d7667] leading-relaxed">
+                {lang === 'am'
+                  ? 'ይህ ቁጥር የሚገኘው ከቴሌግራም Mini App የተፈረመ initData በሰርቨር ላይ ከተረጋገጠ በኋላ ብቻ ነው። ከፍሮንትኤንድ የሚላክ መለያ ቁጥር ተቀባይነት የለውም።'
+                  : 'Retrieved exclusively from cryptographically verified Telegram Mini App initData on the server. Frontend-supplied IDs are never accepted.'}
+              </p>
+
+              <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-[#f4faf6] border border-[#d7eadf]">
+                <div className="min-w-0">
+                  <span className="text-[10px] font-bold uppercase text-[#5e7768] block">
+                    {lang === 'am' ? 'የተረጋገጠ የቴሌግራም ቁጥር' : 'Verified Numeric Telegram ID'}
+                  </span>
+                  <code
+                    data-testid="verified-telegram-id-value"
+                    className="font-mono text-base font-extrabold text-[#193b2b] select-all block truncate"
+                  >
+                    {serverVerifiedTelegramId !== null
+                      ? String(serverVerifiedTelegramId)
+                      : lang === 'am'
+                      ? 'በቴሌግራም Mini App ውስጥ ሲከፍቱ ይታያል'
+                      : 'Open in Telegram Mini App to verify'}
+                  </code>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    data-testid="copy-telegram-id-btn"
+                    disabled={serverVerifiedTelegramId === null}
+                    onClick={handleCopyTelegramId}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
+                      serverVerifiedTelegramId !== null
+                        ? 'bg-[#087e50] text-white hover:brightness-105 cursor-pointer'
+                        : 'bg-[#e3eee7] text-[#7a9082] cursor-not-allowed'
+                    }`}
+                  >
+                    {copiedTelegramId ? <Check size={14} /> : <Copy size={14} />}
+                    {copiedTelegramId
+                      ? lang === 'am'
+                        ? 'ተቀድቷል!'
+                        : 'Copied!'
+                      : lang === 'am'
+                      ? 'ቅዳ (Copy)'
+                      : 'Copy'}
+                  </button>
+                </div>
               </div>
             </div>
 

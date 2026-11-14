@@ -188,8 +188,14 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
 
     const nowUnixSeconds = deps.nowUnixSeconds ? deps.nowUnixSeconds() : Math.floor(Date.now() / 1000);
 
+    const callbackQueryId =
+      typeof callbackObj?.id === 'string' && callbackObj.id.trim() !== ''
+        ? callbackObj.id.trim()
+        : undefined;
+
     const botResponse = await botService.handleIncomingUpdate({
       updateId: rawUpdateId,
+      callbackQueryId,
       senderTelegramId,
       chatId,
       chatType,
@@ -205,13 +211,18 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
       nowUnixSeconds,
     });
 
-    if (botResponse.securityCode === 'replay_detected') {
+    if (
+      botResponse.securityCode === 'replay_detected' ||
+      botResponse.securityCode === 'duplicate_callback_query'
+    ) {
       sendError(
         res,
         409,
-        'replay_detected',
-        'Duplicate Telegram webhook update blocked.',
-        { duplicate: true, securityCode: 'replay_detected' }
+        botResponse.securityCode,
+        botResponse.securityCode === 'duplicate_callback_query'
+          ? 'Duplicate Telegram callback_query blocked.'
+          : 'Duplicate Telegram webhook update blocked.',
+        { duplicate: true, securityCode: botResponse.securityCode }
       );
       return;
     }
@@ -230,16 +241,21 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
     const botToken = deps.getBotToken ? deps.getBotToken() : process.env.TELEGRAM_BOT_TOKEN;
     const fetchFn = deps.fetchImpl ?? fetch;
     let deliveredToTelegramApi = false;
+    let callbackAnswered = false;
     let telegramDeliveryNote: string | undefined;
 
     if (isConfiguredBotToken(botToken) && botResponse.chatId > 0) {
       try {
-        if (typeof callbackObj?.id === 'string' && callbackObj.id) {
-          await fetchFn(`https://api.telegram.org/bot${botToken}/answerCallbackQuery`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ callback_query_id: callbackObj.id }),
-          });
+        if (callbackQueryId) {
+          const cbResp = await fetchFn(
+            `https://api.telegram.org/bot${botToken}/answerCallbackQuery`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ callback_query_id: callbackQueryId }),
+            }
+          );
+          callbackAnswered = Boolean(cbResp.ok);
         }
 
         const tgResp = await fetchFn(`https://api.telegram.org/bot${botToken}/sendMessage`, {
@@ -268,8 +284,11 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
       ok: botResponse.ok,
       chatId: botResponse.chatId,
       language: botResponse.language,
+      text: botResponse.text,
+      replyMarkup: botResponse.replyMarkup,
       registrationStatus: botResponse.registrationStatus,
       securityCode: botResponse.securityCode,
+      callbackAnswered,
       deliveredToTelegramApi,
       telegramDeliveryNote,
     });

@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
+import { mintServerSessionToken } from '../../src/utils/adminAuthority.ts';
 import {
   createTelegramCustomToken,
   getAdminDb,
@@ -197,10 +198,34 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
       return;
     }
 
+    const secret =
+      (process.env.ADEY_ADMIN_SESSION_SECRET ||
+        process.env.TELEGRAM_WEBHOOK_SECRET ||
+        botToken ||
+        '').trim();
+    const sessionToken =
+      secret.length >= 8
+        ? mintServerSessionToken(
+            {
+              uid: minted.uid,
+              telegramUserId: tgUser.id,
+              displayName: `${persisted.player.firstName} ${persisted.player.lastName || ''}`.trim(),
+              username: persisted.player.username,
+              nowUnixSeconds,
+              expiresInSeconds: 3600,
+            },
+            secret.startsWith('adeybingo_admin_session_secret_')
+              ? secret
+              : `adeybingo_admin_session_secret_${secret}`
+          ).token
+        : undefined;
+
     sendJson(res, 200, {
       ok: true,
       uid: minted.uid,
+      verifiedTelegramId: tgUser.id,
       customToken: minted.customToken,
+      ...(sessionToken ? { sessionToken } : {}),
       profile: {
         uid: minted.uid,
         telegramUserId: tgUser.id,
@@ -209,6 +234,9 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
         username: persisted.player.username,
         language: persisted.player.language,
         phoneVerified: persisted.player.phoneVerified,
+        verifiedPhoneMasked: persisted.player.verifiedPhoneMasked,
+        demoBalanceEtb: persisted.player.demoBalanceEtb,
+        referralCode: persisted.player.referralCode,
       },
     });
   };

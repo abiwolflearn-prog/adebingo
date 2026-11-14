@@ -147,6 +147,7 @@ export function createValidateInitDataHandler(deps: ValidateInitDataHandlerDeps 
       ok: true,
       verified: true,
       statusCode: 200,
+      verifiedTelegramId: result.telegramUser.id,
       telegramUser: result.telegramUser,
       authDate: result.authDate,
       dataCheckHash: result.dataCheckHash,

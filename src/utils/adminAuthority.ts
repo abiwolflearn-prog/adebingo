@@ -26,8 +26,9 @@ export interface VerifiedSessionActor {
   username: string;
   email?: string;
   role: UserRole;
-  authMethod: 'server_session_token' | 'telegram_init_data';
+  authMethod: 'server_session_token' | 'telegram_init_data' | 'firebase_id_token';
   issuedAt: number;
+  expiresAt: number;
 }
 
 export interface AdminAuthorizationResult {
@@ -173,26 +174,31 @@ export const AUTHORIZED_ADMIN_EMAILS: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Signs a tamper-evident server session token using HMAC-SHA256.
+ * Signs a tamper-evident server session token using HMAC-SHA256 with an explicit expiration timestamp.
  * Roles are determined strictly on the backend from the server-side admin allowlist—never from client input.
  */
 export function mintServerSessionToken(
   params: {
+    uid?: string;
     telegramUserId: number;
     displayName: string;
     username: string;
     email?: string;
+    isAdminOverride?: boolean;
     nowUnixSeconds?: number;
+    expiresInSeconds?: number;
   },
   secretKey: string
 ): { token: string; actor: VerifiedSessionActor } {
   const nowSec = params.nowUnixSeconds ?? Math.floor(Date.now() / 1000);
+  const ttlSec = Math.max(60, Math.min(86400, params.expiresInSeconds ?? 3600));
   const isAdmin =
+    Boolean(params.isAdminOverride) ||
     AUTHORIZED_ADMIN_TELEGRAM_IDS.includes(params.telegramUserId) ||
     (params.email ? AUTHORIZED_ADMIN_EMAILS.includes(params.email.toLowerCase()) : false);
 
   const actor: VerifiedSessionActor = {
-    uid: `tg_${params.telegramUserId}`,
+    uid: params.uid || `tg_${params.telegramUserId}`,
     telegramUserId: params.telegramUserId,
     displayName: params.displayName,
     username: params.username,
@@ -200,6 +206,7 @@ export function mintServerSessionToken(
     role: isAdmin ? 'admin' : 'player',
     authMethod: 'server_session_token',
     issuedAt: nowSec,
+    expiresAt: nowSec + ttlSec,
   };
 
   const payloadB64 = Buffer.from(JSON.stringify(actor), 'utf8').toString('base64url');
@@ -215,7 +222,7 @@ export function mintServerSessionToken(
 }
 
 /**
- * Verifies a server-issued session token using constant-time HMAC comparison.
+ * Verifies a server-issued session token using constant-time HMAC comparison and expiration bounds.
  * Re-computes the actor's role against the server-side allowlist so even a forged payload role cannot escalate privileges.
  */
 export function verifyServerSessionToken(
@@ -224,7 +231,7 @@ export function verifyServerSessionToken(
   maxAgeSeconds: number = 86400,
   nowUnixSeconds: number = Math.floor(Date.now() / 1000)
 ): VerifiedSessionActor | null {
-  if (!token || typeof token !== 'string' || !token.includes('.')) {
+  if (!token || typeof token !== 'string' || !token.includes('.') || !secretKey) {
     return null;
   }
   const parts = token.trim().split('.');
@@ -252,7 +259,16 @@ export function verifyServerSessionToken(
     ) {
       return null;
     }
-    if (nowUnixSeconds - parsed.issuedAt > maxAgeSeconds || parsed.issuedAt > nowUnixSeconds + 60) {
+    const expiresAt =
+      typeof parsed.expiresAt === 'number'
+        ? parsed.expiresAt
+        : parsed.issuedAt + maxAgeSeconds;
+
+    if (
+      nowUnixSeconds >= expiresAt ||
+      nowUnixSeconds - parsed.issuedAt > maxAgeSeconds ||
+      parsed.issuedAt > nowUnixSeconds + 60
+    ) {
       return null;
     }
 
@@ -263,6 +279,7 @@ export function verifyServerSessionToken(
 
     return {
       ...parsed,
+      expiresAt,
       role: isServerAuthorizedAdmin ? 'admin' : 'player',
     };
   } catch {
@@ -341,6 +358,7 @@ export function authorizeAdminRequest(params: {
       role: isAdmin ? 'admin' : 'player',
       authMethod: 'telegram_init_data',
       issuedAt: nowUnixSeconds,
+      expiresAt: nowUnixSeconds + 3600,
     };
 
     if (!isAdmin) {
@@ -475,6 +493,7 @@ export class ServerAdminAuthority {
   }
 
   private seedInitialData(): void {
+    const nowSec = Math.floor(Date.now() / 1000);
     const seedAdmin: VerifiedSessionActor = {
       uid: 'tg_8842109',
       telegramUserId: 8842109,
@@ -483,7 +502,8 @@ export class ServerAdminAuthority {
       email: 'abelbimrew868@gmail.com',
       role: 'admin',
       authMethod: 'server_session_token',
-      issuedAt: Math.floor(Date.now() / 1000),
+      issuedAt: nowSec,
+      expiresAt: nowSec + 3600,
     };
 
     const seedUsers: AdminManagedUserRecord[] = [
@@ -940,6 +960,9 @@ export class ServerAdminAuthority {
     auditRecord?: AdminAuditRecord;
   } {
     this.syncBotPlayers();
+    if (params.uid === params.adminActor.uid && params.accountStatus === 'suspended') {
+      return { ok: false, reason: 'self_suspension_forbidden' };
+    }
     const target = this.users.get(params.uid);
     if (!target) {
       return { ok: false, reason: 'user_not_found' };
@@ -1007,8 +1030,9 @@ export class ServerAdminAuthority {
     adminActor: VerifiedSessionActor;
   }): {
     ok: boolean;
-    reason?: 'payout_not_found' | 'invalid_status' | 'missing_review_notes';
+    reason?: 'payout_not_found' | 'invalid_status' | 'missing_review_notes' | 'already_finalized';
     payout?: AdminPayoutOrder;
+    refundedBalanceEtb?: number;
     auditRecord?: AdminAuditRecord;
   } {
     const allowedStatuses: PayoutOrderStatus[] = [
@@ -1027,10 +1051,39 @@ export class ServerAdminAuthority {
       return { ok: false, reason: 'payout_not_found' };
     }
 
+    const prevStatus = order.status;
+    if (
+      (prevStatus === 'Rejected' || prevStatus === 'Completed') &&
+      prevStatus !== params.nextStatus
+    ) {
+      return { ok: false, reason: 'already_finalized' };
+    }
+
     const cleanNotes =
       params.reviewNotes.trim() || `Status updated to ${params.nextStatus} (Demo Sandbox)`;
-    const prevStatus = order.status;
     const nowIso = new Date().toISOString();
+
+    let refundedBalanceEtb: number | undefined;
+    if (params.nextStatus === 'Rejected' && prevStatus !== 'Rejected') {
+      this.syncBotPlayers();
+      const targetUser = this.users.get(order.uid);
+      if (targetUser) {
+        targetUser.demoBalanceEtb = Math.min(
+          100000,
+          targetUser.demoBalanceEtb + order.requestedAmountEtb
+        );
+        refundedBalanceEtb = targetUser.demoBalanceEtb;
+        targetUser.walletLedger.unshift({
+          id: `tx_poref_${order.requestId}`,
+          type: 'withdraw_demo',
+          amountEtb: order.requestedAmountEtb,
+          description: `Demo Payout Rejected Refund (${order.requestId})`,
+          reference: `ADB-POREF-${order.requestId}`,
+          timestamp: nowIso,
+          status: 'demo_completed',
+        });
+      }
+    }
 
     order.status = params.nextStatus;
     order.reviewNotes = cleanNotes;
@@ -1057,6 +1110,7 @@ export class ServerAdminAuthority {
     return {
       ok: true,
       payout: { ...order, auditTrail: [...order.auditTrail] },
+      refundedBalanceEtb,
       auditRecord,
     };
   }
@@ -1072,8 +1126,9 @@ export class ServerAdminAuthority {
     adminActor: VerifiedSessionActor;
   }): {
     ok: boolean;
-    reason?: 'deposit_not_found' | 'invalid_status';
+    reason?: 'deposit_not_found' | 'invalid_status' | 'already_finalized';
     deposit?: AdminDepositRequest;
+    creditedBalanceEtb?: number;
     auditRecord?: AdminAuditRecord;
   } {
     const allowed: DepositRequestStatus[] = ['Pending', 'Approved', 'Rejected'];
@@ -1085,11 +1140,35 @@ export class ServerAdminAuthority {
       return { ok: false, reason: 'deposit_not_found' };
     }
     const prev = dep.status;
+    if ((prev === 'Approved' || prev === 'Rejected') && prev !== params.nextStatus) {
+      return { ok: false, reason: 'already_finalized' };
+    }
+    const nowIso = new Date().toISOString();
     const cleanNotes = params.reviewNotes.trim() || `Deposit ${params.nextStatus} (Demo Sandbox)`;
+
+    let creditedBalanceEtb: number | undefined;
+    if (params.nextStatus === 'Approved' && prev !== 'Approved') {
+      this.syncBotPlayers();
+      const targetUser = this.users.get(dep.uid);
+      if (targetUser) {
+        targetUser.demoBalanceEtb = Math.min(100000, targetUser.demoBalanceEtb + dep.amountEtb);
+        creditedBalanceEtb = targetUser.demoBalanceEtb;
+        targetUser.walletLedger.unshift({
+          id: `tx_dep_${dep.depositId}`,
+          type: 'deposit_demo',
+          amountEtb: dep.amountEtb,
+          description: `Approved ${dep.provider} Top-Up (${dep.depositId})`,
+          reference: dep.referenceCode || `ADB-DEP-${dep.depositId}`,
+          timestamp: nowIso,
+          status: 'demo_completed',
+        });
+      }
+    }
+
     dep.status = params.nextStatus;
     dep.reviewNotes = cleanNotes;
     dep.reviewedBy = params.adminActor.displayName;
-    dep.reviewedAt = new Date().toISOString();
+    dep.reviewedAt = nowIso;
 
     const auditRecord = this.appendAuditRecord({
       adminActor: params.adminActor,
@@ -1101,7 +1180,7 @@ export class ServerAdminAuthority {
       notes: cleanNotes,
     });
 
-    return { ok: true, deposit: { ...dep }, auditRecord };
+    return { ok: true, deposit: { ...dep }, creditedBalanceEtb, auditRecord };
   }
 
   public getRooms(): AdminRoomConfigRecord[] {

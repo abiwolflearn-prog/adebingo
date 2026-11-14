@@ -966,3 +966,110 @@ test('PersistentGameAuthorityService enforces concurrent 4-card cap, balance/led
   assert.equal(store.get(`games/${gameId}`)?.roundNumber, 2);
   assert.equal(store.get(`rooms/${roomId}`)?.status, 'countdown');
 });
+
+test('Milestone 4.2: PersistentTelegramBotService handles all 7 inline callbacks from real Firestore data, blocks /admin in player bot, and rejects duplicate callbackQueryId', async () => {
+  const { db, store } = createInMemoryFirestoreHarness();
+  const botStore = createFirestoreTelegramStore(db);
+  const bot = new PersistentTelegramBotService(
+    botStore,
+    new PersistentReplayGuard(createFirestoreReplayAdapter(db), 3600)
+  );
+  const nowUnix = Math.floor(Date.now() / 1000);
+
+  // Seed user & completed game + transaction for real game history / wallet
+  await bot.handleIncomingUpdate({
+    updateId: 7000,
+    senderTelegramId: 778899,
+    chatId: 778899,
+    chatType: 'private',
+    firstName: 'Selam',
+    lastName: 'Tadesse',
+    username: 'selam_addis',
+    text: '/start',
+    nowUnixSeconds: nowUnix,
+  });
+
+  store.set('games/game_adey-main_live', {
+    gameId: 'game_adey-main_live',
+    roomId: 'adey-main',
+    hostUid: 'tg_778899',
+    status: 'completed',
+    calledNumbers: [9, 30, 7, 16, 14],
+    latestBall: 14,
+    winnerUid: 'tg_778899',
+    winnerName: 'Selam Tadesse',
+    winningCardId: 11,
+    winningPattern: 'Horizontal Row 1',
+  });
+  store.set('transactions/tx_win_1', {
+    transactionId: 'tx_win_1',
+    userId: 'tg_778899',
+    type: 'bingo_win',
+    amountEtb: 80,
+    status: 'demo_completed',
+    description: 'Bingo Win Credit (Card #11)',
+    reference: 'ADB-WIN-778899',
+    createdAtMs: Date.now(),
+  });
+
+  const callbacks = [
+    'cb:play_bingo',
+    'cb:my_wallet',
+    'cb:invite_friends',
+    'cb:my_profile',
+    'cb:game_history',
+    'cb:support',
+    'cb:language',
+  ] as const;
+
+  let seq = 7001;
+  for (const cb of callbacks) {
+    const res = await bot.handleIncomingUpdate({
+      updateId: seq,
+      callbackQueryId: `cbq_test_${seq}`,
+      senderTelegramId: 778899,
+      chatId: 778899,
+      chatType: 'private',
+      firstName: 'Selam',
+      username: 'selam_addis',
+      callbackData: cb,
+      nowUnixSeconds: nowUnix + seq,
+    });
+    assert.equal(res.ok, true, `Callback ${cb} should succeed`);
+    assert.equal(
+      res.securityCode,
+      cb === 'cb:language' ? 'language_updated' : `callback_${cb.replace('cb:', '')}`
+    );
+    if (cb === 'cb:game_history') {
+      assert.match(res.text, /#11/);
+      assert.doesNotMatch(res.text, /#G-4821/); // No fake hardcoded history!
+    }
+    seq += 1;
+  }
+
+  // Duplicate callbackQueryId is rejected with duplicate_callback_query
+  const dupCb = await bot.handleIncomingUpdate({
+    updateId: 7999,
+    callbackQueryId: 'cbq_test_7001',
+    senderTelegramId: 778899,
+    chatId: 778899,
+    chatType: 'private',
+    callbackData: 'cb:play_bingo',
+    nowUnixSeconds: nowUnix + 50,
+  });
+  assert.equal(dupCb.ok, false);
+  assert.equal(dupCb.securityCode, 'duplicate_callback_query');
+
+  // Admin commands and admin callbacks are blocked inside player bot
+  const adminSlash = await bot.handleIncomingUpdate({
+    updateId: 8000,
+    senderTelegramId: 778899,
+    chatId: 778899,
+    chatType: 'private',
+    text: '/admin',
+    nowUnixSeconds: nowUnix + 60,
+  });
+  assert.equal(adminSlash.ok, false);
+  assert.equal(adminSlash.securityCode, 'admin_command_forbidden_in_player_bot');
+});
+

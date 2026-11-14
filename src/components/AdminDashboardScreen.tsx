@@ -65,8 +65,8 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   onToggleLang,
   onReturnToPlayerApp,
 }) => {
-  const [sessionMode, setSessionMode] = useState<'admin' | 'player' | 'unauthenticated'>('admin');
   const [sessionToken, setSessionToken] = useState<string>('');
+  const [credentialInput, setCredentialInput] = useState<string>('');
   const [authStatus, setAuthStatus] = useState<{
     loading: boolean;
     authorized: boolean;
@@ -77,9 +77,9 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   }>({
     loading: true,
     authorized: false,
-    statusCode: 0,
-    reason: 'initializing',
-    message: '',
+    statusCode: 401,
+    reason: 'unauthenticated',
+    message: 'HTTP 401 Unauthorized: Cryptographically verified administrator credentials required.',
     actor: null,
   });
 
@@ -149,44 +149,103 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   } | null>(null);
 
   useEffect(() => {
-    void switchServerSession('admin');
+    void checkUnauthenticatedOrLiveTelegramSession();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function switchServerSession(mode: 'admin' | 'player' | 'unauthenticated') {
-    setSessionMode(mode);
+  async function checkUnauthenticatedOrLiveTelegramSession() {
     setEscalationTestResult('');
     setAuthStatus((prev) => ({ ...prev, loading: true }));
 
-    if (mode === 'unauthenticated') {
-      setSessionToken('');
-      const checkResp = await fetch('/api/admin/session');
-      const checkData = await checkResp.json();
-      setAuthStatus({
-        loading: false,
-        authorized: false,
-        statusCode: checkResp.status,
-        reason: checkData.reason || 'unauthenticated',
-        message: checkData.message || 'HTTP 401 Unauthorized',
-        actor: null,
-      });
+    const tgWebApp = (
+      window as unknown as {
+        Telegram?: { WebApp?: { initData?: string } };
+      }
+    ).Telegram?.WebApp;
+    const liveInitData = tgWebApp?.initData?.trim() || '';
+
+    if (liveInitData) {
+      await verifyCryptographicCredential(liveInitData);
       return;
     }
 
     try {
+      const checkResp = await fetch('/api/admin/session');
+      const checkData = await checkResp.json().catch(() => ({}));
+      setAuthStatus({
+        loading: false,
+        authorized: false,
+        statusCode: checkResp.status || 401,
+        reason: checkData.reason || checkData.error || 'unauthenticated',
+        message:
+          checkData.message ||
+          'HTTP 401 Unauthorized: Automatic administrator login is disabled. Provide a cryptographically verified Telegram initData or Firebase ID token.',
+        actor: null,
+      });
+    } catch (err) {
+      setAuthStatus({
+        loading: false,
+        authorized: false,
+        statusCode: 401,
+        reason: 'unauthenticated',
+        message: err instanceof Error ? err.message : 'HTTP 401 Unauthorized',
+        actor: null,
+      });
+    }
+  }
+
+  async function clearAdminSession() {
+    setSessionToken('');
+    setEscalationTestResult('');
+    await checkUnauthenticatedOrLiveTelegramSession();
+  }
+
+  async function verifyCryptographicCredential(rawCredentialOverride?: string) {
+    const raw = (rawCredentialOverride ?? credentialInput).trim();
+    setEscalationTestResult('');
+    if (!raw) {
+      await checkUnauthenticatedOrLiveTelegramSession();
+      return;
+    }
+
+    setAuthStatus((prev) => ({ ...prev, loading: true }));
+    try {
+      const isInitData = raw.includes('auth_date=') && raw.includes('hash=');
       const exResp = await fetch('/api/admin/session/exchange', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identityMode: mode }),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(isInitData ? {} : { Authorization: `Bearer ${raw}` }),
+        },
+        body: JSON.stringify(isInitData ? { initData: raw } : { idToken: raw }),
       });
-      const exData = await exResp.json();
-      const token = exData.token || '';
+      const exData = await exResp.json().catch(() => ({}));
+      const token = exData.token || (!isInitData ? raw : '');
       setSessionToken(token);
 
+      if (!exResp.ok || !exData.authorized) {
+        setAuthStatus({
+          loading: false,
+          authorized: false,
+          statusCode: exResp.status || 403,
+          reason: exData.reason || exData.error || 'forbidden_not_admin',
+          message:
+            exData.message ||
+            (exResp.status === 401
+              ? 'HTTP 401 Unauthorized: Cryptographic signature or token verification failed.'
+              : 'HTTP 403 Forbidden: Verified account is not on the server administrator allowlist.'),
+          actor: exData.actor || null,
+        });
+        return;
+      }
+
       const verifyResp = await fetch('/api/admin/session', {
-        headers: { 'x-adey-session-token': token },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'x-adey-session-token': token,
+        },
       });
-      const verifyData = await verifyResp.json();
+      const verifyData = await verifyResp.json().catch(() => ({}));
 
       if (verifyResp.ok && verifyData.authorized) {
         setAuthStatus({
@@ -202,7 +261,7 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
         setAuthStatus({
           loading: false,
           authorized: false,
-          statusCode: verifyResp.status,
+          statusCode: verifyResp.status || 403,
           reason: verifyData.reason || 'forbidden_not_admin',
           message:
             verifyData.message ||
@@ -228,15 +287,15 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          identityMode: 'player',
-          requestedRole: 'admin',
+          identityMode: 'admin',
+          role: 'admin',
         }),
       });
-      const data = await resp.json();
+      const data = await resp.json().catch(() => ({}));
       setEscalationTestResult(
-        `Server HTTP ${resp.status}: ${data.reason} — Audit #${data.auditRecord?.sequence || 1} (${String(
-          data.auditRecord?.entryHash || ''
-        ).slice(0, 14)}...)`
+        `Server HTTP ${resp.status}: ${data.reason || data.error || 'preset_identity_bypass_removed'} — ${
+          data.message || 'Preset identityMode and client role overrides rejected.'
+        }`
       );
     } catch {
       setEscalationTestResult('Role escalation test failed');
@@ -246,7 +305,10 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
   async function loadAllAdminData(tokenOverride?: string) {
     const tkn = tokenOverride ?? sessionToken;
     if (!tkn) return;
-    const headers = { 'x-adey-session-token': tkn };
+    const headers = {
+      Authorization: `Bearer ${tkn}`,
+      'x-adey-session-token': tkn,
+    };
 
     const [ovR, usR, poR, dpR, rmR, rfR, btR, ntR, stR] = await Promise.all([
       fetch('/api/admin/overview', { headers }),
@@ -528,47 +590,26 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Live Server Role Test Switcher */}
+            {/* Cryptographic Session Status Badge & Sign Out */}
             <div
-              className="flex items-center gap-1 bg-white/10 p-1 rounded-xl border border-white/15"
+              className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-xl border border-white/15"
               data-testid="admin-role-switcher"
             >
-              <button
-                type="button"
-                data-testid="switch-role-admin"
-                onClick={() => switchServerSession('admin')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-extrabold transition-colors ${
-                  sessionMode === 'admin'
-                    ? 'bg-[#12ad68] text-white'
-                    : 'text-[#cdeee0] hover:bg-white/10'
-                }`}
-              >
-                Admin (200)
-              </button>
-              <button
-                type="button"
-                data-testid="switch-role-player"
-                onClick={() => switchServerSession('player')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-extrabold transition-colors ${
-                  sessionMode === 'player'
-                    ? 'bg-amber-500 text-slate-950'
-                    : 'text-[#cdeee0] hover:bg-white/10'
-                }`}
-              >
-                Normal Player (403)
-              </button>
-              <button
-                type="button"
-                data-testid="switch-role-unauth"
-                onClick={() => switchServerSession('unauthenticated')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-extrabold transition-colors ${
-                  sessionMode === 'unauthenticated'
-                    ? 'bg-red-500 text-white'
-                    : 'text-[#cdeee0] hover:bg-white/10'
-                }`}
-              >
-                Unauthenticated (401)
-              </button>
+              <span className="text-[11px] font-mono text-[#cdeee0]">
+                {authStatus.authorized && authStatus.actor
+                  ? `Verified Admin: ${authStatus.actor.displayName} (${authStatus.actor.uid})`
+                  : `Status: HTTP ${authStatus.statusCode || 401}`}
+              </span>
+              {sessionToken && (
+                <button
+                  type="button"
+                  data-testid="switch-role-unauth"
+                  onClick={() => void clearAdminSession()}
+                  className="px-2 py-0.5 rounded-lg bg-red-500/80 hover:bg-red-500 text-white text-[11px] font-extrabold transition-colors"
+                >
+                  Sign Out
+                </button>
+              )}
             </div>
 
             <button
@@ -601,7 +642,7 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
               <Lock size={28} />
             </div>
             <span className="inline-block px-3 py-1 rounded-full bg-red-100 text-red-800 font-mono text-xs font-extrabold">
-              HTTP {authStatus.statusCode || 403} · {authStatus.reason.toUpperCase()}
+              HTTP {authStatus.statusCode || 401} · {authStatus.reason.toUpperCase()}
             </span>
             <h2 className="font-['Outfit'] text-2xl font-extrabold text-[#193b2b]">
               {authStatus.statusCode === 401
@@ -623,6 +664,37 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
               </div>
             )}
 
+            {/* Cryptographic Credential Verification Form */}
+            <div className="max-w-lg mx-auto text-left bg-[#f7fbf8] border border-[#dcece1] rounded-xl p-4 space-y-2.5">
+              <label
+                htmlFor="admin-credential-input"
+                className="block text-xs font-extrabold text-[#193b2b]"
+              >
+                {lang === 'am'
+                  ? 'የተረጋገጠ የFirebase ID Token ወይም የቴሌግራም initData ያስገቡ'
+                  : 'Enter Cryptographically Signed Firebase ID Token or Telegram initData'}
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  id="admin-credential-input"
+                  data-testid="admin-credential-input"
+                  type="password"
+                  value={credentialInput}
+                  onChange={(e) => setCredentialInput(e.target.value)}
+                  placeholder="Bearer Firebase ID token or signed Telegram initData..."
+                  className="flex-1 px-3 py-2 rounded-xl border border-[#cce4d4] bg-white text-xs font-mono text-[#193b2b]"
+                />
+                <button
+                  type="button"
+                  data-testid="verify-admin-credential-btn"
+                  onClick={() => void verifyCryptographicCredential()}
+                  className="px-4 py-2 rounded-xl bg-[#087e50] text-white text-xs font-extrabold hover:brightness-105 whitespace-nowrap"
+                >
+                  {lang === 'am' ? 'አረጋግጥ (Verify)' : 'Verify Credential'}
+                </button>
+              </div>
+            </div>
+
             <div className="pt-2 flex flex-wrap items-center justify-center gap-2.5">
               <button
                 type="button"
@@ -630,14 +702,7 @@ export const AdminDashboardScreen: React.FC<AdminDashboardScreenProps> = ({
                 onClick={handleTestSelfRoleEscalation}
                 className="px-4 py-2.5 rounded-xl bg-amber-100 border border-amber-300 text-amber-950 text-xs font-extrabold hover:bg-amber-200"
               >
-                🚫 Test Self-Role Escalation Attack (Expect 403)
-              </button>
-              <button
-                type="button"
-                onClick={() => switchServerSession('admin')}
-                className="px-4 py-2.5 rounded-xl bg-[#087e50] text-white text-xs font-extrabold hover:brightness-105"
-              >
-                ✓ Switch to Verified Admin Session (TG #8842109)
+                🚫 Test Preset Identity Bypass Attack (Expect 403)
               </button>
               <button
                 type="button"

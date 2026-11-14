@@ -3,6 +3,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { FieldValue } from 'firebase-admin/firestore';
 import type { Language } from '../../src/types/bingo.ts';
 import {
+  type BotAdminConfig,
   BotNotificationMessage,
   buildBotMainMenuMarkup,
   DEFAULT_DEPLOYED_MINI_APP_URL,
@@ -21,6 +22,7 @@ import { PersistentReplayGuard } from './replayGuard.ts';
 
 export const BOT_PLAYERS_COLLECTION = 'botPlayers';
 export const BOT_OUTBOX_COLLECTION = 'botOutbox';
+export const BOT_CONFIG_COLLECTION = 'botConfig';
 export const BOT_UPDATE_REPLAY_TTL_SECONDS = 86400; // 24 hours
 
 export function assertValidTelegramUserId(telegramUserId: number): number {
@@ -28,6 +30,23 @@ export function assertValidTelegramUserId(telegramUserId: number): number {
     throw new RangeError('telegramUserId must be a positive integer.');
   }
   return telegramUserId;
+}
+
+export interface PlayerHistoryItem {
+  id: string;
+  type: string;
+  amountEtb: number;
+  description: string;
+  reference: string;
+  createdAt: string;
+}
+
+export interface PlayerBotStatsAndHistory {
+  balanceEtb: number;
+  gamesPlayed: number;
+  totalWins: number;
+  referralCount: number;
+  recentHistory: PlayerHistoryItem[];
 }
 
 export interface TelegramBotStore {
@@ -52,6 +71,8 @@ export interface TelegramBotStore {
   }): Promise<{ ok: boolean; reason?: 'duplicate_telegram_account' | 'invalid_uid'; player?: RegisteredTelegramPlayer }>;
   appendNotification(msg: BotNotificationMessage): Promise<void>;
   listNotifications(limit?: number): Promise<BotNotificationMessage[]>;
+  getPlayerStatsAndHistory?(telegramUserId: number): Promise<PlayerBotStatsAndHistory>;
+  getBotCustomConfig?(): Promise<Partial<BotAdminConfig> | null>;
 }
 
 function maskPhoneNumber(phone: string): string {
@@ -64,13 +85,32 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
   const bindingsCol = db.collection('telegramBindings');
   const usersCol = db.collection('users');
   const outboxCol = db.collection(BOT_OUTBOX_COLLECTION);
+  const transactionsCol = db.collection('transactions');
+  const gamesCol = db.collection('games');
+  const referralsCol = db.collection('referrals');
+  const botConfigCol = db.collection(BOT_CONFIG_COLLECTION);
 
   return {
     async getPlayer(telegramUserId: number): Promise<RegisteredTelegramPlayer | null> {
       assertValidTelegramUserId(telegramUserId);
-      const snap = await playersCol.doc(String(telegramUserId)).get();
+      const canonicalUid = getTelegramFirebaseUid(telegramUserId);
+      const [snap, userSnap] = await Promise.all([
+        playersCol.doc(String(telegramUserId)).get(),
+        usersCol.doc(canonicalUid).get(),
+      ]);
       if (!snap.exists) return null;
-      return snap.data() as RegisteredTelegramPlayer;
+      const player = snap.data() as RegisteredTelegramPlayer;
+      if (userSnap.exists) {
+        const userBal = userSnap.get('demoBalanceEtb');
+        if (typeof userBal === 'number' && Number.isFinite(userBal)) {
+          player.demoBalanceEtb = userBal;
+        }
+        const userPhoneVerified = userSnap.get('phoneVerified');
+        if (typeof userPhoneVerified === 'boolean') {
+          player.phoneVerified = player.phoneVerified || userPhoneVerified;
+        }
+      }
+      return player;
     },
 
     async savePlayerAndBinding({
@@ -331,6 +371,73 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
         };
       });
     },
+
+    async getPlayerStatsAndHistory(telegramUserId: number): Promise<PlayerBotStatsAndHistory> {
+      assertValidTelegramUserId(telegramUserId);
+      const canonicalUid = getTelegramFirebaseUid(telegramUserId);
+      const [userSnap, playerSnap, txSnap, gamesSnap, refSnap] = await Promise.all([
+        usersCol.doc(canonicalUid).get(),
+        playersCol.doc(String(telegramUserId)).get(),
+        transactionsCol.where('userId', '==', canonicalUid).get(),
+        gamesCol.where('winnerUid', '==', canonicalUid).get(),
+        referralsCol.where('inviterUid', '==', canonicalUid).get(),
+      ]);
+
+      const balanceEtb = userSnap.exists
+        ? Number(userSnap.get('demoBalanceEtb') ?? 250)
+        : playerSnap.exists
+          ? Number(playerSnap.get('demoBalanceEtb') ?? 250)
+          : 250;
+
+      const userTxDocs = txSnap.docs.map((d) => {
+        const data = d.data() || {};
+        const rawCreatedAt = data.createdAt;
+        const createdAtIso =
+          typeof rawCreatedAt === 'string'
+            ? rawCreatedAt
+            : rawCreatedAt && typeof (rawCreatedAt as { toDate?: () => Date }).toDate === 'function'
+              ? (rawCreatedAt as { toDate: () => Date }).toDate().toISOString()
+              : rawCreatedAt instanceof Date
+                ? rawCreatedAt.toISOString()
+                : new Date().toISOString();
+
+        return {
+          id: String(data.transactionId || d.id),
+          type: String(data.type || 'card_entry'),
+          amountEtb: Number(data.amountEtb ?? 0),
+          description: String(data.description || ''),
+          reference: String(data.reference || d.id),
+          createdAt: createdAtIso,
+        };
+      });
+
+      userTxDocs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+      const entryTxCount = userTxDocs.filter(
+        (t) => t.type === 'card_entry' && t.amountEtb < 0
+      ).length;
+      const winTxCount = userTxDocs.filter((t) => t.type === 'bingo_win').length;
+      const totalWins = Math.max(winTxCount, gamesSnap.size);
+      const gamesPlayed = Math.max(
+        entryTxCount,
+        totalWins,
+        userSnap.exists ? Number(userSnap.get('gamesPlayed') ?? 0) : 0
+      );
+
+      return {
+        balanceEtb,
+        gamesPlayed,
+        totalWins,
+        referralCount: refSnap.size,
+        recentHistory: userTxDocs.slice(0, 5),
+      };
+    },
+
+    async getBotCustomConfig(): Promise<Partial<BotAdminConfig> | null> {
+      const snap = await botConfigCol.doc('default').get();
+      if (!snap.exists) return null;
+      return snap.data() as Partial<BotAdminConfig>;
+    },
   };
 }
 
@@ -380,7 +487,7 @@ export async function verifyTelegramInitDataPersistent(params: {
 /**
  * Persistent Firestore-backed Telegram Bot engine.
  * Enforces positive-integer Telegram IDs, deterministic tg_<id> UID mapping,
- * private chat context for registration/contact verification, and 24h webhook replay protection.
+ * private chat context for registration/contact verification, and 24h webhook + callbackQueryId replay protection.
  */
 export class PersistentTelegramBotService {
   private readonly store: TelegramBotStore;
@@ -423,6 +530,7 @@ export class PersistentTelegramBotService {
 
   public async handleIncomingUpdate(params: {
     updateId?: number;
+    callbackQueryId?: string;
     senderTelegramId: number;
     chatId?: number;
     chatType?: 'private' | 'group' | 'supergroup' | 'channel';
@@ -441,6 +549,7 @@ export class PersistentTelegramBotService {
   }): Promise<TelegramBotResponse> {
     const {
       updateId,
+      callbackQueryId,
       senderTelegramId,
       chatId,
       chatType,
@@ -466,8 +575,13 @@ export class PersistentTelegramBotService {
       };
     }
 
-    const existingPlayer = await this.store.getPlayer(senderTelegramId);
+    const [existingPlayer, customConfig] = await Promise.all([
+      this.store.getPlayer(senderTelegramId),
+      this.store.getBotCustomConfig ? this.store.getBotCustomConfig() : Promise.resolve(null),
+    ]);
     const currentLang: Language = existingPlayer?.language || 'am';
+    const customButtons = customConfig?.buttonLabels;
+    const effectiveMiniAppUrl = customConfig?.miniAppUrl || this.miniAppUrl;
 
     if (updateId !== undefined) {
       if (!Number.isInteger(updateId) || updateId <= 0) {
@@ -479,8 +593,9 @@ export class PersistentTelegramBotService {
           parseMode: 'Markdown',
           replyMarkup: buildBotMainMenuMarkup(
             currentLang,
-            this.miniAppUrl,
-            Boolean(existingPlayer?.phoneVerified)
+            effectiveMiniAppUrl,
+            Boolean(existingPlayer?.phoneVerified),
+            customButtons
           ),
           registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'unregistered',
           securityCode: 'invalid_update_id',
@@ -505,8 +620,9 @@ export class PersistentTelegramBotService {
           parseMode: 'Markdown',
           replyMarkup: buildBotMainMenuMarkup(
             currentLang,
-            this.miniAppUrl,
-            Boolean(existingPlayer?.phoneVerified)
+            effectiveMiniAppUrl,
+            Boolean(existingPlayer?.phoneVerified),
+            customButtons
           ),
           registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'unregistered',
           securityCode: 'replay_detected',
@@ -515,9 +631,69 @@ export class PersistentTelegramBotService {
       }
     }
 
+    // Enforce replay protection on callback_query.id when present
+    if (callbackQueryId !== undefined && callbackQueryId.trim() !== '') {
+      const cbReplayCheck = await this.replayGuard.consumeOnce(
+        'tg_cb',
+        callbackQueryId.trim(),
+        { nowUnixSeconds, ttlSeconds: BOT_UPDATE_REPLAY_TTL_SECONDS }
+      );
+      if (!cbReplayCheck.fresh) {
+        return {
+          ok: false,
+          chatId: senderTelegramId,
+          language: currentLang,
+          text:
+            currentLang === 'am'
+              ? '⚠️ ይህ የቁልፍ ጥያቄ ቀደም ብሎ ተስተናግዷል (Duplicate callback_query blocked).'
+              : '⚠️ Duplicate callback query blocked (callbackQueryId already processed).',
+          parseMode: 'Markdown',
+          replyMarkup: buildBotMainMenuMarkup(
+            currentLang,
+            effectiveMiniAppUrl,
+            Boolean(existingPlayer?.phoneVerified),
+            customButtons
+          ),
+          registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'unregistered',
+          securityCode: 'duplicate_callback_query',
+          profile: existingPlayer ?? undefined,
+        };
+      }
+    }
+
     const uid = getTelegramFirebaseUid(senderTelegramId);
     const isPrivateChat =
       chatType === 'private' && (chatId === undefined || chatId === senderTelegramId);
+
+    const trimmed = text.trim();
+    const cleanCallback = callbackData.trim();
+
+    // 0. Block any admin commands or callbacks in the player-facing Telegram bot
+    if (
+      trimmed.startsWith('/admin') ||
+      cleanCallback.startsWith('cb:admin') ||
+      cleanCallback.startsWith('admin:')
+    ) {
+      return {
+        ok: false,
+        chatId: senderTelegramId,
+        language: currentLang,
+        text:
+          currentLang === 'am'
+            ? '🚫 የአስተዳዳሪ ትዕዛዞች በተጫዋች ቦት ውስጥ አይፈቀዱም።'
+            : '🚫 Administrator commands and links are not available inside the player Telegram bot.',
+        parseMode: 'Markdown',
+        replyMarkup: buildBotMainMenuMarkup(
+          currentLang,
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
+        ),
+        registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'unregistered',
+        securityCode: 'admin_command_forbidden_in_player_bot',
+        profile: existingPlayer ?? undefined,
+      };
+    }
 
     // 1. Contact sharing verification (must originate from a private 1-on-1 Telegram DM)
     if (contact !== undefined && contact !== null) {
@@ -533,8 +709,9 @@ export class PersistentTelegramBotService {
           parseMode: 'Markdown',
           replyMarkup: buildBotMainMenuMarkup(
             currentLang,
-            this.miniAppUrl,
-            Boolean(existingPlayer?.phoneVerified)
+            effectiveMiniAppUrl,
+            Boolean(existingPlayer?.phoneVerified),
+            customButtons
           ),
           registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
           securityCode: 'private_chat_required',
@@ -559,8 +736,9 @@ export class PersistentTelegramBotService {
           parseMode: 'Markdown',
           replyMarkup: buildBotMainMenuMarkup(
             currentLang,
-            this.miniAppUrl,
-            Boolean(existingPlayer?.phoneVerified)
+            effectiveMiniAppUrl,
+            Boolean(existingPlayer?.phoneVerified),
+            customButtons
           ),
           registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
           securityCode: contactCheck.reason || 'contact_owner_mismatch',
@@ -589,7 +767,7 @@ export class PersistentTelegramBotService {
               ? '🚫 ይህ የቴሌግራም መለያ ቀደም ብሎ ከሌላ የADEYBINGO መለያ ጋር ተገናኝቷል።'
               : '🚫 This Telegram account is already bound to another ADEYBINGO account.',
           parseMode: 'Markdown',
-          replyMarkup: buildBotMainMenuMarkup(currentLang, this.miniAppUrl, false),
+          replyMarkup: buildBotMainMenuMarkup(currentLang, effectiveMiniAppUrl, false, customButtons),
           registrationStatus: 'duplicate_blocked',
           securityCode: 'duplicate_telegram_account',
         };
@@ -614,20 +792,25 @@ export class PersistentTelegramBotService {
                 '✅ *ስልክዎ እና መለያዎ በተሳካ ሁኔታ ተረጋግጠዋል!*',
                 '',
                 `• የተረጋገጠ ስልክ፦ \`${maskedPhone}\``,
-                '• የሙከራ ቦርሳ፦ *250.00 ETB (Demo)*',
+                `• የሙከራ ቦርሳ፦ *${persisted.player.demoBalanceEtb.toFixed(2)} ETB (Demo)*`,
                 '',
-                '🎮 ከታች ያለውን *Start Playing* ቁልፍ በመጫን ADEYBINGO ሚኒ አፕን ይክፈቱ!',
+                '🎮 ከታች ያለውን *🎮 ቢንጎ ይጫወቱ (PLAY BINGO)* ቁልፍ በመጫን ADEYBINGO ሚኒ አፕን ይክፈቱ!',
               ].join('\n')
             : [
                 '✅ *Phone & Telegram Account Verified!*',
                 '',
                 `• Verified Phone: \`${maskedPhone}\``,
-                '• Demo Sandbox Balance: *250.00 ETB (Demo)*',
+                `• Demo Sandbox Balance: *${persisted.player.demoBalanceEtb.toFixed(2)} ETB (Demo)*`,
                 '',
-                '🎮 Tap *Start Playing* below to launch the ADEYBINGO Mini App!',
+                '🎮 Tap *🎮 PLAY BINGO* below to launch the ADEYBINGO Mini App!',
               ].join('\n'),
         parseMode: 'Markdown',
-        replyMarkup: buildBotMainMenuMarkup(persisted.player.language, this.miniAppUrl, true),
+        replyMarkup: buildBotMainMenuMarkup(
+          persisted.player.language,
+          effectiveMiniAppUrl,
+          true,
+          customButtons
+        ),
         registrationStatus: 'verified',
         securityCode: 'contact_verified',
         profile: persisted.player,
@@ -636,7 +819,6 @@ export class PersistentTelegramBotService {
     }
 
     // 2. Reject plain-text phone numbers
-    const trimmed = text.trim();
     if (/^\+?[0-9\s\-()]{9,16}$/.test(trimmed)) {
       const check = verifyTelegramSharedContact({
         senderTelegramId,
@@ -654,8 +836,9 @@ export class PersistentTelegramBotService {
         parseMode: 'Markdown',
         replyMarkup: buildBotMainMenuMarkup(
           currentLang,
-          this.miniAppUrl,
-          Boolean(existingPlayer?.phoneVerified)
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
         ),
         registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
         securityCode: check.reason || 'plain_text_phone_rejected',
@@ -663,18 +846,21 @@ export class PersistentTelegramBotService {
       };
     }
 
-    // 3. Language switching
+    // 3. Language switching (`cb:language`, `lang:am`, `lang:en`, `/language`)
     if (
-      callbackData === 'lang:am' ||
-      callbackData === 'lang:en' ||
+      cleanCallback === 'cb:language' ||
+      cleanCallback === 'lang:am' ||
+      cleanCallback === 'lang:en' ||
       trimmed === '/language' ||
       trimmed === '🌐 Change Language' ||
-      trimmed === '🌐 ቋንቋ ቀይር'
+      trimmed === '🌐 Language' ||
+      trimmed === '🌐 ቋንቋ ቀይር' ||
+      trimmed === '🌐 ቋንቋ'
     ) {
       const nextLang: Language =
-        callbackData === 'lang:am'
+        cleanCallback === 'lang:am'
           ? 'am'
-          : callbackData === 'lang:en'
+          : cleanCallback === 'lang:en'
           ? 'en'
           : currentLang === 'am'
           ? 'en'
@@ -687,20 +873,22 @@ export class PersistentTelegramBotService {
         language: nextLang,
         text:
           nextLang === 'am'
-            ? '🌐 *ቋንቋ ወደ አማርኛ ተቀይሯል!* \nሁሉም የቦት መልዕክቶች እና ማሳወቂያዎች በአማርኛ ይቀርባሉ።'
-            : '🌐 *Bot language switched to English!* \nAll bot commands, menus, and notifications will now be displayed in English.',
+            ? '🌐 *ቋንቋ ወደ አማርኛ ተቀይሯል!* \nሁሉም የቦት መልዕክቶች፣ ቁልፎች እና ማሳወቂያዎች በአማርኛ ይቀርባሉ።'
+            : '🌐 *Bot language switched to English!* \nAll bot commands, inline buttons, and notifications will now be displayed in English.',
         parseMode: 'Markdown',
         replyMarkup: buildBotMainMenuMarkup(
           nextLang,
-          this.miniAppUrl,
-          Boolean(existingPlayer?.phoneVerified)
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
         ),
         registrationStatus: existingPlayer?.phoneVerified
           ? 'verified'
           : existingPlayer
           ? 'pending_contact'
           : 'unregistered',
-        profile: existingPlayer ?? undefined,
+        securityCode: 'language_updated',
+        profile: existingPlayer ? { ...existingPlayer, language: nextLang } : undefined,
       };
     }
 
@@ -718,8 +906,9 @@ export class PersistentTelegramBotService {
           parseMode: 'Markdown',
           replyMarkup: buildBotMainMenuMarkup(
             currentLang,
-            this.miniAppUrl,
-            Boolean(existingPlayer?.phoneVerified)
+            effectiveMiniAppUrl,
+            Boolean(existingPlayer?.phoneVerified),
+            customButtons
           ),
           registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'unregistered',
           securityCode: 'private_chat_required',
@@ -746,29 +935,38 @@ export class PersistentTelegramBotService {
               ? '🚫 ይህ የቴሌግራም መለያ ቀደም ብሎ ከሌላ የADEYBINGO መለያ ጋር ተገናኝቷል።'
               : '🚫 Duplicate Telegram account registration blocked.',
           parseMode: 'Markdown',
-          replyMarkup: buildBotMainMenuMarkup(currentLang, this.miniAppUrl, false),
+          replyMarkup: buildBotMainMenuMarkup(currentLang, effectiveMiniAppUrl, false, customButtons),
           registrationStatus: 'duplicate_blocked',
           securityCode: 'duplicate_telegram_account',
         };
       }
 
       const player = saved.player;
-      const startText =
+      const customWelcome =
         player.language === 'am'
-          ? [
-              `🌼 *እንኳን ወደ ADEYBINGO በደህና መጡ, ${player.firstName}!*`,
-              '',
-              '• ከ1–600 ካርዶች እስከ 4 ካርድ በአንድ ዙር ይምረጡ።',
-              '• ለደህንነትዎ የስልክ ቁጥርዎ በ `/users/{uid}/private/contact` ውስጥ ተነጥሎ ይጠበቃል።',
-              '• ከታች ያለውን *🎮 Start Playing* ቁልፍ በመጫን ጨዋታውን ይጀምሩ!',
-            ].join('\n')
-          : [
-              `🌼 *Welcome to ADEYBINGO, ${player.firstName}!*`,
-              '',
-              '• Pick 1–4 Bingo cards from 1–600 per room.',
-              '• Your phone contact is isolated securely in `/users/{uid}/private/contact`.',
-              '• Tap *🎮 Start Playing* below to launch ADEYBINGO!',
-            ].join('\n');
+          ? customConfig?.customWelcomeAm
+          : customConfig?.customWelcomeEn;
+
+      const startText =
+        customWelcome && customWelcome.trim() !== ''
+          ? customWelcome
+          : player.language === 'am'
+            ? [
+                `🌼 *እንኳን ወደ ADEYBINGO በደህና መጡ, ${player.firstName}!*`,
+                '',
+                'ADEYBINGO የኢትዮጵia ዘመናዊ የቴሌግራም ሚኒ-አፕ ቢንጎ ጨዋታ ነው፦',
+                '• *እንዴት ይጫወታሉ?* ከ1–600 ካርዶች ውስጥ እስከ 4 ካርዶች ይምረጡ፣ የሚጠሩትን B-I-N-G-O ቁጥሮች ይከታተሉ እና አሸናፊ መስመር ሲሞሉ *CLAIM BINGO* ይጫኑ!',
+                `• *የሙከራ ቦርሳ፦* *${player.demoBalanceEtb.toFixed(2)} ETB (Demo Sandbox)* ተዘጋጅቶልዎታል።`,
+                '• ከታች ያለውን *🎮 ቢንጎ ይጫወቱ (PLAY BINGO)* ቁልፍ በመጫን ጨዋታውን ይጀምሩ!',
+              ].join('\n')
+            : [
+                `🌼 *Welcome to ADEYBINGO, ${player.firstName}!*`,
+                '',
+                'ADEYBINGO is the premier Ethiopian Telegram Mini App Bingo arena:',
+                '• *How to Play:* Pick 1–4 Bingo cards from the 600-card pool, mark live B-I-N-G-O calls, and tap *CLAIM BINGO* when you complete a winning line or 4-corners!',
+                `• *Demo Wallet:* *${player.demoBalanceEtb.toFixed(2)} ETB (Demo Sandbox)* is ready in your account.`,
+                '• Tap *🎮 PLAY BINGO* below to launch the Mini App!',
+              ].join('\n');
 
       return {
         ok: true,
@@ -778,15 +976,260 @@ export class PersistentTelegramBotService {
         parseMode: 'Markdown',
         replyMarkup: buildBotMainMenuMarkup(
           player.language,
-          this.miniAppUrl,
-          player.phoneVerified
+          effectiveMiniAppUrl,
+          player.phoneVerified,
+          customButtons
         ),
         registrationStatus: player.phoneVerified ? 'verified' : 'pending_contact',
+        securityCode: 'start_welcome_delivered',
         profile: player,
       };
     }
 
-    // 5. /help, /support, /terms, menu actions
+    // 5. cb:play_bingo callback
+    if (cleanCallback === 'cb:play_bingo' || trimmed === '🎮 Play Bingo' || trimmed === '🎮 ቢንጎ ይጫወቱ') {
+      return {
+        ok: true,
+        chatId: senderTelegramId,
+        language: currentLang,
+        text:
+          currentLang === 'am'
+            ? [
+                '🎮 *ADEYBINGO ሚኒ አፕ ለመክፈት ዝግጁ ነው!*',
+                '',
+                `• የሚኒ አፕ አድራሻ፦ \`${effectiveMiniAppUrl}\``,
+                '• ከታች ያለውን *🎮 ቢንጎ ይጫወቱ (PLAY BINGO)* ቁልፍ በመጫን ወደ ጨዋታ ክፍሎች ይግቡ።',
+              ].join('\n')
+            : [
+                '🎮 *ADEYBINGO Mini App Ready!*',
+                '',
+                `• Mini App URL: \`${effectiveMiniAppUrl}\``,
+                '• Tap the *🎮 PLAY BINGO* button below to enter the live Bingo rooms.',
+              ].join('\n'),
+        parseMode: 'Markdown',
+        replyMarkup: buildBotMainMenuMarkup(
+          currentLang,
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
+        ),
+        registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
+        securityCode: 'callback_play_bingo',
+        profile: existingPlayer ?? undefined,
+      };
+    }
+
+    // Fetch real Firestore stats & history for wallet, profile, referrals, and game history callbacks
+    const statsAndHistory = this.store.getPlayerStatsAndHistory
+      ? await this.store.getPlayerStatsAndHistory(senderTelegramId)
+      : {
+          balanceEtb: existingPlayer?.demoBalanceEtb ?? 250,
+          gamesPlayed: 0,
+          totalWins: 0,
+          referralCount: 0,
+          recentHistory: [],
+        };
+
+    // 6. cb:my_wallet / menu:my_balance / /wallet
+    if (
+      cleanCallback === 'cb:my_wallet' ||
+      cleanCallback === 'menu:my_balance' ||
+      trimmed === '/wallet' ||
+      trimmed === '💰 My Wallet' ||
+      trimmed === '💰 My Balance' ||
+      trimmed === '💰 የእኔ ቦርሳ'
+    ) {
+      const bal = statsAndHistory.balanceEtb;
+      return {
+        ok: true,
+        chatId: senderTelegramId,
+        language: currentLang,
+        text:
+          currentLang === 'am'
+            ? [
+                '💰 *የADEYBINGO የሙከራ ቦርሳ (My Wallet)*',
+                '',
+                `• የሚገኝ ቀሪ ሂሳብ፦ *${bal.toFixed(2)} ETB (DEMO)*`,
+                `• የተሳተፉባቸው ዙሮች፦ *${statsAndHistory.gamesPlayed}*`,
+                `• ያሸነፉባቸው ዙሮች፦ *${statsAndHistory.totalWins}*`,
+                '• ሁኔታ፦ *Demo Sandbox (እውነተኛ ክፍያ ዝግ ነው)*',
+              ].join('\n')
+            : [
+                '💰 *ADEYBINGO Demo Wallet (My Wallet)*',
+                '',
+                `• Available Demo Balance: *${bal.toFixed(2)} ETB (DEMO)*`,
+                `• Rounds Played: *${statsAndHistory.gamesPlayed}*`,
+                `• Verified Wins: *${statsAndHistory.totalWins}*`,
+                '• Mode: *Demo Sandbox (Real-money payments disabled)*',
+              ].join('\n'),
+        parseMode: 'Markdown',
+        replyMarkup: buildBotMainMenuMarkup(
+          currentLang,
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
+        ),
+        registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
+        securityCode: 'callback_my_wallet',
+        profile: existingPlayer ?? undefined,
+      };
+    }
+
+    // 7. cb:invite_friends / menu:invite_friends / /invite
+    if (
+      cleanCallback === 'cb:invite_friends' ||
+      cleanCallback === 'menu:invite_friends' ||
+      trimmed === '/invite' ||
+      trimmed === '👥 Invite Friends' ||
+      trimmed === '🎁 Invite Friends' ||
+      trimmed === '👥 ጓደኞችን ይጋብዙ'
+    ) {
+      const refCode = existingPlayer?.referralCode || `ADEY-${senderTelegramId}`;
+      const refLink = `https://t.me/AdeyBingoBot?start=${refCode}`;
+      return {
+        ok: true,
+        chatId: senderTelegramId,
+        language: currentLang,
+        text:
+          currentLang === 'am'
+            ? [
+                '👥 *ጓደኞችዎን ወደ ADEYBINGO ይጋብዙ!*',
+                '',
+                `• የእርስዎ መጋበዣ ኮድ፦ \`${refCode}\``,
+                `• የእርስዎ መጋበዣ ሊንክ፦ \`${refLink}\``,
+                `• የተመዘገቡ ግብዣዎች፦ *${statsAndHistory.referralCount}*`,
+                '• ሽልማት፦ ለእያንዳንዱ የተረጋገጠ ጓደኛ *+25.00 ETB (Demo)* (በአገልጋይ ከተረጋገጠ በኋላ)',
+              ].join('\n')
+            : [
+                '👥 *Invite Friends to ADEYBINGO!*',
+                '',
+                `• Your Referral Code: \`${refCode}\``,
+                `• Your Referral Link: \`${refLink}\``,
+                `• Recorded Referrals: *${statsAndHistory.referralCount}*`,
+                '• Bonus: *+25.00 ETB (Demo)* per verified friend (awarded after server verification)',
+              ].join('\n'),
+        parseMode: 'Markdown',
+        replyMarkup: buildBotMainMenuMarkup(
+          currentLang,
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
+        ),
+        registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
+        securityCode: 'callback_invite_friends',
+        profile: existingPlayer ?? undefined,
+      };
+    }
+
+    // 8. cb:my_profile / menu:my_profile / /profile
+    if (
+      cleanCallback === 'cb:my_profile' ||
+      cleanCallback === 'menu:my_profile' ||
+      trimmed === '/profile' ||
+      trimmed === '👤 My Profile' ||
+      trimmed === '👤 መገለጫዬ'
+    ) {
+      const bal = statsAndHistory.balanceEtb;
+      const pName = existingPlayer?.firstName || firstName;
+      const pUser = existingPlayer?.username || username;
+      const phoneLabel = existingPlayer?.phoneVerified
+        ? `✅ (${existingPlayer.verifiedPhoneMasked || 'Verified'})`
+        : currentLang === 'am'
+          ? '⏳ አልተረጋገጠም'
+          : '⏳ Unverified';
+
+      return {
+        ok: true,
+        chatId: senderTelegramId,
+        language: currentLang,
+        text:
+          currentLang === 'am'
+            ? [
+                '👤 *የተጫዋች መገለጫ (My Profile)*',
+                '',
+                `• ስም፦ *${pName}* (@${pUser})`,
+                `• የቴሌግራም መለያ፦ \`${senderTelegramId}\``,
+                `• የስልክ ማረጋገጫ፦ ${phoneLabel}`,
+                `• የሙከራ ቀሪ ሂሳብ፦ *${bal.toFixed(2)} ETB (Demo)*`,
+                `• የተሳተፉባቸው ዙሮች፦ *${statsAndHistory.gamesPlayed}* · ድሎች፦ *${statsAndHistory.totalWins}*`,
+                `• ቋንቋ፦ *አማርኛ (AM)*`,
+              ].join('\n')
+            : [
+                '👤 *Player Profile (My Profile)*',
+                '',
+                `• Name: *${pName}* (@${pUser})`,
+                `• Telegram ID: \`${senderTelegramId}\``,
+                `• Phone Status: ${phoneLabel}`,
+                `• Demo Balance: *${bal.toFixed(2)} ETB (Demo)*`,
+                `• Games Played: *${statsAndHistory.gamesPlayed}* · Wins: *${statsAndHistory.totalWins}*`,
+                `• Language: *English (EN)*`,
+              ].join('\n'),
+        parseMode: 'Markdown',
+        replyMarkup: buildBotMainMenuMarkup(
+          currentLang,
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
+        ),
+        registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
+        securityCode: 'callback_my_profile',
+        profile: existingPlayer ?? undefined,
+      };
+    }
+
+    // 9. cb:game_history / /history (Real Firestore data — NO hardcoded fake history)
+    if (
+      cleanCallback === 'cb:game_history' ||
+      trimmed === '/history' ||
+      trimmed === '📜 Game History' ||
+      trimmed === '📜 የጨዋታ ታሪክ'
+    ) {
+      const historyLines =
+        statsAndHistory.recentHistory.length > 0
+          ? statsAndHistory.recentHistory.map((item, idx) => {
+              const sign = item.amountEtb >= 0 ? '+' : '';
+              return `${idx + 1}. \`${item.reference}\` — *${sign}${item.amountEtb.toFixed(2)} ETB* (${item.description})`;
+            })
+          : [
+              currentLang === 'am'
+                ? '• እስካሁን የተመዘገበ የጨዋታ ወይም የካርድ ግብይት ታሪክ የለም። የመጀመሪያ ዙርዎን ለመጀመር *🎮 ቢንጎ ይጫወቱ* የሚለውን ይጫኑ!'
+                : '• No recorded game rounds or card transactions yet. Tap *🎮 PLAY BINGO* below to join your first live round!',
+            ];
+
+      return {
+        ok: true,
+        chatId: senderTelegramId,
+        language: currentLang,
+        text:
+          currentLang === 'am'
+            ? [
+                '📜 *የቅርብ ጊዜ የጨዋታ እና የሂሳብ ታሪክ (Game History)*',
+                '',
+                `• ጠቅላላ የተጫወቱት፦ *${statsAndHistory.gamesPlayed}* · ድሎች፦ *${statsAndHistory.totalWins}*`,
+                '',
+                ...historyLines,
+              ].join('\n')
+            : [
+                '📜 *Recent Game & Ledger History (Game History)*',
+                '',
+                `• Total Rounds Played: *${statsAndHistory.gamesPlayed}* · Verified Wins: *${statsAndHistory.totalWins}*`,
+                '',
+                ...historyLines,
+              ].join('\n'),
+        parseMode: 'Markdown',
+        replyMarkup: buildBotMainMenuMarkup(
+          currentLang,
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
+        ),
+        registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
+        securityCode: 'callback_game_history',
+        profile: existingPlayer ?? undefined,
+      };
+    }
+
+    // 10. /help, /support, cb:support, /terms
     if (trimmed === '/help') {
       return {
         ok: true,
@@ -799,8 +1242,9 @@ export class PersistentTelegramBotService {
         parseMode: 'Markdown',
         replyMarkup: buildBotMainMenuMarkup(
           currentLang,
-          this.miniAppUrl,
-          Boolean(existingPlayer?.phoneVerified)
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
         ),
         registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
         profile: existingPlayer ?? undefined,
@@ -810,7 +1254,10 @@ export class PersistentTelegramBotService {
     if (
       trimmed === '/support' ||
       trimmed === '📞 Contact Support' ||
-      callbackData === 'menu:contact_support'
+      trimmed === '💬 Support' ||
+      trimmed === '💬 ድጋፍ' ||
+      cleanCallback === 'cb:support' ||
+      cleanCallback === 'menu:contact_support'
     ) {
       return {
         ok: true,
@@ -818,15 +1265,17 @@ export class PersistentTelegramBotService {
         language: currentLang,
         text:
           currentLang === 'am'
-            ? '📞 *የADEYBINGO የተጫዋቾች ድጋፍ (/support)*\nየቴሌግራም ድጋፍ፦ `@AdeyBingoSupport`'
-            : '📞 *ADEYBINGO Player Support (/support)*\nTelegram Support Desk: `@AdeyBingoSupport`',
+            ? '💬 *የADEYBINGO የተጫዋቾች ድጋፍ (/support)*\n• የቴሌግራም ድጋፍ፦ `@AdeyBingoSupport`\n• የምላሽ ጊዜ፦ ከ5 ደቂቃ በታች\n• ሁሉም ሂሳቦች በሙከራ (Demo Sandbox) ሁኔታ ይሰራሉ።'
+            : '💬 *ADEYBINGO Player Support (/support)*\n• Telegram Support Desk: `@AdeyBingoSupport`\n• Typical Response Time: Under 5 minutes\n• All balances operate in Demo Sandbox mode.',
         parseMode: 'Markdown',
         replyMarkup: buildBotMainMenuMarkup(
           currentLang,
-          this.miniAppUrl,
-          Boolean(existingPlayer?.phoneVerified)
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
         ),
         registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
+        securityCode: 'callback_support',
         profile: existingPlayer ?? undefined,
       };
     }
@@ -834,7 +1283,7 @@ export class PersistentTelegramBotService {
     if (
       trimmed === '/terms' ||
       trimmed === '📜 Terms and Conditions' ||
-      callbackData === 'menu:terms_conditions'
+      cleanCallback === 'menu:terms_conditions'
     ) {
       return {
         ok: true,
@@ -847,70 +1296,9 @@ export class PersistentTelegramBotService {
         parseMode: 'Markdown',
         replyMarkup: buildBotMainMenuMarkup(
           currentLang,
-          this.miniAppUrl,
-          Boolean(existingPlayer?.phoneVerified)
-        ),
-        registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
-        profile: existingPlayer ?? undefined,
-      };
-    }
-
-    if (trimmed === '👤 My Profile' || callbackData === 'menu:my_profile') {
-      const bal = existingPlayer?.demoBalanceEtb ?? 250;
-      return {
-        ok: true,
-        chatId: senderTelegramId,
-        language: currentLang,
-        text:
-          currentLang === 'am'
-            ? `👤 *መገለጫ* · TG #${senderTelegramId} · ቀሪ ሂሳብ፦ *${bal.toFixed(2)} ETB (Demo)*`
-            : `👤 *Profile* · TG #${senderTelegramId} · Demo Balance: *${bal.toFixed(2)} ETB (Demo)*`,
-        parseMode: 'Markdown',
-        replyMarkup: buildBotMainMenuMarkup(
-          currentLang,
-          this.miniAppUrl,
-          Boolean(existingPlayer?.phoneVerified)
-        ),
-        registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
-        profile: existingPlayer ?? undefined,
-      };
-    }
-
-    if (trimmed === '💰 My Balance' || callbackData === 'menu:my_balance') {
-      const bal = existingPlayer?.demoBalanceEtb ?? 250;
-      return {
-        ok: true,
-        chatId: senderTelegramId,
-        language: currentLang,
-        text:
-          currentLang === 'am'
-            ? `💰 *የሙከራ ቦርሳ ቀሪ ሂሳብ፦* *${bal.toFixed(2)} ETB (DEMO)*`
-            : `💰 *Demo Wallet Balance:* *${bal.toFixed(2)} ETB (DEMO)*`,
-        parseMode: 'Markdown',
-        replyMarkup: buildBotMainMenuMarkup(
-          currentLang,
-          this.miniAppUrl,
-          Boolean(existingPlayer?.phoneVerified)
-        ),
-        registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
-        profile: existingPlayer ?? undefined,
-      };
-    }
-
-    if (trimmed === '🎁 Invite Friends' || callbackData === 'menu:invite_friends') {
-      return {
-        ok: true,
-        chatId: senderTelegramId,
-        language: currentLang,
-        text:
-          currentLang === 'am'
-            ? `🎁 *ጓደኛ ይጋብዙ!* \nሊንክ፦ \`https://t.me/AdeyBingoBot?start=ADEY-${senderTelegramId}\``
-            : `🎁 *Invite Friends!* \nLink: \`https://t.me/AdeyBingoBot?start=ADEY-${senderTelegramId}\``,
-        parseMode: 'Markdown',
-        replyMarkup: buildBotMainMenuMarkup(
-          currentLang,
-          this.miniAppUrl,
-          Boolean(existingPlayer?.phoneVerified)
+          effectiveMiniAppUrl,
+          Boolean(existingPlayer?.phoneVerified),
+          customButtons
         ),
         registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
         profile: existingPlayer ?? undefined,
@@ -923,13 +1311,14 @@ export class PersistentTelegramBotService {
       language: currentLang,
       text:
         currentLang === 'am'
-          ? '🌼 የADEYBINGO ዋና ሜኑ ከታች ይገኛል። *🎮 Start Playing* በመጫን ጨዋታውን ይጀምሩ!'
-          : '🌼 Use the ADEYBINGO menu below or tap *🎮 Start Playing* to launch the Mini App!',
+          ? '🌼 የADEYBINGO ዋና ሜኑ ከታች ይገኛል። *🎮 ቢንጎ ይጫወቱ (PLAY BINGO)* በመጫን ጨዋታውን ይጀምሩ!'
+          : '🌼 Use the ADEYBINGO menu below or tap *🎮 PLAY BINGO* to launch the Mini App!',
       parseMode: 'Markdown',
       replyMarkup: buildBotMainMenuMarkup(
         currentLang,
-        this.miniAppUrl,
-        Boolean(existingPlayer?.phoneVerified)
+        effectiveMiniAppUrl,
+        Boolean(existingPlayer?.phoneVerified),
+        customButtons
       ),
       registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
       profile: existingPlayer ?? undefined,

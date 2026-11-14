@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { onAuthStateChanged, signInWithCustomToken, User as FirebaseUser } from 'firebase/auth';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Volume2,
@@ -56,17 +56,21 @@ import { soundFX } from './utils/sound';
 import { initTelegramMiniApp, triggerHaptic } from './utils/telegram';
 import { auth, testFirestoreConnection } from './lib/firebase';
 import {
+  drawBallViaServerApi,
   ensureDefaultRoomsInFirestore,
   ensureUserProfileInFirestore,
+  getActiveBearerToken,
   getPrivatePhoneContact,
   recordDemoReferralInFirestore,
-  recordDemoTransactionInFirestore,
-  saveVerifiedPhoneNumber,
-  signInWithGoogle,
+  resetRoundViaServerApi,
+  setSessionBearerToken,
   signOutFromFirebase,
+  startGameViaServerApi,
+  subscribeToGameState,
   subscribeToRoomState,
-  syncGameSessionInFirestore,
+  subscribeToUserProfile,
   toggleCardReservationAtomic,
+  verifyWinnerViaServerApi,
 } from './services/firestoreService';
 import { BingoBall3D } from './components/BingoBall3D';
 import { BingoCardView } from './components/BingoCardView';
@@ -114,6 +118,7 @@ export default function App() {
   const [firestoreConnected, setFirestoreConnected] = useState<boolean>(false);
   const [phoneNumber, setPhoneNumber] = useState<string>('');
   const [phoneVerified, setPhoneVerified] = useState<boolean>(false);
+  const [serverVerifiedTelegramId, setServerVerifiedTelegramId] = useState<number | null>(null);
   const [telegramBackendStatus, setTelegramBackendStatus] = useState<string>(
     'Ready to validate Telegram WebApp initData on /api/telegram/validate-init-data'
   );
@@ -165,14 +170,30 @@ export default function App() {
   // 1. Verify Firestore connection & listen to Firebase Auth state
   useEffect(() => {
     testFirestoreConnection().then((ok) => setFirestoreConnected(ok));
+    ensureDefaultRoomsInFirestore().catch(() => {});
 
     const unsubAuth = onAuthStateChanged(auth, async (currentUser) => {
       setFbUser(currentUser);
       if (currentUser) {
         try {
-          await ensureDefaultRoomsInFirestore();
+          const tokenRes = await currentUser.getIdTokenResult().catch(() => null);
+          const claimTgId = Number(
+            tokenRes?.claims?.telegram_id ?? tokenRes?.claims?.telegramUserId
+          );
+          if (Number.isInteger(claimTgId) && claimTgId > 0) {
+            setServerVerifiedTelegramId(claimTgId);
+          } else {
+            const uidMatch = /^tg_([1-9]\d*)$/.exec(currentUser.uid);
+            if (uidMatch) {
+              setServerVerifiedTelegramId(Number(uidMatch[1]));
+            }
+          }
+
           const profile = await ensureUserProfileInFirestore(currentUser, user, lang);
           setPhoneVerified(profile.phoneVerified);
+          if (typeof profile.demoBalanceEtb === 'number') {
+            setDemoBalance(profile.demoBalanceEtb);
+          }
           const privContact = await getPrivatePhoneContact(currentUser.uid);
           if (privContact) {
             setPhoneNumber(privContact.phoneNumber);
@@ -181,13 +202,48 @@ export default function App() {
         } catch (err) {
           console.error('Error syncing authenticated user profile:', err);
         }
+      } else {
+        setServerVerifiedTelegramId(null);
       }
     });
+
+    // Attempt automatic Telegram Mini App initData authentication when launched inside Telegram
+    const rawInitData =
+      (
+        window as unknown as {
+          Telegram?: { WebApp?: { initData?: string } };
+        }
+      ).Telegram?.WebApp?.initData || '';
+    if (rawInitData) {
+      fetch('/api/telegram/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: rawInitData }),
+      })
+        .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+        .then(async ({ ok, d }) => {
+          if (ok && d.ok) {
+            const verifiedId = Number(
+              d.verifiedTelegramId ?? d.profile?.telegramUserId ?? d.telegramUser?.id
+            );
+            if (Number.isInteger(verifiedId) && verifiedId > 0) {
+              setServerVerifiedTelegramId(verifiedId);
+            }
+            if (d.sessionToken) setSessionBearerToken(d.sessionToken);
+            if (typeof d.demoBalanceEtb === 'number') setDemoBalance(d.demoBalanceEtb);
+            if (typeof d.phoneVerified === 'boolean') setPhoneVerified(d.phoneVerified);
+            if (d.customToken) {
+              await signInWithCustomToken(auth, d.customToken).catch(() => {});
+            }
+          }
+        })
+        .catch(() => {});
+    }
 
     return () => unsubAuth();
   }, []);
 
-  // 2. Real-time Room & Card Reservation listener when authenticated
+  // 2. Real-time Room, Card Reservation, Live Game, and User Balance onSnapshot listeners
   useEffect(() => {
     if (!fbUser) return;
     const unsubRoom = subscribeToRoomState(
@@ -235,7 +291,24 @@ export default function App() {
       }
     );
 
-    return () => unsubRoom();
+    const unsubGame = subscribeToGameState(`game_${activeRoomId}_live`, (liveGame) => {
+      if (Array.isArray(liveGame.calledNumbers) && liveGame.calledNumbers.length > 0) {
+        setCalls(liveGame.calledNumbers);
+      }
+    });
+
+    const unsubProfile = subscribeToUserProfile(fbUser.uid, (profile) => {
+      if (typeof profile.demoBalanceEtb === 'number') {
+        setDemoBalance(profile.demoBalanceEtb);
+      }
+      setPhoneVerified(profile.phoneVerified);
+    });
+
+    return () => {
+      unsubRoom();
+      unsubGame();
+      unsubProfile();
+    };
   }, [fbUser, activeRoomId]);
 
   // Mirror game state to document.body.dataset.state
@@ -290,20 +363,55 @@ export default function App() {
     setMarked((prev) => Array.from(new Set([...prev, ...cardNums])));
   }, [autoMark, calls, selectedCardIds]);
 
-  // Handler: Firebase Google Sign-In
+  // Handler: Authenticate via Telegram Mini App initData (/api/telegram/auth) without Google OAuth
   async function handleSignInGoogle() {
+    const rawInitData =
+      (
+        window as unknown as {
+          Telegram?: { WebApp?: { initData?: string } };
+        }
+      ).Telegram?.WebApp?.initData || '';
+
     try {
-      const signedInUser = await signInWithGoogle();
-      setToast(
-        lang === 'am'
-          ? `በFirebase ተገናኝተዋል (${signedInUser.email})`
-          : `Signed in to Firebase (${signedInUser.email})`
-      );
+      const resp = await fetch('/api/telegram/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: rawInitData }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.ok) {
+        const verifiedId = Number(
+          data.verifiedTelegramId ?? data.profile?.telegramUserId ?? data.telegramUser?.id
+        );
+        if (Number.isInteger(verifiedId) && verifiedId > 0) {
+          setServerVerifiedTelegramId(verifiedId);
+        }
+        if (data.sessionToken) {
+          setSessionBearerToken(data.sessionToken);
+        }
+        if (typeof data.demoBalanceEtb === 'number') {
+          setDemoBalance(data.demoBalanceEtb);
+        }
+        if (data.customToken) {
+          await signInWithCustomToken(auth, data.customToken);
+        }
+        setToast(
+          lang === 'am'
+            ? `በቴሌግራም Mini App ተረጋግጧል (${data.displayName || user.firstName})`
+            : `Authenticated via Telegram Mini App (${data.displayName || user.firstName})`
+        );
+      } else {
+        setToast(
+          lang === 'am'
+            ? data.message || 'በቴሌግራም Mini App ውስጥ ይክፈቱ (initData ያስፈልጋል)'
+            : data.message || 'Launch inside Telegram Mini App to verify signed initData'
+        );
+      }
     } catch (err) {
       setToast(
         lang === 'am'
-          ? 'የGoogle መግቢያ ሳጥን ተዘግቷል · በሙከራ ሁኔታ መቀጠል ይችላሉ'
-          : `Google Sign-In popup closed (${err instanceof Error ? err.message : 'cancelled'})`
+          ? 'የቴሌግራም ማረጋገጫ ስህተት ተፈጥሯል'
+          : `Telegram Auth check failed (${err instanceof Error ? err.message : 'error'})`
       );
     }
   }
@@ -311,6 +419,7 @@ export default function App() {
   // Handler: Firebase Sign-Out
   async function handleSignOutFirebase() {
     await signOutFromFirebase();
+    setServerVerifiedTelegramId(null);
     setToast(lang === 'am' ? 'ከFirebase ወጥተዋል' : 'Signed out from Firebase');
   }
 
@@ -327,12 +436,16 @@ export default function App() {
       const resp = await fetch('/api/telegram/validate-init-data', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: rawInitData, envelope: true }),
+        body: JSON.stringify({ initData: rawInitData }),
       });
       const data = await resp.json();
       if (resp.ok && data.verified) {
+        const verifiedId = Number(data.verifiedTelegramId ?? data.telegramUser?.id);
+        if (Number.isInteger(verifiedId) && verifiedId > 0) {
+          setServerVerifiedTelegramId(verifiedId);
+        }
         setTelegramBackendStatus(
-          `✓ Verified on Server: TG User #${data.telegramUser?.id} (hash ${String(
+          `✓ Verified on Server: TG User #${verifiedId || data.telegramUser?.id} (hash ${String(
             data.dataCheckHash
           ).slice(0, 12)}...)`
         );
@@ -340,6 +453,15 @@ export default function App() {
           lang === 'am'
             ? 'የቴሌግራም initData በሰርቨር ተረጋግጧል!'
             : 'Telegram initData cryptographically verified on server!'
+        );
+      } else if (resp.status === 409 && serverVerifiedTelegramId) {
+        setTelegramBackendStatus(
+          `✓ Verified on Server: TG User #${serverVerifiedTelegramId} (initData already verified in active session)`
+        );
+        setToast(
+          lang === 'am'
+            ? `የቴሌግራም መለያ ቁጥር #${serverVerifiedTelegramId} በዚህ ክፍለ ጊዜ ተረጋግጧል`
+            : `Telegram ID #${serverVerifiedTelegramId} is already verified in this session`
         );
       } else {
         const statusCode = data.statusCode || resp.status;
@@ -353,54 +475,79 @@ export default function App() {
     }
   }
 
-  // Handler: Save & Verify Phone Number in PII-isolated subcollection (/users/{uid}/private/contact)
+  // Handler: Save & Verify Phone Number via Server-Authoritative Contact Endpoint (/api/telegram/bot-command)
   async function handleVerifyPhone(
     cleanedPhone: string,
     method: 'telegram_contact' | 'sms_otp_demo'
   ) {
-    if (fbUser) {
-      const saved = await saveVerifiedPhoneNumber(fbUser.uid, cleanedPhone, method);
-      setPhoneNumber(saved.phoneNumber);
-      setPhoneVerified(saved.phoneVerified);
-      setToast(
-        lang === 'am'
-          ? `ስልክ ቁጥር (${saved.phoneNumber}) በFirestore /private/contact ተረጋግጧል!`
-          : `Phone (${saved.phoneNumber}) verified & saved in Firestore /private/contact!`
-      );
-    } else {
-      setPhoneNumber(cleanedPhone);
-      setPhoneVerified(true);
-      setToast(
-        lang === 'am'
-          ? `ስልክ ቁጥር (${cleanedPhone}) በሙከራ ሁኔታ ተረጋግጧል (ለCloud ጥበቃ በGoogle ይግቡ)`
-          : `Phone (${cleanedPhone}) verified in session (Sign in with Google to persist in Firestore)`
-      );
-    }
-  }
-
-  // Handler: Server-Authoritative Call Next Ball (/api/game/draw-ball + Firestore sync)
-  async function handleCallNextNumber() {
-    let nextNum: number | null = null;
     try {
-      const resp = await fetch('/api/game/draw-ball', {
+      const resp = await fetch('/api/telegram/bot-command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ calledNumbers: calls }),
+        body: JSON.stringify({
+          senderTelegramId: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName || '',
+          username: user.username.replace(/^@/, ''),
+          firebaseUid: fbUser?.uid || `tg_${user.id}`,
+          text: '',
+          contact:
+            method === 'telegram_contact'
+              ? {
+                  phone_number: cleanedPhone,
+                  first_name: user.firstName,
+                  user_id: user.id,
+                }
+              : null,
+        }),
       });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (typeof data.ball === 'number') {
-          nextNum = data.ball;
-        }
+      const data = await resp.json();
+      if (resp.ok && data.registrationStatus === 'verified') {
+        setPhoneNumber(cleanedPhone);
+        setPhoneVerified(true);
+        setToast(
+          lang === 'am'
+            ? `ስልክ ቁጥር (${cleanedPhone}) በሰርቨር እና Firestore /private/contact ተረጋግጧል!`
+            : `Phone (${cleanedPhone}) verified on server & saved in Firestore /private/contact!`
+        );
+        return;
       }
     } catch {
-      // Fallback to local draw if offline
+      // Fall through to session state if offline
     }
 
-    if (nextNum === null) {
-      nextNum = drawNextBall(calls);
+    setPhoneNumber(cleanedPhone);
+    setPhoneVerified(true);
+    setToast(
+      lang === 'am'
+        ? `ስልክ ቁጥር (${cleanedPhone}) በሙከራ ሁኔታ ተረጋግጧል`
+        : `Phone (${cleanedPhone}) verified in sandbox session`
+    );
+  }
+
+  // Handler: Server-Authoritative Call Next Ball (POST /api/game/draw-ball)
+  async function handleCallNextNumber() {
+    const token = await getActiveBearerToken();
+    if (token) {
+      try {
+        const res = await drawBallViaServerApi({
+          roomId: activeRoom.id,
+          gameId: `game_${activeRoom.id}_live`,
+          callerTelegramId: user.id,
+        });
+        soundFX.playBallCall(sound);
+        triggerHaptic('light');
+        setCalls(res.calledNumbers);
+        return;
+      } catch (err) {
+        soundFX.playError(sound);
+        setToast(err instanceof Error ? err.message : 'Server ball draw failed');
+        return;
+      }
     }
 
+    // Local sandbox preview when unauthenticated in browser preview
+    const nextNum = drawNextBall(calls);
     if (nextNum === null) {
       setAutoCallerActive(false);
       setToast(
@@ -413,19 +560,7 @@ export default function App() {
 
     soundFX.playBallCall(sound);
     triggerHaptic('light');
-    const updatedCalls = [...calls, nextNum];
-    setCalls(updatedCalls);
-
-    if (fbUser) {
-      syncGameSessionInFirestore({
-        gameId: `game_${activeRoom.id}_live`,
-        roomId: activeRoom.id,
-        hostUid: fbUser.uid,
-        status: 'live',
-        calledNumbers: updatedCalls,
-        latestBall: nextNum,
-      }).catch(() => {});
-    }
+    setCalls([...calls, nextNum]);
   }
 
   // Handler: Draw Helpful Ball for fast demo testing
@@ -445,21 +580,11 @@ export default function App() {
         ? `የተጠራ ቁጥር፦ ${formatBallCall(helpful)}`
         : `Called ${formatBallCall(helpful)}!`
     );
-
-    if (fbUser) {
-      syncGameSessionInFirestore({
-        gameId: `game_${activeRoom.id}_live`,
-        roomId: activeRoom.id,
-        hostUid: fbUser.uid,
-        status: 'live',
-        calledNumbers: updatedCalls,
-        latestBall: helpful,
-      }).catch(() => {});
-    }
   }
 
-  // Handler: Toggle card selection (1..600, max 4) with Atomic Firestore Transaction when signed in
+  // Handler: Toggle card selection (1..600, max 4) via POST /api/cards/reserve when authenticated
   async function handleToggleCardId(cardId: number) {
+    const previousCardIds = [...selectedCardIds];
     const result = toggleCardSelection(
       selectedCardIds,
       cardId,
@@ -486,31 +611,41 @@ export default function App() {
       return;
     }
 
-    soundFX.playDaub(sound);
-    triggerHaptic('light');
-    setSelectedCardIds(result.selectedIds);
-
-    if (fbUser) {
+    const token = await getActiveBearerToken();
+    if (token) {
       try {
         const txRes = await toggleCardReservationAtomic({
           roomId: activeRoom.id,
           cardId,
-          uid: fbUser.uid,
-          displayName: fbUser.displayName || `${user.firstName} ${user.lastName || ''}`.trim(),
+          uid: fbUser?.uid,
+          displayName: fbUser?.displayName || `${user.firstName} ${user.lastName || ''}`.trim(),
           telegramUserId: `tg_${user.id}`,
         });
+        soundFX.playDaub(sound);
+        triggerHaptic('light');
         setSelectedCardIds(txRes.updatedCardIds);
+        if (typeof txRes.updatedBalanceEtb === 'number') {
+          setDemoBalance(txRes.updatedBalanceEtb);
+        }
         setToast(
           lang === 'am'
-            ? `ካርድ #${cardId} በFirestore አቶሚክ ትራንዛክሽን ${
+            ? `ካርድ #${cardId} በሰርቨር ትራንዛክሽን ${
                 txRes.action === 'reserved' ? 'ተይዟል' : 'ተለቋል'
               }`
-            : `Card #${cardId} atomically ${txRes.action} in Firestore`
+            : `Card #${cardId} ${txRes.action} via server /api/cards/reserve`
         );
       } catch (err) {
-        setToast(err instanceof Error ? err.message : 'Card reservation error');
+        soundFX.playError(sound);
+        triggerHaptic('error');
+        setSelectedCardIds(previousCardIds);
+        setToast(err instanceof Error ? err.message : 'Card reservation rejected by server');
       }
+      return;
     }
+
+    soundFX.playDaub(sound);
+    triggerHaptic('light');
+    setSelectedCardIds(result.selectedIds);
   }
 
   // Handler: Quick pick N available cards
@@ -576,24 +711,40 @@ export default function App() {
     );
   }
 
-  // Handler: Verify BINGO claim across all player cards (with server verification + Firestore sync)
+  // Handler: Verify BINGO claim across all player cards via POST /api/game/verify-winner
   async function handleClaimBingo() {
     for (const card of playerCards) {
       const winCheck = checkCardWin(card, marked, calls, true);
       if (winCheck.won) {
-        // Also verify on trusted backend /api/game/verify-winner
+        const token = await getActiveBearerToken();
+        let serverPrize: number | undefined;
         try {
-          await fetch('/api/game/verify-winner', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              cardId: card.id,
-              calledNumbers: calls,
-              markedNumbers: marked,
-            }),
+          const verification = await verifyWinnerViaServerApi({
+            roomId: activeRoom.id,
+            gameId: `game_${activeRoom.id}_live`,
+            cardId: card.id,
+            markedNumbers: marked,
+            calledNumbers: calls,
+            claimantTelegramId: user.id,
+            playerName: `${user.firstName} ${user.lastName || ''}`.trim(),
           });
-        } catch {
-          // Continue if offline
+          if (!verification.verified && token) {
+            soundFX.playError(sound);
+            triggerHaptic('error');
+            setToast(
+              verification.message ||
+                verification.reason ||
+                'Server rejected winner verification'
+            );
+            return;
+          }
+          serverPrize = verification.demoPrizeEtb;
+        } catch (err) {
+          if (token) {
+            soundFX.playError(sound);
+            setToast(err instanceof Error ? err.message : 'Server winner verification failed');
+            return;
+          }
         }
 
         soundFX.playWinFanfare(sound);
@@ -602,9 +753,14 @@ export default function App() {
         setActiveWinResult(winCheck);
         setWinnerModalOpen(true);
 
-        const prizeCredit = Math.max(50, selectedCardIds.length * cardPrice * 4);
+        const prizeCredit =
+          typeof serverPrize === 'number'
+            ? serverPrize
+            : Math.max(50, selectedCardIds.length * cardPrice * 4);
         const refCode = `ADB-WIN-${Math.floor(10000 + Math.random() * 89999)}`;
-        setDemoBalance((prev) => prev + prizeCredit);
+        if (!token) {
+          setDemoBalance((prev) => prev + prizeCredit);
+        }
         setTransactions((prev) => [
           {
             id: `tx-${Date.now()}`,
@@ -637,30 +793,6 @@ export default function App() {
           ...prev,
         ]);
 
-        if (fbUser) {
-          syncGameSessionInFirestore({
-            gameId: `game_${activeRoom.id}_live`,
-            roomId: activeRoom.id,
-            hostUid: fbUser.uid,
-            status: 'completed',
-            calledNumbers: calls,
-            latestBall,
-            winnerUid: fbUser.uid,
-            winnerName: fbUser.displayName || user.firstName,
-            winningCardId: card.id,
-            winningPattern: winCheck.patternLabelEn || 'Bingo Line',
-          }).catch(() => {});
-
-          recordDemoTransactionInFirestore({
-            uid: fbUser.uid,
-            type: 'bingo_win',
-            amountEtb: prizeCredit,
-            status: 'demo_completed',
-            description: `Bingo Win Credit (Card #${card.id})`,
-            reference: refCode,
-          }).catch(() => {});
-        }
-
         setToast(
           lang === 'am'
             ? `እንኳን ደስ አለዎት! በካርድ #${card.id} BINGO አሸንፈዋል!`
@@ -681,8 +813,21 @@ export default function App() {
     );
   }
 
-  // Handler: Reset live round
-  function handleResetRound() {
+  // Handler: Reset live round (POST /api/game/reset-round when authenticated)
+  async function handleResetRound() {
+    const token = await getActiveBearerToken();
+    if (token) {
+      try {
+        await resetRoundViaServerApi({
+          roomId: activeRoom.id,
+          gameId: `game_${activeRoom.id}_live`,
+        });
+      } catch (err) {
+        soundFX.playError(sound);
+        setToast(err instanceof Error ? err.message : 'Server round reset failed');
+        return;
+      }
+    }
     setAutoCallerActive(false);
     setWinnerModalOpen(false);
     setActiveWinResult(null);
@@ -691,39 +836,45 @@ export default function App() {
     setToast(lang === 'am' ? 'የሙከራ ዙሩ እንደገና ተጀምሯል' : 'Demo round reset');
   }
 
-  // Handler: Enter Live Game from Lobby/Card Picker
-  function handleEnterLiveGame() {
+  // Handler: Enter Live Game from Lobby/Card Picker (POST /api/game/start when authenticated)
+  async function handleEnterLiveGame() {
     if (selectedCardIds.length === 0) {
       setSelectedCardIds([1]);
     }
-    const cost = Math.max(1, selectedCardIds.length) * cardPrice;
-    const refCode = `ADB-ENT-${Math.floor(10000 + Math.random() * 89999)}`;
-    if (demoBalance >= cost) {
-      setDemoBalance((prev) => prev - cost);
-      setTransactions((prev) => [
-        {
-          id: `tx-${Date.now()}`,
-          type: 'card_entry',
-          amount: -cost,
-          provider: activeRoom.nameEn,
-          status: 'demo_completed',
-          labelAm: `${Math.max(1, selectedCardIds.length)} የቢንጎ ካርድ መግቢያ (Demo)`,
-          labelEn: `${Math.max(1, selectedCardIds.length)} Bingo Card Entry (Demo)`,
-          timestamp: lang === 'am' ? 'አሁን' : 'Just now',
-          reference: refCode,
-        },
-        ...prev,
-      ]);
-
-      if (fbUser) {
-        recordDemoTransactionInFirestore({
-          uid: fbUser.uid,
-          type: 'card_entry',
-          amountEtb: -cost,
-          status: 'demo_completed',
-          description: `${Math.max(1, selectedCardIds.length)} Bingo Card Entry`,
-          reference: refCode,
-        }).catch(() => {});
+    const token = await getActiveBearerToken();
+    if (token) {
+      try {
+        const started = await startGameViaServerApi({
+          roomId: activeRoom.id,
+          gameId: `game_${activeRoom.id}_live`,
+        });
+        if (Array.isArray(started.calledNumbers) && started.calledNumbers.length > 0) {
+          setCalls(started.calledNumbers);
+        }
+      } catch (err) {
+        soundFX.playError(sound);
+        setToast(err instanceof Error ? err.message : 'Server game start rejected');
+        return;
+      }
+    } else {
+      const cost = Math.max(1, selectedCardIds.length) * cardPrice;
+      const refCode = `ADB-ENT-${Math.floor(10000 + Math.random() * 89999)}`;
+      if (demoBalance >= cost) {
+        setDemoBalance((prev) => prev - cost);
+        setTransactions((prev) => [
+          {
+            id: `tx-${Date.now()}`,
+            type: 'card_entry',
+            amount: -cost,
+            provider: activeRoom.nameEn,
+            status: 'demo_completed',
+            labelAm: `${Math.max(1, selectedCardIds.length)} የቢንጎ ካርድ መግቢያ (Demo)`,
+            labelEn: `${Math.max(1, selectedCardIds.length)} Bingo Card Entry (Demo)`,
+            timestamp: lang === 'am' ? 'አሁን' : 'Just now',
+            reference: refCode,
+          },
+          ...prev,
+        ]);
       }
     }
     setScreen('game');
@@ -753,17 +904,6 @@ export default function App() {
       },
       ...prev,
     ]);
-
-    if (fbUser) {
-      recordDemoTransactionInFirestore({
-        uid: fbUser.uid,
-        type: 'deposit_demo',
-        amountEtb: amount,
-        status: 'demo_completed',
-        description: `Demo Sandbox Deposit (${provider})`,
-        reference: refCode,
-      }).catch(() => {});
-    }
 
     setToast(
       lang === 'am'
@@ -797,17 +937,6 @@ export default function App() {
       },
       ...prev,
     ]);
-
-    if (fbUser) {
-      recordDemoTransactionInFirestore({
-        uid: fbUser.uid,
-        type: 'withdraw_demo',
-        amountEtb: -amount,
-        status: 'demo_pending',
-        description: `Demo Withdrawal Request to ${accountPhone}`,
-        reference: refCode,
-      }).catch(() => {});
-    }
 
     setToast(
       lang === 'am'
@@ -854,15 +983,6 @@ export default function App() {
         inviterUid: fbUser.uid,
         friendName,
         friendHandle: handle,
-      }).catch(() => {});
-
-      recordDemoTransactionInFirestore({
-        uid: fbUser.uid,
-        type: 'referral_bonus',
-        amountEtb: DEFAULT_GAME_RULES.inviterBonusEtb,
-        status: 'demo_completed',
-        description: `Referral Bonus (${friendName})`,
-        reference: refCode,
       }).catch(() => {});
     }
 
@@ -962,24 +1082,24 @@ export default function App() {
         </div>
 
         <div className="actions">
-          {/* Firebase Cloud Status & Quick Sign-In Button (Desktop/Tablet) */}
+          {/* Telegram Mini App Cloud Status & Quick Auth Button (Desktop/Tablet) */}
           {!fbUser ? (
             <button
               type="button"
               onClick={handleSignInGoogle}
-              aria-label="Sign in with Google to sync with Firebase"
-              title="Sign in with Google to enable real-time Firestore card reservations"
+              aria-label="Authenticate via Telegram Mini App"
+              title="Verify Telegram Mini App initData to enable real-time Firestore card reservations"
               className="!hidden sm:!flex"
             >
               <LogIn size={15} className="text-[#087e50]" />
-              <span>{lang === 'am' ? 'ግባ (Cloud)' : 'Sign In'}</span>
+              <span>{lang === 'am' ? 'ግባ (TG)' : 'TG Auth'}</span>
             </button>
           ) : (
             <button
               type="button"
               onClick={() => setScreen('profile')}
               aria-label="Firebase Cloud Sync Active"
-              title={`Connected to Firestore as ${fbUser.email}`}
+              title={`Connected to Firestore as ${fbUser.uid}`}
               className="!hidden sm:!flex"
             >
               <Database size={15} className="text-[#087e50]" />
@@ -1443,6 +1563,7 @@ export default function App() {
             phoneNumber={phoneNumber}
             phoneVerified={phoneVerified}
             onVerifyPhone={handleVerifyPhone}
+            serverVerifiedTelegramId={serverVerifiedTelegramId}
             telegramBackendStatus={telegramBackendStatus}
             onValidateTelegramInitData={handleValidateTelegramInitData}
             demoBalance={demoBalance}

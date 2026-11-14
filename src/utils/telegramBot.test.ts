@@ -320,7 +320,8 @@ test('Milestone 4 Part A: All 7 interactive inline callback buttons, duplicate c
     callbackData: 'cb:game_history',
   });
   assert.equal(historyCb.ok, true);
-  assert.match(historyCb.text, /Adey Main Hall/);
+  assert.match(historyCb.text, /የጨዋታ ታሪክ|Game History/);
+  assert.doesNotMatch(historyCb.text, /#G-4821/);
 
   const supportCb = bot.handleIncomingUpdate({
     callbackQueryId: 'cbq-6',
