@@ -57,7 +57,8 @@ export interface AdminAuditRecord {
     | 'ROOM_CONFIG_UPDATED'
     | 'BOT_CONFIG_UPDATED'
     | 'BOT_ANNOUNCEMENT_SENT'
-    | 'ROLE_ESCALATION_BLOCKED';
+    | 'ROLE_ESCALATION_BLOCKED'
+    | 'WALLET_BALANCE_ADJUSTED';
   targetId: string;
   summary: string;
   previousValue?: string;
@@ -171,6 +172,7 @@ export interface AdminReferralRecord {
 export const AUTHORIZED_ADMIN_TELEGRAM_IDS: readonly number[] = Object.freeze([8842109]);
 export const AUTHORIZED_ADMIN_EMAILS: readonly string[] = Object.freeze([
   'abelbimrew868@gmail.com',
+  'abiwolfcode@gmail.com',
 ]);
 
 /**
@@ -888,12 +890,149 @@ export class ServerAdminAuthority {
         });
       } else {
         existing.language = bp.language;
+        existing.demoBalanceEtb = bp.demoBalanceEtb;
         if (bp.phoneVerified && bp.verifiedPhoneMasked) {
           existing.phoneVerified = true;
           existing.maskedPhone = bp.verifiedPhoneMasked;
         }
       }
     }
+  }
+
+  public registerPlayerDepositRequest(params: {
+    depositId: string;
+    uid: string;
+    userDisplayName: string;
+    telegramUserId: number;
+    amountEtb: number;
+    provider: AdminDepositRequest['provider'];
+    referenceCode: string;
+    requestDate?: string;
+  }): AdminDepositRequest {
+    this.syncBotPlayers();
+    const record: AdminDepositRequest = {
+      depositId: params.depositId,
+      uid: params.uid,
+      userDisplayName: params.userDisplayName,
+      telegramUserId: params.telegramUserId,
+      amountEtb: params.amountEtb,
+      requestDate: params.requestDate || new Date().toISOString().slice(0, 16).replace('T', ' '),
+      provider: params.provider,
+      referenceCode: params.referenceCode,
+      status: 'Pending',
+      reviewNotes: 'Awaiting payment reference verification',
+      demoSandboxOnly: true,
+    };
+    const nextMap = new Map<string, AdminDepositRequest>();
+    nextMap.set(record.depositId, record);
+    for (const [k, v] of this.deposits.entries()) {
+      nextMap.set(k, v);
+    }
+    this.deposits = nextMap;
+    return record;
+  }
+
+  public registerPlayerPayoutOrder(params: {
+    requestId: string;
+    uid: string;
+    userDisplayName: string;
+    telegramUserId: number;
+    requestedAmountEtb: number;
+    paymentMethod: AdminPayoutOrder['paymentMethod'];
+    destinationMasked?: string;
+    requestDate?: string;
+    reviewNotes?: string;
+  }): AdminPayoutOrder {
+    this.syncBotPlayers();
+    const targetUser = this.users.get(params.uid);
+    const nowFormatted =
+      params.requestDate || new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const order: AdminPayoutOrder = {
+      requestId: params.requestId,
+      uid: params.uid,
+      userDisplayName: params.userDisplayName,
+      telegramUserId: params.telegramUserId,
+      requestedAmountEtb: params.requestedAmountEtb,
+      requestDate: nowFormatted,
+      paymentMethod: params.paymentMethod,
+      destinationMasked:
+        params.destinationMasked || targetUser?.maskedPhone || '+2519****00',
+      status: 'Pending',
+      reviewNotes: params.reviewNotes || 'Submitted by player — awaiting withdrawal review',
+      demoSandboxOnly: true,
+      auditTrail: [
+        {
+          timestamp: new Date().toISOString(),
+          fromStatus: 'Created',
+          toStatus: 'Pending',
+          reviewedBy: 'System',
+          notes: 'Withdrawal request created and funds held for review',
+        },
+      ],
+    };
+    const nextMap = new Map<string, AdminPayoutOrder>();
+    nextMap.set(order.requestId, order);
+    for (const [k, v] of this.payouts.entries()) {
+      nextMap.set(k, v);
+    }
+    this.payouts = nextMap;
+    return order;
+  }
+
+  public adjustUserWalletBalance(params: {
+    uid: string;
+    deltaEtb: number;
+    reason: string;
+    adminActor: VerifiedSessionActor;
+  }): {
+    ok: boolean;
+    reason?: 'user_not_found' | 'invalid_amount';
+    user?: AdminManagedUserRecord;
+    auditRecord?: AdminAuditRecord;
+  } {
+    this.syncBotPlayers();
+    if (!Number.isFinite(params.deltaEtb) || params.deltaEtb === 0 || Math.abs(params.deltaEtb) > 50000) {
+      return { ok: false, reason: 'invalid_amount' };
+    }
+    const target = this.users.get(params.uid);
+    if (!target) {
+      return { ok: false, reason: 'user_not_found' };
+    }
+    const prevBalance = target.demoBalanceEtb;
+    const nextBalance = Math.max(0, Math.min(100000, Number((prevBalance + params.deltaEtb).toFixed(2))));
+    target.demoBalanceEtb = nextBalance;
+
+    const botPlayer = this.botEngine.getPlayerByTelegramId(target.telegramUserId);
+    if (botPlayer) {
+      botPlayer.demoBalanceEtb = nextBalance;
+    }
+
+    const nowIso = new Date().toISOString();
+    const cleanReason =
+      params.reason.trim() ||
+      (params.deltaEtb > 0 ? 'Admin Manual Credit (Verified)' : 'Admin Manual Payout / Debit');
+
+    target.walletLedger.unshift({
+      id: `tx_adj_${Date.now()}`,
+      type: params.deltaEtb > 0 ? 'deposit_demo' : 'withdraw_demo',
+      amountEtb: params.deltaEtb,
+      description: cleanReason,
+      reference: `ADB-ADM-${Date.now().toString(36).toUpperCase()}`,
+      timestamp: nowIso,
+      status: 'demo_completed',
+    });
+
+    const auditRecord = this.appendAuditRecord({
+      adminActor: params.adminActor,
+      action: 'WALLET_BALANCE_ADJUSTED',
+      targetId: target.uid,
+      summary: `Adjusted wallet balance for ${target.displayName} (${target.uid}) by ${params.deltaEtb > 0 ? '+' : ''}${params.deltaEtb} ETB`,
+      previousValue: `${prevBalance.toFixed(2)} ETB`,
+      newValue: `${nextBalance.toFixed(2)} ETB`,
+      notes: cleanReason,
+    });
+
+    return { ok: true, user: { ...target, walletLedger: [...target.walletLedger] }, auditRecord };
   }
 
   public getOverviewMetrics() {
@@ -1073,6 +1212,10 @@ export class ServerAdminAuthority {
           targetUser.demoBalanceEtb + order.requestedAmountEtb
         );
         refundedBalanceEtb = targetUser.demoBalanceEtb;
+        const bp = this.botEngine.getPlayerByTelegramId(targetUser.telegramUserId);
+        if (bp) {
+          bp.demoBalanceEtb = targetUser.demoBalanceEtb;
+        }
         targetUser.walletLedger.unshift({
           id: `tx_poref_${order.requestId}`,
           type: 'withdraw_demo',
@@ -1153,6 +1296,10 @@ export class ServerAdminAuthority {
       if (targetUser) {
         targetUser.demoBalanceEtb = Math.min(100000, targetUser.demoBalanceEtb + dep.amountEtb);
         creditedBalanceEtb = targetUser.demoBalanceEtb;
+        const bp = this.botEngine.getPlayerByTelegramId(targetUser.telegramUserId);
+        if (bp) {
+          bp.demoBalanceEtb = targetUser.demoBalanceEtb;
+        }
         targetUser.walletLedger.unshift({
           id: `tx_dep_${dep.depositId}`,
           type: 'deposit_demo',

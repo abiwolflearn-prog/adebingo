@@ -1639,17 +1639,34 @@ async function startServer() {
         req.body?.provider === 'CBE Birr (Demo)' || req.body?.provider === 'Chapa Sandbox (Demo)'
           ? req.body.provider
           : 'Telebirr (Demo)';
+      const customRef =
+        typeof req.body?.referenceCode === 'string' && req.body.referenceCode.trim().length >= 4
+          ? req.body.referenceCode.trim().toUpperCase()
+          : `REF-${Math.floor(100000 + Math.random() * 899999)}`;
+      const depositId = `DEP-WEB-${Date.now().toString(36).toUpperCase()}`;
       const deposit = {
-        depositId: `DEP-WEB-${Date.now().toString(36).toUpperCase()}`,
+        depositId,
         amountEtb,
         provider: method,
-        referenceCode: `REF-${Math.floor(100000 + Math.random() * 899999)}`,
+        referenceCode: customRef,
         status: 'Pending' as const,
         requestDate: nowIso,
       };
       const existing = localDepositsByUid.get(actor.uid) || [];
       existing.unshift(deposit);
       localDepositsByUid.set(actor.uid, existing.slice(0, 10));
+
+      adminAuthority.registerPlayerDepositRequest({
+        depositId,
+        uid: actor.uid,
+        userDisplayName: actor.displayName,
+        telegramUserId: actor.telegramUserId,
+        amountEtb,
+        provider: method,
+        referenceCode: customRef,
+        requestDate: nowIso.slice(0, 16).replace('T', ' '),
+      });
+
       res.status(201).json({ ok: true, action: 'deposit_request', deposit, demoSandboxOnly: true });
       return;
     }
@@ -1670,22 +1687,59 @@ async function startServer() {
         });
         return;
       }
+      if (player) {
+        player.demoBalanceEtb = Math.max(0, Number((availableBalanceEtb - amountEtb).toFixed(2)));
+      }
       const method =
         req.body?.method === 'CBE Birr (Demo)' || req.body?.method === 'Chapa Sandbox (Demo)'
           ? req.body.method
           : 'Telebirr (Demo)';
+      const requestId = `PO-WEB-${Date.now().toString(36).toUpperCase()}`;
       const withdrawal = {
-        requestId: `PO-WEB-${Date.now().toString(36).toUpperCase()}`,
+        requestId,
         requestedAmountEtb: amountEtb,
         paymentMethod: method,
         status: 'Pending' as const,
         requestDate: nowIso,
-        reviewNotes: 'Submitted via ADEYBINGO Mini App (Demo Sandbox)',
+        reviewNotes: 'Submitted via ADEYBINGO Mini App — awaiting admin payout approval',
       };
       const existing = localPayoutsByUid.get(actor.uid) || [];
       existing.unshift(withdrawal);
       localPayoutsByUid.set(actor.uid, existing.slice(0, 10));
-      res.status(201).json({ ok: true, action: 'withdraw_request', withdrawal, demoSandboxOnly: true });
+
+      const txList = localTransactionsByUid.get(actor.uid) || [];
+      txList.unshift({
+        id: `tx_wd_${requestId}`,
+        type: 'withdraw_demo',
+        amount: -amountEtb,
+        provider: method,
+        status: 'demo_pending',
+        labelAm: `${method} የወጪ ጥያቄ (${requestId})`,
+        labelEn: `${method} Withdrawal Request (${requestId})`,
+        timestamp: nowIso,
+        reference: requestId,
+      });
+      localTransactionsByUid.set(actor.uid, txList.slice(0, 30));
+
+      adminAuthority.registerPlayerPayoutOrder({
+        requestId,
+        uid: actor.uid,
+        userDisplayName: actor.displayName,
+        telegramUserId: actor.telegramUserId,
+        requestedAmountEtb: amountEtb,
+        paymentMethod: method,
+        destinationMasked: player?.verifiedPhoneMasked || '+2519****00',
+        requestDate: nowIso.slice(0, 16).replace('T', ' '),
+        reviewNotes: withdrawal.reviewNotes,
+      });
+
+      res.status(201).json({
+        ok: true,
+        action: 'withdraw_request',
+        withdrawal,
+        updatedBalanceEtb: player ? player.demoBalanceEtb : availableBalanceEtb - amountEtb,
+        demoSandboxOnly: true,
+      });
       return;
     }
 
@@ -2182,6 +2236,44 @@ async function startServer() {
     res.json(result);
   });
 
+  app.post('/api/admin/users/:uid/wallet', requireAdmin, (req, res) => {
+    const actor = (req as express.Request & { adminActor: VerifiedSessionActor }).adminActor;
+    const uid = String(req.params.uid || '');
+    const deltaEtb = Number(req.body?.deltaEtb);
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : '';
+
+    const result = adminAuthority.adjustUserWalletBalance({
+      uid,
+      deltaEtb,
+      reason,
+      adminActor: actor,
+    });
+    if (!result.ok || !result.user) {
+      res.status(result.reason === 'user_not_found' ? 404 : 400).json(result);
+      return;
+    }
+
+    const txList = localTransactionsByUid.get(uid) || [];
+    txList.unshift({
+      id: `tx_adm_${Date.now()}`,
+      type: deltaEtb > 0 ? 'deposit_demo' : 'withdraw_demo',
+      amount: deltaEtb,
+      status: 'demo_completed',
+      labelAm:
+        deltaEtb > 0
+          ? `የአስተዳዳሪ ሂሳብ ጭማሪ (+${deltaEtb} ETB)`
+          : `የአስተዳዳሪ ክፍያ / ተቀናሽ (${deltaEtb} ETB)`,
+      labelEn:
+        reason.trim() ||
+        (deltaEtb > 0 ? `Admin Balance Credit (+${deltaEtb} ETB)` : `Admin Payout / Debit (${deltaEtb} ETB)`),
+      timestamp: new Date().toISOString(),
+      reference: `ADM-ADJ-${Date.now().toString(36).toUpperCase()}`,
+    });
+    localTransactionsByUid.set(uid, txList.slice(0, 30));
+
+    res.json(result);
+  });
+
   // 9E. Section 3: Payout Orders (Demo-Only Payout Request Management)
   app.get('/api/admin/payouts', requireAdmin, (req, res) => {
     const statusFilter = typeof req.query.status === 'string' ? req.query.status : 'ALL';
@@ -2203,10 +2295,45 @@ async function startServer() {
       reviewNotes,
       adminActor: actor,
     });
-    if (!result.ok) {
+    if (!result.ok || !result.payout) {
       res.status(400).json(result);
       return;
     }
+
+    const targetUid = result.payout.uid;
+    const userPayouts = localPayoutsByUid.get(targetUid);
+    if (userPayouts) {
+      for (const item of userPayouts) {
+        if (item.requestId === requestId) {
+          item.status = result.payout.status;
+          item.reviewNotes = result.payout.reviewNotes;
+        }
+      }
+    }
+
+    if (result.payout.status === 'Rejected' && result.refundedBalanceEtb !== undefined) {
+      const txList = localTransactionsByUid.get(targetUid) || [];
+      txList.unshift({
+        id: `tx_poref_${requestId}_${Date.now()}`,
+        type: 'withdraw_demo',
+        amount: result.payout.requestedAmountEtb,
+        provider: result.payout.paymentMethod,
+        status: 'demo_completed',
+        labelAm: `የወጪ ጥያቄ ተመላሽ (${requestId})`,
+        labelEn: `Withdrawal Rejected — Refunded (${requestId})`,
+        timestamp: new Date().toISOString(),
+        reference: `REFUND-${requestId}`,
+      });
+      localTransactionsByUid.set(targetUid, txList.slice(0, 30));
+    } else if (result.payout.status === 'Completed' || result.payout.status === 'Approved') {
+      const txList = localTransactionsByUid.get(targetUid) || [];
+      for (const tx of txList) {
+        if (tx.reference === requestId) {
+          tx.status = 'demo_completed';
+        }
+      }
+    }
+
     res.json(result);
   });
 
@@ -2230,10 +2357,37 @@ async function startServer() {
       reviewNotes,
       adminActor: actor,
     });
-    if (!result.ok) {
+    if (!result.ok || !result.deposit) {
       res.status(400).json(result);
       return;
     }
+
+    const targetUid = result.deposit.uid;
+    const userDeposits = localDepositsByUid.get(targetUid);
+    if (userDeposits) {
+      for (const item of userDeposits) {
+        if (item.depositId === depositId) {
+          item.status = result.deposit.status;
+        }
+      }
+    }
+
+    if (result.deposit.status === 'Approved' && result.creditedBalanceEtb !== undefined) {
+      const txList = localTransactionsByUid.get(targetUid) || [];
+      txList.unshift({
+        id: `tx_dep_${depositId}_${Date.now()}`,
+        type: 'deposit_demo',
+        amount: result.deposit.amountEtb,
+        provider: result.deposit.provider,
+        status: 'demo_completed',
+        labelAm: `የጸደቀ ${result.deposit.provider} ገቢ (${result.deposit.referenceCode})`,
+        labelEn: `Verified ${result.deposit.provider} Deposit (${result.deposit.referenceCode})`,
+        timestamp: new Date().toISOString(),
+        reference: result.deposit.referenceCode,
+      });
+      localTransactionsByUid.set(targetUid, txList.slice(0, 30));
+    }
+
     res.json(result);
   });
 
@@ -2271,6 +2425,67 @@ async function startServer() {
       return;
     }
     res.json(result);
+  });
+
+  app.post('/api/admin/rooms/:roomId/round-action', requireAdmin, (req, res) => {
+    const actor = (req as express.Request & { adminActor: VerifiedSessionActor }).adminActor;
+    const roomId = String(req.params.roomId || 'adey-main');
+    const action = req.body?.action === 'force_start' ? 'force_start' : 'reset';
+    const cycle = ensureRoomCycle(roomId);
+
+    if (action === 'force_start') {
+      gameAuthority.resetRoomCalls(roomId, []);
+      const drawRes = gameAuthority.drawNextBallAuthoritative({
+        roomId,
+        callerTelegramId: actor.telegramUserId,
+      });
+      cycle.status = 'live';
+      cycle.phaseEndsAtMs = 0;
+      cycle.lastDrawAtMs = Date.now();
+      cycle.settledRoundNumber = undefined;
+      const nextGame = {
+        gameId: `game_${roomId}_live`,
+        roomId,
+        hostUid: actor.uid,
+        roundNumber: cycle.roundNumber,
+        status: 'live' as const,
+        calledNumbers: drawRes.calledNumbers || (drawRes.ball ? [drawRes.ball] : []),
+        latestBall: drawRes.ball || 0,
+        winnerUid: '',
+        winnerName: '',
+        winningCardId: 0,
+        winningPattern: '',
+        prizePoolEtb: 0,
+        winners: [],
+      };
+      localLiveGames.set(roomId, nextGame);
+      res.json({ ok: true, action: 'force_start', roomId, roundNumber: cycle.roundNumber, status: 'live' });
+      return;
+    }
+
+    cycle.roundNumber += 1;
+    cycle.status = 'countdown';
+    cycle.phaseEndsAtMs = Date.now() + ROUND_CARD_WINDOW_MS;
+    cycle.lastDrawAtMs = 0;
+    cycle.settledRoundNumber = undefined;
+    localRoomCardOwnership.delete(roomId);
+    gameAuthority.resetRoomCalls(roomId, []);
+    localLiveGames.set(roomId, {
+      gameId: `game_${roomId}_live`,
+      roomId,
+      hostUid: actor.uid,
+      roundNumber: cycle.roundNumber,
+      status: 'countdown',
+      calledNumbers: [],
+      latestBall: 0,
+      winnerUid: '',
+      winnerName: '',
+      winningCardId: 0,
+      winningPattern: '',
+      prizePoolEtb: 0,
+      winners: [],
+    });
+    res.json({ ok: true, action: 'reset', roomId, roundNumber: cycle.roundNumber, status: 'countdown' });
   });
 
   // 9H. Section 6: Referral Management
@@ -2378,7 +2593,7 @@ async function startServer() {
 
     const script = getBingoVoiceCallScript(ballNum, lang);
     const spokenText = lang === 'am' ? script.amharicText : script.englishText;
-    const cacheKey = `${lang}:${ballNum}`;
+    const cacheKey = `female_v2_${lang}:${ballNum}`;
     const cached = ttsAudioCache.get(cacheKey);
     if (cached) {
       res.json({
@@ -2415,8 +2630,8 @@ async function startServer() {
                 speechMetadata: {
                   style:
                     lang === 'am'
-                      ? 'Clear, energetic Ethiopian Amharic Bingo caller announcing the Bingo letter and number naturally'
-                      : 'Clear, energetic Bingo caller announcing the letter and number',
+                      ? 'Warm, clear, cheerful female Ethiopian Amharic Bingo announcer calling the Bingo letter and number with a natural female voice'
+                      : 'Warm, clear, cheerful female Bingo announcer calling the Bingo letter and number with a bright female voice',
                 },
               },
             ],
@@ -2426,7 +2641,7 @@ async function startServer() {
           responseModalities: ['AUDIO'],
           speechConfig: {
             voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: 'Kore' },
+              prebuiltVoiceConfig: { voiceName: 'Aoede' },
             },
           },
         },

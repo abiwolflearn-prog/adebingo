@@ -44,6 +44,20 @@ class SoundEngine {
     }
   }
 
+  private pickFemaleVoice(voices: SpeechSynthesisVoice[], langPrefix: string): SpeechSynthesisVoice | undefined {
+    const matchingLang = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
+    const pool = matchingLang.length > 0 ? matchingLang : voices;
+    const femalePattern =
+      /female|woman|zira|samantha|victoria|karen|moira|tessa|aria|jenny|sara|hazel|susan|helena|catherine|natasha|aoede|kore|google uk english female|google us english/i;
+    const malePattern = /\bmale\b|\bdavid\b|\bmark\b|\bdaniel\b|\balex\b|\bjames\b|\bgeorge\b|\brichard\b/i;
+
+    return (
+      pool.find((v) => femalePattern.test(v.name)) ||
+      pool.find((v) => !malePattern.test(v.name)) ||
+      matchingLang[0]
+    );
+  }
+
   private speakWithBrowserSpeech(ballNumber: number, lang: Language) {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     try {
@@ -53,25 +67,29 @@ class SoundEngine {
       const utterance = new SpeechSynthesisUtterance();
 
       if (lang === 'am') {
-        const amVoice = voices.find((v) => v.lang.toLowerCase().startsWith('am'));
-        if (amVoice) {
-          utterance.voice = amVoice;
-          utterance.lang = amVoice.lang;
+        const amFemaleVoice = this.pickFemaleVoice(voices, 'am');
+        if (amFemaleVoice && amFemaleVoice.lang.toLowerCase().startsWith('am')) {
+          utterance.voice = amFemaleVoice;
+          utterance.lang = amFemaleVoice.lang;
           utterance.text = script.amharicText;
-          utterance.rate = 0.96;
+          utterance.rate = 0.95;
+          utterance.pitch = 1.18;
         } else {
-          // Device lacks an am-ET TTS pack: speak natural phonetic Amharic pronunciation
+          // Device lacks an am-ET TTS pack: speak natural phonetic Amharic pronunciation with a female voice
+          const enFemaleVoice = this.pickFemaleVoice(voices, 'en');
+          if (enFemaleVoice) utterance.voice = enFemaleVoice;
           utterance.lang = 'en-US';
           utterance.text = script.amharicPhonetic;
-          utterance.rate = 0.92;
-          utterance.pitch = 1.04;
+          utterance.rate = 0.93;
+          utterance.pitch = 1.2;
         }
       } else {
-        const enVoice = voices.find((v) => v.lang.toLowerCase().startsWith('en'));
-        if (enVoice) utterance.voice = enVoice;
+        const enFemaleVoice = this.pickFemaleVoice(voices, 'en');
+        if (enFemaleVoice) utterance.voice = enFemaleVoice;
         utterance.lang = 'en-US';
         utterance.text = script.englishText;
-        utterance.rate = 1.0;
+        utterance.rate = 0.96;
+        utterance.pitch = 1.18;
       }
 
       synth.cancel();
@@ -101,7 +119,7 @@ class SoundEngine {
     }
 
     this.stopVoice();
-    const cacheKey = `${lang}:${ballNumber}`;
+    const cacheKey = `female_v2_${lang}:${ballNumber}`;
     const cachedUri = this.audioCache.get(cacheKey);
     if (cachedUri) {
       const played = await this.playAudioDataUri(cachedUri);

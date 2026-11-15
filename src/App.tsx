@@ -16,6 +16,7 @@ import {
   Shuffle,
   Search,
   Clock,
+  Shield,
 } from 'lucide-react';
 import {
   DEFAULT_GAME_RULES,
@@ -1515,31 +1516,51 @@ export default function App() {
           >
             {sound ? <Volume2 size={15} /> : <VolumeX size={15} />}
           </button>
+
+          {((fbUser?.email &&
+            ['abiwolfcode@gmail.com', 'abelbimrew868@gmail.com'].includes(
+              fbUser.email.toLowerCase()
+            )) ||
+            serverVerifiedTelegramId === 8842109) && (
+            <button
+              type="button"
+              onClick={() => {
+                window.history.pushState({}, '', '/admin');
+                setIsAdminRoute(true);
+              }}
+              aria-label="Owner Admin Panel"
+              data-testid="owner-admin-btn"
+              className="!border-[#facc15]/50 !text-[#fde047]"
+            >
+              <Shield size={14} className="text-[#facc15]" />
+              <span>{lang === 'am' ? 'አስተዳዳሪ' : 'Admin'}</span>
+            </button>
+          )}
         </div>
       </header>
 
       {/* Main View Switcher */}
-      <main className="mt-5">
+      <main className="mt-3 sm:mt-5">
         {screen === 'home' && (
-          <div className="space-y-4">
-            {/* 1. Primary Play Card */}
-            <section className="rounded-3xl bg-[#0f1a2e] border border-slate-700/60 p-5 sm:p-7 space-y-5">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="space-y-1.5">
-                  <h1 className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+          <div className="space-y-3.5 sm:space-y-4">
+            {/* 1. Primary Play Card (Mobile-First) */}
+            <section className="rounded-2xl sm:rounded-3xl bg-[#0f1a2e] border border-slate-700/60 p-4 sm:p-7 space-y-3.5 sm:space-y-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1 min-w-0 flex-1">
+                  <h1 className="font-['Outfit'] text-xl sm:text-3xl font-extrabold text-white tracking-tight leading-tight">
                     {lang === 'am' ? 'ቢንጎ ይጫወቱ' : 'Play Live Bingo'}
                   </h1>
-                  <p className="text-xs sm:text-sm text-slate-400 max-w-xl">
+                  <p className="text-xs sm:text-sm text-slate-400 max-w-xl leading-snug">
                     {lang === 'am'
                       ? 'ካርድ ይምረጡ፣ ከዚያ ወዲያውኑ ወደ ቀጥታ ጨዋታው ይግቡ።'
                       : 'Choose your cards, then jump straight into the live game.'}
                   </p>
                 </div>
 
-                {/* Prominent Round Timer Display */}
+                {/* Prominent Mobile-First Round Timer Display */}
                 <div
                   data-testid="home-timer"
-                  className={`rounded-2xl border px-4 py-3 min-w-[165px] space-y-2 ${
+                  className={`rounded-2xl border px-3 py-2 sm:px-4 sm:py-3 min-w-[122px] sm:min-w-[165px] shrink-0 space-y-1.5 sm:space-y-2 ${
                     activeRoom.status === 'live'
                       ? 'bg-rose-500/10 border-rose-400/40'
                       : activeRoom.status === 'completed'
@@ -1549,10 +1570,10 @@ export default function App() {
                           : 'bg-[#091221] border-cyan-400/35'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wide">
+                  <div className="flex items-center justify-between gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wide">
                     <span className="text-slate-400 flex items-center gap-1">
                       <Clock
-                        size={13}
+                        size={12}
                         className={
                           isCardsLocked
                             ? 'text-rose-400'
@@ -1575,7 +1596,7 @@ export default function App() {
                     </span>
                   </div>
                   <div
-                    className={`font-mono text-2xl sm:text-3xl font-extrabold tabular-nums leading-none ${
+                    className={`font-mono text-xl sm:text-3xl font-extrabold tabular-nums leading-none ${
                       activeRoom.status === 'live'
                         ? 'text-rose-300'
                         : activeRoom.status === 'completed'
@@ -1632,13 +1653,13 @@ export default function App() {
                 · {cardPrice} ETB / {lang === 'am' ? 'ካርድ' : 'card'}
               </p>
 
-              {/* Primary Play Action */}
-              <div className="flex flex-wrap items-center gap-3 pt-1">
+              {/* Primary Play Action (Full-width on mobile, auto-width on tablet/desktop) */}
+              <div className="flex flex-wrap items-center gap-3 pt-0.5">
                 <button
                   type="button"
                   data-start="true"
                   onClick={handleEnterLiveGame}
-                  className="px-6 py-3 rounded-2xl bg-gradient-to-r from-[#facc15] to-[#eab308] text-[#1e1402] font-['Outfit'] text-base font-extrabold flex items-center justify-center gap-2 shadow-sm hover:brightness-105 min-h-[48px] whitespace-nowrap"
+                  className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-gradient-to-r from-[#facc15] to-[#eab308] text-[#1e1402] font-['Outfit'] text-base font-extrabold flex items-center justify-center gap-2 shadow-sm hover:brightness-105 min-h-[48px] whitespace-nowrap"
                 >
                   <Play size={18} />
                   {isCardsLocked
@@ -1656,9 +1677,9 @@ export default function App() {
               </div>
             </section>
 
-            {/* 2. All Cards Selector (1–600) */}
-            <section className="rounded-3xl bg-[#0f1a2e] border border-slate-700/60 p-4 sm:p-5 space-y-3.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+            {/* 2. All Cards Selector (1–600) — Mobile-First */}
+            <section className="rounded-2xl sm:rounded-3xl bg-[#0f1a2e] border border-slate-700/60 p-3.5 sm:p-5 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                 <div>
                   <h2 className="font-['Outfit'] text-base font-extrabold text-white">
                     {lang === 'am'
@@ -1676,8 +1697,8 @@ export default function App() {
                   </p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="relative w-36 sm:w-44">
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <div className="relative flex-1 sm:w-44">
                     <Search
                       size={14}
                       className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500"
@@ -1688,7 +1709,7 @@ export default function App() {
                       onChange={(e) => setHomeCardSearch(e.target.value)}
                       placeholder={lang === 'am' ? 'ካርድ ፈልግ...' : 'Search card...'}
                       aria-label="Search card number 1 to 600"
-                      className="w-full pl-8 pr-2.5 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                      className="w-full pl-8 pr-2.5 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400 min-h-[40px]"
                     />
                   </div>
 
@@ -1701,7 +1722,7 @@ export default function App() {
                           ? handleQuickPickCards(1)
                           : handleAddQuickCard()
                       }
-                      className="px-3 py-2 rounded-xl bg-cyan-500/15 border border-cyan-400/30 text-cyan-300 text-xs font-extrabold flex items-center gap-1.5 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] whitespace-nowrap"
+                      className="px-3 py-2 rounded-xl bg-cyan-500/15 border border-cyan-400/30 text-cyan-300 text-xs font-extrabold flex items-center justify-center gap-1.5 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] whitespace-nowrap shrink-0"
                     >
                       <Shuffle size={14} />
                       {selectedCardIds.length === 0
@@ -1730,7 +1751,7 @@ export default function App() {
                 </div>
               )}
 
-              <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-12 gap-1.5 max-h-[360px] overflow-y-auto p-0.5">
+              <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-12 gap-1.5 max-h-[260px] sm:max-h-[360px] overflow-y-auto overscroll-contain p-0.5">
                 {(homeCardSearch.trim()
                   ? ALL_CARD_NUMBERS.filter((id) => String(id).includes(homeCardSearch.trim()))
                   : ALL_CARD_NUMBERS
@@ -1744,7 +1765,7 @@ export default function App() {
                       disabled={isTaken || isCardsLocked}
                       onClick={() => handleToggleCardId(cardNum)}
                       aria-label={`Card ${cardNum}${isSelected ? ' selected' : isTaken ? ' taken' : isCardsLocked ? ' locked' : ''}`}
-                      className={`h-10 rounded-lg font-['Outfit'] text-xs font-bold tabular-nums transition-all flex items-center justify-center ${
+                      className={`min-h-[40px] h-10 rounded-lg font-['Outfit'] text-xs font-bold tabular-nums transition-all flex items-center justify-center ${
                         isSelected
                           ? 'bg-[#22d3ee] text-[#041423] ring-2 ring-[#facc15]'
                           : isTaken
@@ -1782,9 +1803,9 @@ export default function App() {
 
                   {/* Small selected 5x5 cards displayed below the 1–600 grid */}
                   <div
-                    className={`grid gap-1.5 ${
+                    className={`grid gap-2 ${
                       playerCards.length === 1
-                        ? 'grid-cols-1 max-w-[140px]'
+                        ? 'grid-cols-1 max-w-[165px]'
                         : 'grid-cols-2 sm:grid-cols-4 max-w-[560px]'
                     }`}
                   >

@@ -68,15 +68,11 @@ export function BingoBall3D({
       key={number}
       initial={
         animateEntry && !reducedMotion
-          ? { y: -28, scale: 0.65, rotate: -16, opacity: 0 }
+          ? { scale: 0.94, opacity: 0.65 }
           : { opacity: 1 }
       }
-      animate={{ y: 0, scale: 1, rotate: 0, opacity: 1 }}
-      transition={
-        reducedMotion
-          ? { duration: 0.1 }
-          : { type: 'spring', stiffness: 230, damping: 14 }
-      }
+      animate={{ scale: 1, opacity: 1 }}
+      transition={{ duration: 0.18, ease: 'easeOut' }}
       style={{
         background: style.gradient,
         color: style.textColor,
@@ -87,7 +83,7 @@ export function BingoBall3D({
             : '0 6px 14px rgba(2, 6, 23, 0.45)'
         }`,
       }}
-      className={`relative rounded-full flex flex-col items-center justify-center font-extrabold select-none ${dimensions} ${
+      className={`relative shrink-0 rounded-full flex flex-col items-center justify-center font-extrabold select-none ${dimensions} ${
         isRecentHighlight ? 'ring-2 ring-[#22d3ee] ring-offset-2 ring-offset-[#070d19]' : ''
       }`}
       aria-label={`Bingo ball ${letter} ${number}`}
