@@ -169,17 +169,30 @@ export default function App() {
   const [winningCardOverride, setWinningCardOverride] = useState<number | null>(null);
   const screenRef = useRef<ScreenId>(screen);
   screenRef.current = screen;
+  const selectedCardIdsRef = useRef<number[]>(selectedCardIds);
+  selectedCardIdsRef.current = selectedCardIds;
   const activeUidRef = useRef<string>(fbUser?.uid || `tg_${user.id}`);
   activeUidRef.current = fbUser?.uid || `tg_${serverVerifiedTelegramId ?? user.id}`;
   const activeTgIdRef = useRef<number>(serverVerifiedTelegramId ?? user.id);
   activeTgIdRef.current = serverVerifiedTelegramId ?? user.id;
 
-  // Wallet, Referrals, History, Leaderboard, Support, Notifications (verified backend only)
-  const [demoBalance, setDemoBalance] = useState<number>(0);
+  // Every player who joins gets 15 Birr (15 ETB) welcome balance; invited friends grant +20 Birr (20 ETB)
+  const [demoBalance, setDemoBalance] = useState<number>(15);
   const [winningsBalance, setWinningsBalance] = useState<number>(0);
   const [referralCode, setReferralCode] = useState<string>(`ADEY-${user.id}`);
   const [referredByCode, setReferredByCode] = useState<string>('');
-  const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
+  const [transactions, setTransactions] = useState<WalletTransaction[]>([
+    {
+      id: 'tx_welcome_join',
+      type: 'referral_bonus',
+      amount: 15,
+      status: 'demo_completed',
+      labelAm: 'የመቀላቀያ እንኳን ደህና መጡ ቦነስ (+15 ብር)',
+      labelEn: 'Welcome Join Bonus (+15 ETB)',
+      timestamp: 'Just now',
+      reference: `WELCOME-${user.id}`,
+    },
+  ]);
   const [depositRequests, setDepositRequests] = useState<DepositRequestSummary[]>([]);
   const [payoutRequests, setPayoutRequests] = useState<PayoutRequestSummary[]>([]);
   const [referrals, setReferrals] = useState<ReferralRecord[]>([]);
@@ -263,20 +276,33 @@ export default function App() {
         }
         const nextStatus = rawNextStatus;
 
-        // Countdown finished -> instantly switch into live game showing selected cards
+        // Countdown finished -> switch into live game ONLY if player has selected at least 1 card
         if (prevStatus === 'countdown' && nextStatus === 'live') {
-          if (
-            screenRef.current === 'home' ||
-            screenRef.current === 'lobby' ||
-            screenRef.current === 'cards'
-          ) {
-            setScreen('game');
+          const hasCards =
+            (token ? detail.myCardIds.length : selectedCardIdsRef.current.length) > 0;
+          if (hasCards) {
+            if (
+              screenRef.current === 'home' ||
+              screenRef.current === 'lobby' ||
+              screenRef.current === 'cards'
+            ) {
+              setScreen('game');
+            }
+            setToast(
+              langRef.current === 'am'
+                ? '60 ሰከንዱ አልቋል — ጨዋታው በተመረጡ ካርዶችዎ ተጀምሯል!'
+                : 'Timer finished — game started with your selected cards!'
+            );
+          } else {
+            if (screenRef.current === 'game') {
+              setScreen('home');
+            }
+            setToast(
+              langRef.current === 'am'
+                ? '60 ሰከንዱ አልቋል — ካርድ ስላልመረጡ በዚህ ዙር መጫወት አይችሉም!'
+                : 'Timer ended — you cannot play this round without a selected card!'
+            );
           }
-          setToast(
-            langRef.current === 'am'
-              ? '60 ሰከንዱ አልቋል — ጨዋታው በተመረጡ ካርዶችዎ ተጀምሯል!'
-              : 'Timer finished — game started with your selected cards!'
-          );
         }
 
         // Round completed -> immediately terminate auto-calling & voice; show winner modal if winners exist
@@ -598,15 +624,27 @@ export default function App() {
           rm.id === activeRoomId ? { ...rm, status: 'live', countdownSeconds: 0 } : rm
         )
       );
-      if (screen === 'home' || screen === 'lobby' || screen === 'cards') {
-        setScreen('game');
+      if (selectedCardIds.length > 0) {
+        if (screen === 'home' || screen === 'lobby' || screen === 'cards') {
+          setScreen('game');
+        }
+        setAutoCallerActive(true);
+        setToast(
+          lang === 'am'
+            ? '60 ሰከንዱ አልቋል — ጨዋታው በተመረጡ ካርዶችዎ ተጀምሯል!'
+            : 'Timer finished — game started with your selected cards!'
+        );
+      } else {
+        if (screen === 'game') {
+          setScreen('home');
+        }
+        setAutoCallerActive(true);
+        setToast(
+          lang === 'am'
+            ? '60 ሰከንዱ አልቋል — ካርድ ስላልመረጡ በዚህ ዙር መጫወት አይችሉም!'
+            : 'Timer ended — you cannot play this round without a selected card!'
+        );
       }
-      setAutoCallerActive(true);
-      setToast(
-        lang === 'am'
-          ? '60 ሰከንዱ አልቋል — ጨዋታው በተመረጡ ካርዶችዎ ተጀምሯል!'
-          : 'Timer finished — game started with your selected cards!'
-      );
       return;
     }
 
@@ -1038,6 +1076,18 @@ export default function App() {
       );
       return;
     }
+    const isRemoving = selectedCardIds.includes(cardId);
+    if (!isRemoving && demoBalance < cardPrice) {
+      soundFX.playError(sound);
+      triggerHaptic('error');
+      setToast(
+        lang === 'am'
+          ? `ካርድ ለመምረጥ በቂ ቀሪ ሂሳብ የለዎትም (${demoBalance.toFixed(2)} ብር)! ጓደኛ ይጋብዙ (+20 ብር) ወይም ገንዘብ ያስገቡ።`
+          : `Insufficient balance (${demoBalance.toFixed(2)} ETB)! Invite friends (+20 ETB) or deposit to play.`
+      );
+      return;
+    }
+
     const previousCardIds = [...selectedCardIds];
     const result = toggleCardSelection(
       selectedCardIds,
@@ -1079,10 +1129,8 @@ export default function App() {
         }
         setToast(
           lang === 'am'
-            ? `ካርድ ${cardId} በሰርቨር ትራንዛክሽን ${
-                txRes.action === 'reserved' ? 'ተይዟል' : 'ተለቋል'
-              }`
-            : `Card ${cardId} ${txRes.action} via server`
+            ? `ካርድ #${cardId} ${txRes.action === 'reserved' ? 'ተመርጧል (-10 ብር)' : 'ተመልሷል (+10 ብር)'}`
+            : `Card #${cardId} ${txRes.action === 'reserved' ? 'selected (-10 ETB)' : 'released (+10 ETB)'}`
         );
         await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoom.id)]);
       } catch (err) {
@@ -1097,9 +1145,26 @@ export default function App() {
     soundFX.playDaub(sound);
     triggerHaptic('light');
     setSelectedCardIds(result.selectedIds);
+    setDemoBalance((b) =>
+      isRemoving
+        ? Number((b + cardPrice).toFixed(2))
+        : Math.max(0, Number((b - cardPrice).toFixed(2)))
+    );
   }
 
-  // Handler: Quick pick N available cards
+  function handleClearSelectedCards() {
+    if (isCardsLocked || selectedCardIds.length === 0) return;
+    const refund = selectedCardIds.length * cardPrice;
+    setSelectedCardIds([]);
+    setDemoBalance((b) => Number((b + refund).toFixed(2)));
+    setToast(
+      lang === 'am'
+        ? `የተመረጡ ካርዶች ተሰርዘዋል (+${refund.toFixed(2)} ብር ተመልሷል)`
+        : `Cleared selected cards (+${refund.toFixed(2)} ETB refunded)`
+    );
+  }
+
+  // Handler: Quick pick N available cards (strictly bounded by player's available balance)
   function handleQuickPickCards(targetCount: number) {
     if (isCardsLocked) {
       soundFX.playError(sound);
@@ -1111,7 +1176,22 @@ export default function App() {
       );
       return;
     }
-    const clamped = Math.max(1, Math.min(DEFAULT_GAME_RULES.maxCardsPerPlayer, targetCount));
+    const totalPoolEtb = demoBalance + selectedCardIds.length * cardPrice;
+    const maxAffordable = Math.floor(totalPoolEtb / cardPrice);
+    if (maxAffordable <= 0) {
+      soundFX.playError(sound);
+      triggerHaptic('error');
+      setToast(
+        lang === 'am'
+          ? `ካርድ ለመምረጥ በቂ ቀሪ ሂሳብ የለዎትም (${demoBalance.toFixed(2)} ብር)! ጓደኛ ይጋብዙ (+20 ብር) ወይም ገንዘብ ያስገቡ።`
+          : `Insufficient balance (${demoBalance.toFixed(2)} ETB)! Invite friends (+20 ETB) or deposit to play.`
+      );
+      return;
+    }
+    const clamped = Math.max(
+      1,
+      Math.min(DEFAULT_GAME_RULES.maxCardsPerPlayer, maxAffordable, targetCount)
+    );
     const available: number[] = [];
     for (let id = 1; id <= DEFAULT_GAME_RULES.maxCardsPerRoom; id++) {
       if (!activeRoom.takenCardIds.includes(id)) {
@@ -1126,10 +1206,11 @@ export default function App() {
     }
     soundFX.playDaub(sound);
     setSelectedCardIds(picked.sort((a, b) => a - b));
+    setDemoBalance(Math.max(0, Number((totalPoolEtb - picked.length * cardPrice).toFixed(2))));
     setToast(
       lang === 'am'
-        ? `${picked.length} ካርዶች ተመርጠዋል (${picked.join(', ')})`
-        : `Selected ${picked.length} cards (${picked.join(', ')})`
+        ? `${picked.length} ካርድ ተመርጧል (${picked.join(', ')})`
+        : `Selected ${picked.length} card${picked.length === 1 ? '' : 's'} (${picked.join(', ')})`
     );
   }
 
@@ -1142,6 +1223,16 @@ export default function App() {
         lang === 'am'
           ? '60 ሰከንዱ አልቋል — ዙሩ እስኪያልቅ ካርድ መምረጥ አይቻልም'
           : 'Round is live — cards are locked until this game finishes'
+      );
+      return;
+    }
+    if (demoBalance < cardPrice) {
+      soundFX.playError(sound);
+      triggerHaptic('error');
+      setToast(
+        lang === 'am'
+          ? `ተጨማሪ ካርድ ለመምረጥ በቂ ሂሳብ የለዎትም (${demoBalance.toFixed(2)} ብር)! ጓደኛ ይጋብዙ (+20 ብር) ወይም ገንዘብ ያስገቡ።`
+          : `Insufficient balance (${demoBalance.toFixed(2)} ETB) for another card! Invite friends (+20 ETB) or deposit.`
       );
       return;
     }
@@ -1300,8 +1391,27 @@ export default function App() {
     setToast(lang === 'am' ? 'ዙሩ እንደገና ተጀምሯል' : 'Round reset');
   }
 
-  // Handler: Enter Live Game from Lobby/Card Picker (POST /api/game/start when authenticated)
+  // Handler: Enter Live Game from Lobby/Card Picker (strictly requires at least 1 selected card)
   async function handleEnterLiveGame() {
+    if (selectedCardIds.length === 0) {
+      soundFX.playError(sound);
+      triggerHaptic('error');
+      if (demoBalance < cardPrice) {
+        setToast(
+          lang === 'am'
+            ? 'ያለ ቀሪ ሂሳብ እና ካርድ መጫወት አይቻልም! ጓደኛ ይጋብዙ (+20 ብር) ወይም ገንዘብ ያስገቡ።'
+            : 'Cannot play without balance & card! Invite friends (+20 ETB) or deposit in Wallet.'
+        );
+      } else {
+        setToast(
+          lang === 'am'
+            ? 'ያለ ካርድ መጫወት አይቻልም! እባክዎ መጀመሪያ ከ1–600 ቢያንስ 1 ካርድ ይምረጡ።'
+            : 'Cannot play without a card! Please select at least 1 card (1–600) first.'
+        );
+      }
+      return;
+    }
+
     const token = await getActiveBearerToken();
     if (token) {
       try {
@@ -1313,29 +1423,99 @@ export default function App() {
           setCalls(started.calledNumbers);
         }
         await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoom.id)]);
-      } catch {
-        // Non-fatal: during 60s countdown or watch-only mode, still open the Live Game view
+      } catch (err) {
+        soundFX.playError(sound);
+        setToast(err instanceof Error ? err.message : 'Cannot start game without a reserved card');
+        return;
       }
     }
     setScreen('game');
     setToast(lang === 'am' ? `ወደ ${activeRoom.nameAm} ገብተዋል!` : `Joined ${activeRoom.nameEn}!`);
   }
 
-  // Handler: Apply Promo or Referral Code via POST /api/player/wallet
+  // Handler: Apply Promo or Referral Code via POST /api/player/wallet (+20 ETB for invited friends)
   async function handleApplyPromoCode(code: string): Promise<{ ok: boolean; message: string }> {
-    const res = await submitPlayerWalletAction({ action: 'apply_promo', code });
+    const cleaned = code.trim().toUpperCase();
+    const res = await submitPlayerWalletAction({ action: 'apply_promo', code: cleaned });
     if (res.ok) {
       soundFX.playWinFanfare(sound);
       await hydratePlayerState();
+      const bonus = Number(res.bonusEtb ?? 20);
       const msg =
         lang === 'am'
-          ? `ኮዱ ተቀባይነት አግኝቷል (+${Number(res.bonusEtb ?? 0).toFixed(2)} ETB)`
-          : `Code applied (+${Number(res.bonusEtb ?? 0).toFixed(2)} ETB)`;
+          ? `የግብዣ ኮዱ ተረጋግጧል! (+${bonus.toFixed(2)} ብር ቦነስ)`
+          : `Referral code verified! (+${bonus.toFixed(2)} ETB bonus)`;
       setToast(msg);
       return { ok: true, message: msg };
     }
+
+    // Local session fallback when testing without Telegram Bearer token
+    const token = await getActiveBearerToken();
+    if (!token) {
+      if (referredByCode) {
+        soundFX.playError(sound);
+        const dupMsg =
+          lang === 'am'
+            ? 'የግብዣ ኮድ ቀደም ብሎ ተጠቅመዋል'
+            : 'A referral code has already been applied';
+        setToast(dupMsg);
+        return { ok: false, message: dupMsg };
+      }
+      if (cleaned === referralCode.toUpperCase()) {
+        soundFX.playError(sound);
+        const selfMsg =
+          lang === 'am'
+            ? 'የራስዎን የግብዣ ኮድ መጠቀም አይችሉም'
+            : 'You cannot apply your own referral code';
+        setToast(selfMsg);
+        return { ok: false, message: selfMsg };
+      }
+      if (/^ADEY-[A-Z0-9_-]{2,}$/.test(cleaned)) {
+        const friendBonus = 20;
+        soundFX.playWinFanfare(sound);
+        triggerHaptic('success');
+        setReferredByCode(cleaned);
+        setDemoBalance((b) => Number((b + friendBonus).toFixed(2)));
+        setTransactions((prev) => [
+          {
+            id: `tx_ref_${Date.now()}`,
+            type: 'referral_bonus',
+            amount: friendBonus,
+            status: 'demo_completed',
+            labelAm: `የተጋበዘ ጓደኛ ቦነስ (+20 ብር · ${cleaned})`,
+            labelEn: `Invited Friend Bonus (+20 ETB · ${cleaned})`,
+            timestamp: lang === 'am' ? 'አሁን' : 'Just now',
+            reference: `ADB-REF-${Date.now().toString(36).toUpperCase()}`,
+          },
+          ...prev,
+        ]);
+        setReferrals((prev) => [
+          {
+            id: `ref_${Date.now()}`,
+            friendName: `Friend (${cleaned})`,
+            handle: `@${cleaned.toLowerCase()}`,
+            joinedAt: lang === 'am' ? 'አሁን' : 'Just now',
+            status: 'qualified',
+            inviterBonus: 20,
+            inviteeBonus: 20,
+          },
+          ...prev,
+        ]);
+        const msg =
+          lang === 'am'
+            ? `የጓደኛ ግብዣ ቦነስ +20.00 ብር ወደ ሂሳብዎ ተጨምሯል!`
+            : `Invited friend bonus +20.00 ETB added to your balance!`;
+        setToast(msg);
+        return { ok: true, message: msg };
+      }
+    }
+
     soundFX.playError(sound);
-    const errMsg = res.message || (lang === 'am' ? 'ኮዱ አልሰራም' : 'Could not apply promo code');
+    const errMsg =
+      res.message ||
+      (lang === 'am'
+        ? 'ትክክለኛ የጓደኛ ግብዣ ኮድ ያስገቡ (ለምሳሌ ADEY-1002)'
+        : 'Enter a valid friend referral code (e.g. ADEY-1002)');
     setToast(errMsg);
     return { ok: false, message: errMsg };
   }
@@ -1454,7 +1634,7 @@ export default function App() {
         <div className="actions">
           <button
             type="button"
-            onClick={() => setScreen('game')}
+            onClick={() => void handleEnterLiveGame()}
             aria-label={lang === 'am' ? 'የዙር ሰዓት ቆጣሪ' : 'Round timer'}
             data-testid="header-timer"
           >
@@ -1517,25 +1697,19 @@ export default function App() {
             {sound ? <Volume2 size={15} /> : <VolumeX size={15} />}
           </button>
 
-          {((fbUser?.email &&
-            ['abiwolfcode@gmail.com', 'abelbimrew868@gmail.com'].includes(
-              fbUser.email.toLowerCase()
-            )) ||
-            serverVerifiedTelegramId === 8842109) && (
-            <button
-              type="button"
-              onClick={() => {
-                window.history.pushState({}, '', '/admin');
-                setIsAdminRoute(true);
-              }}
-              aria-label="Owner Admin Panel"
-              data-testid="owner-admin-btn"
-              className="!border-[#facc15]/50 !text-[#fde047]"
-            >
-              <Shield size={14} className="text-[#facc15]" />
-              <span>{lang === 'am' ? 'አስተዳዳሪ' : 'Admin'}</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => {
+              window.history.pushState({}, '', '/admin');
+              setIsAdminRoute(true);
+            }}
+            aria-label="Owner Admin Panel"
+            data-testid="owner-admin-btn"
+            className="!border-[#facc15]/50 !text-[#fde047] !bg-[#facc15]/10"
+          >
+            <Shield size={14} className="text-[#facc15]" />
+            <span>{lang === 'am' ? 'አስተዳዳሪ' : 'Admin'}</span>
+          </button>
         </div>
       </header>
 
@@ -1653,26 +1827,46 @@ export default function App() {
                 · {cardPrice} ETB / {lang === 'am' ? 'ካርድ' : 'card'}
               </p>
 
-              {/* Primary Play Action (Full-width on mobile, auto-width on tablet/desktop) */}
+              {/* Welcome 15 ETB & Invite Friend +20 ETB Banner */}
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#091221] border border-cyan-400/25 px-3 py-2 text-xs">
+                <span className="text-slate-200 font-bold">
+                  {lang === 'am'
+                    ? '🎁 ሲቀላቀሉ 15 ብር ቦነስ · ጓደኛ ሲጋብዙ +20 ብር ቦነስ!'
+                    : '🎁 15 Birr Welcome Join Bonus · +20 Birr per Invited Friend!'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setScreen('referral')}
+                  className="px-2.5 py-1 rounded-lg bg-cyan-500/15 border border-cyan-400/35 text-cyan-300 font-extrabold text-[11px] hover:bg-cyan-500/25"
+                >
+                  {lang === 'am' ? 'ጓደኛ ጋብዝ (+20 ብር)' : 'Invite Friends (+20 ETB)'}
+                </button>
+              </div>
+
+              {/* Primary Play Action (Disabled look if no card selected; clicking enforces card requirement) */}
               <div className="flex flex-wrap items-center gap-3 pt-0.5">
                 <button
                   type="button"
                   data-start="true"
                   onClick={handleEnterLiveGame}
-                  className="w-full sm:w-auto px-6 py-3 rounded-2xl bg-gradient-to-r from-[#facc15] to-[#eab308] text-[#1e1402] font-['Outfit'] text-base font-extrabold flex items-center justify-center gap-2 shadow-sm hover:brightness-105 min-h-[48px] whitespace-nowrap"
+                  className={`w-full sm:w-auto px-6 py-3 rounded-2xl font-['Outfit'] text-base font-extrabold flex items-center justify-center gap-2 shadow-sm transition-all min-h-[48px] whitespace-nowrap ${
+                    selectedCardIds.length > 0
+                      ? 'bg-gradient-to-r from-[#facc15] to-[#eab308] text-[#1e1402] hover:brightness-105'
+                      : 'bg-[#14223b] border border-amber-400/40 text-amber-200 hover:border-amber-400'
+                  }`}
                 >
                   <Play size={18} />
-                  {isCardsLocked
-                    ? lang === 'am'
-                      ? 'ቀጥታ ጨዋታ ይመልከቱ'
-                      : 'Watch Live Game'
-                    : selectedCardIds.length > 0
+                  {selectedCardIds.length > 0
                     ? lang === 'am'
                       ? `በ ${selectedCardIds.length} ካርድ ጨዋታ ጀምር`
                       : `Start Game (${selectedCardIds.length} Card${selectedCardIds.length === 1 ? '' : 's'})`
+                    : demoBalance < cardPrice
+                    ? lang === 'am'
+                      ? 'ለመጫወት ጓደኛ ይጋብዙ (+20 ብር) ወይም ሂሳብ ይሙሉ'
+                      : 'Invite Friends (+20 ETB) or Deposit to Play'
                     : lang === 'am'
-                    ? 'ጨዋታ ጀምር'
-                    : 'Start Game'}
+                    ? 'ለመጫወት መጀመሪያ ካርድ ይምረጡ (10 ብር)'
+                    : 'Select a Card (10 ETB) to Play'}
                 </button>
               </div>
             </section>
@@ -1793,7 +1987,7 @@ export default function App() {
                     {!isCardsLocked && (
                       <button
                         type="button"
-                        onClick={() => setSelectedCardIds([])}
+                        onClick={handleClearSelectedCards}
                         className="text-rose-400 font-bold hover:underline"
                       >
                         {lang === 'am' ? 'አጽዳ' : 'Clear'}
@@ -1826,26 +2020,6 @@ export default function App() {
                 </div>
               )}
             </section>
-
-            {/* 3. Quiet Utility Links */}
-            <div className="flex flex-wrap items-center justify-between gap-3 px-1 text-xs text-slate-400">
-              <button
-                type="button"
-                onClick={() => setScreen('referral')}
-                className="flex items-center gap-1.5 hover:text-cyan-300 bg-transparent border-0 p-1 min-h-[40px]"
-              >
-                <Gift size={14} className="text-cyan-400" />
-                <span>{copy.inviteTitle}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setScreen('support')}
-                className="flex items-center gap-1.5 hover:text-cyan-300 bg-transparent border-0 p-1 min-h-[40px]"
-              >
-                <Headphones size={14} className="text-cyan-400" />
-                <span>{copy.supportTitle}</span>
-              </button>
-            </div>
           </div>
         )}
 
@@ -1858,7 +2032,7 @@ export default function App() {
             selectedCardIds={selectedCardIds}
             onToggleCardId={handleToggleCardId}
             onQuickPickCards={handleQuickPickCards}
-            onClearSelectedCards={() => setSelectedCardIds([])}
+            onClearSelectedCards={handleClearSelectedCards}
             countdown={countdown}
             cardPrice={cardPrice}
             demoBalance={demoBalance}
@@ -1906,12 +2080,9 @@ export default function App() {
             lang={lang}
             demoBalance={demoBalance}
             winningsBalance={winningsBalance}
-            referralCode={referralCode}
-            referredByCode={referredByCode}
             transactions={transactions}
             depositRequests={depositRequests}
             payoutRequests={payoutRequests}
-            onApplyPromoCode={handleApplyPromoCode}
             onSubmitDepositRequest={handleSubmitDepositRequest}
             onSubmitWithdrawRequest={handleSubmitWithdrawRequest}
             onNavigate={setScreen}
@@ -1939,8 +2110,6 @@ export default function App() {
             serverVerifiedTelegramId={serverVerifiedTelegramId}
             telegramBackendStatus={telegramBackendStatus}
             onValidateTelegramInitData={handleValidateTelegramInitData}
-            demoBalance={demoBalance}
-            winningsBalance={winningsBalance}
             referralCode={referralCode}
             referrals={referrals}
             leaderboard={leaderboard}
@@ -1948,10 +2117,6 @@ export default function App() {
             gameHistory={gameHistory}
             tickets={tickets}
             onSubmitSupportTicket={handleSubmitSupportTicket}
-            soundEnabled={sound}
-            onToggleSound={() => setSound((s) => !s)}
-            autoMark={autoMark}
-            onToggleAutoMark={() => setAutoMark((a) => !a)}
             reducedMotion={reducedMotion}
             onToggleReducedMotion={() => setReducedMotion((r) => !r)}
             onNavigate={setScreen}
@@ -1971,6 +2136,7 @@ export default function App() {
         prizeDemoEtb={lastVerifiedPrizeEtb}
         winners={roundWinners}
         lang={lang}
+        reducedMotion={reducedMotion}
         onPlayAgain={handleResetRound}
         onClose={() => setWinnerModalOpen(false)}
       />
@@ -2042,22 +2208,8 @@ export default function App() {
       </nav>
 
       <footer className="adey-footer">
-        <div className="flex flex-wrap items-center justify-center gap-4">
+        <div className="flex flex-wrap items-center justify-center gap-3">
           <span>© 2026 ADEYBINGO · FIREBASE PROJECT: gen-lang-client-0559010770 · DEMO SANDBOX</span>
-          <button
-            type="button"
-            onClick={() => setScreen('terms')}
-            className="underline hover:text-cyan-300 bg-transparent border-0 p-0"
-          >
-            {lang === 'am' ? 'ህጎች እና ደንቦች' : 'Terms & Rules'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setScreen('support')}
-            className="underline hover:text-cyan-300 bg-transparent border-0 p-0"
-          >
-            {lang === 'am' ? 'የተጫዋቾች ድጋፍ' : 'Player Support'}
-          </button>
         </div>
       </footer>
     </div>

@@ -25,6 +25,8 @@ import {
   BotNotificationMessage,
   DEFAULT_BOT_BUTTON_LABELS,
   DEFAULT_DEPLOYED_MINI_APP_URL,
+  isDisallowedMiniAppPreviewUrl,
+  sanitizeProductionMiniAppUrl,
 } from '../../src/utils/telegramBot.ts';
 
 export const ADMIN_AUDIT_LOGS_COLLECTION = 'adminAuditLogs';
@@ -538,6 +540,15 @@ export class PersistentAdminService {
         updatedAt: new Date().toISOString(),
         updatedBy: 'system_seed',
       });
+    } else if (isDisallowedMiniAppPreviewUrl(String(botCfgSnap.get('miniAppUrl') || ''))) {
+      await botConfigRef.set(
+        {
+          miniAppUrl: DEFAULT_DEPLOYED_MINI_APP_URL,
+          updatedAt: new Date().toISOString(),
+          updatedBy: 'system_url_heal',
+        },
+        { merge: true }
+      );
     }
 
     const chainSnap = await chainRef.get();
@@ -1427,7 +1438,9 @@ export class PersistentAdminService {
       .sort((a, b) => b.sentAt.localeCompare(a.sentAt));
 
     return {
-      miniAppUrl: String(cfgData.miniAppUrl || DEFAULT_DEPLOYED_MINI_APP_URL),
+      miniAppUrl: sanitizeProductionMiniAppUrl(
+        String(cfgData.miniAppUrl || DEFAULT_DEPLOYED_MINI_APP_URL)
+      ),
       customWelcomeAm:
         typeof cfgData.customWelcomeAm === 'string' ? cfgData.customWelcomeAm : null,
       customWelcomeEn:
@@ -1470,7 +1483,9 @@ export class PersistentAdminService {
       ]);
 
       const current = (cfgSnap.exists ? cfgSnap.data() : {}) || {};
-      const prevUrl = String(current.miniAppUrl || DEFAULT_DEPLOYED_MINI_APP_URL);
+      const prevUrl = sanitizeProductionMiniAppUrl(
+        String(current.miniAppUrl || DEFAULT_DEPLOYED_MINI_APP_URL)
+      );
       const prevWelcomeAm =
         typeof current.customWelcomeAm === 'string' ? current.customWelcomeAm : null;
       const prevWelcomeEn =
@@ -1478,7 +1493,7 @@ export class PersistentAdminService {
 
       const nextUrl =
         params.miniAppUrl !== undefined && params.miniAppUrl.trim()
-          ? params.miniAppUrl.trim()
+          ? sanitizeProductionMiniAppUrl(params.miniAppUrl.trim())
           : prevUrl;
       const nextWelcomeAm =
         params.customWelcomeAm !== undefined

@@ -8,8 +8,6 @@ import {
   Headphones,
   FileText,
   Send,
-  Volume2,
-  CheckSquare,
   ShieldCheck,
   Phone,
   LogIn,
@@ -50,8 +48,6 @@ interface CommunityScreensProps {
   serverVerifiedTelegramId: number | null;
   telegramBackendStatus: string;
   onValidateTelegramInitData: () => Promise<void>;
-  demoBalance: number;
-  winningsBalance: number;
   referralCode?: string;
   referrals: ReferralRecord[];
   leaderboard: LeaderboardEntry[];
@@ -59,10 +55,6 @@ interface CommunityScreensProps {
   gameHistory: GameHistoryItem[];
   tickets: SupportTicket[];
   onSubmitSupportTicket: (category: string, subject: string, message: string) => void;
-  soundEnabled: boolean;
-  onToggleSound: () => void;
-  autoMark: boolean;
-  onToggleAutoMark: () => void;
   reducedMotion: boolean;
   onToggleReducedMotion: () => void;
   onNavigate: (screen: ScreenId) => void;
@@ -105,8 +97,6 @@ export function CommunityScreens({
   serverVerifiedTelegramId,
   telegramBackendStatus,
   onValidateTelegramInitData,
-  demoBalance,
-  winningsBalance,
   referralCode,
   referrals,
   leaderboard,
@@ -114,10 +104,6 @@ export function CommunityScreens({
   gameHistory,
   tickets,
   onSubmitSupportTicket,
-  soundEnabled,
-  onToggleSound,
-  autoMark,
-  onToggleAutoMark,
   reducedMotion,
   onToggleReducedMotion,
   onNavigate,
@@ -237,36 +223,37 @@ export function CommunityScreens({
 
   return (
     <div className="space-y-4">
-      {/* Sub-navigation bar across Leaderboard, Profile, Referral, Support, and Terms */}
-      <div className="flex flex-wrap items-center gap-1.5 bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-2">
-        {(
-          [
-            { id: 'leaderboard', icon: Trophy, am: 'የደረጃ ሰንጠረዥ', en: 'Leaderboard' },
-            { id: 'profile', icon: User, am: 'መገለጫ እና ደህንነት', en: 'Profile & Security' },
-            { id: 'referral', icon: Gift, am: 'ጓደኛ ይጋብዙ', en: 'Referrals' },
-            { id: 'support', icon: Headphones, am: 'እገዛ', en: 'Support' },
-            { id: 'terms', icon: FileText, am: 'ደንቦች', en: 'Terms' },
-          ] as const
-        ).map((tab) => {
-          const Icon = tab.icon;
-          const active = mode === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => onNavigate(tab.id)}
-              className={`px-3 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
-                active
-                  ? 'bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421]'
-                  : 'text-slate-300 hover:bg-[#14223b]'
-              }`}
-            >
-              <Icon size={14} />
-              {lang === 'am' ? tab.am : tab.en}
-            </button>
-          );
-        })}
-      </div>
+      {/* Sub-navigation bar ONLY for Profile, Referral, Support, and Terms (Leaderboard has its own dedicated bottom tab) */}
+      {mode !== 'leaderboard' && (
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-1.5 bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-2">
+          {(
+            [
+              { id: 'profile', icon: User, am: 'መገለጫ እና ደህንነት', en: 'Profile & Security' },
+              { id: 'referral', icon: Gift, am: 'ጓደኛ ይጋብዙ (+20 ብር)', en: 'Referrals (+20 ETB)' },
+              { id: 'support', icon: Headphones, am: 'እገዛ', en: 'Support' },
+              { id: 'terms', icon: FileText, am: 'ደንቦች', en: 'Terms' },
+            ] as const
+          ).map((tab) => {
+            const Icon = tab.icon;
+            const active = mode === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => onNavigate(tab.id)}
+                className={`px-3 py-2.5 rounded-xl text-xs font-extrabold flex items-center justify-center sm:justify-start gap-1.5 transition-colors min-h-[42px] ${
+                  active
+                    ? 'bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421]'
+                    : 'text-slate-300 hover:bg-[#14223b]'
+                }`}
+              >
+                <Icon size={14} />
+                {lang === 'am' ? tab.am : tab.en}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* 0. LEADERBOARD & GAME HISTORY SCREEN */}
       {mode === 'leaderboard' && (
@@ -380,6 +367,14 @@ export function CommunityScreens({
                             </span>
                           </>
                         )}
+                        {item.winningBall && (
+                          <>
+                            <span aria-hidden="true"> · </span>
+                            <span>
+                              {lang === 'am' ? 'ኳስ፦' : 'Ball:'} {item.winningBall}
+                            </span>
+                          </>
+                        )}
                       </div>
                     </div>
                     <div className="text-right shrink-0">
@@ -392,6 +387,9 @@ export function CommunityScreens({
                           ? `+${item.prizeDemo.toFixed(2)} ETB`
                           : `${item.entryFeeDemo.toFixed(2)} ETB`}
                       </b>
+                      <small className="text-[10px] text-slate-500 tabular-nums">
+                        {item.callsCount} {lang === 'am' ? 'ጥሪዎች' : 'calls'}
+                      </small>
                     </div>
                   </div>
                 ))}
@@ -406,17 +404,17 @@ export function CommunityScreens({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
           <section className="lg:col-span-5 bg-gradient-to-br from-[#0e203d] via-[#13294b] to-[#0d2d45] border border-cyan-500/30 text-white rounded-3xl p-6 space-y-4 shadow-xl">
             <span className="text-xs font-extrabold uppercase tracking-wider text-[#facc15]">
-              ✦ {lang === 'am' ? 'ይጋብዙ እና ያድጉ' : 'INVITE & GROW'}
+              ✦ {lang === 'am' ? 'ይጋብዙ እና ያድጉ · 15 ብር የመቀላቀያ ቦነስ' : 'INVITE & GROW · 15 ETB JOIN BONUS'}
             </span>
             <h2 className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold leading-tight">
               {lang === 'am'
-                ? 'ለእርስዎ 20 ETB · ለጓደኛዎ 15 ETB ቦነስ!'
-                : 'Earn 20 ETB Inviter & 15 ETB Invitee Bonus!'}
+                ? 'ሲቀላቀሉ 15 ብር · ጓደኛ ሲጋብዙ +20 ብር ቦነስ!'
+                : 'Get 15 Birr on Join & +20 Birr for Invited Friends!'}
             </h2>
             <p className="text-xs text-slate-300 leading-relaxed">
               {lang === 'am'
-                ? 'የቴሌግራም መጋበዣ ሊንክዎን ወይም ኮድዎን ለጓደኞችዎ ያጋሩ። በትክክል ሲቀላቀሉ ቦነሱ በሰርቨር ይረጋገጣል።'
-                : 'Share your personal Telegram Mini App invite link or code. Bonuses are verified and credited on the server.'}
+                ? 'እያንዳንዱ አዲስ ተጫዋች ሲቀላቀል 15 ብር ያገኛል፤ የተጋበዙ ጓደኞች ደግሞ +20 ብር ቦነስ ያገኛሉ። ያለ በቂ ሂሳብ እና ካርድ መጫወት ስለማይቻል ጓደኞችዎን ይጋብዙ!'
+                : 'Every player gets 15 Birr when they join, and invited friends get +20 Birr bonus! Players cannot play without balance & a card — share your invite code below.'}
             </p>
 
             <div className="bg-[#070d19]/75 border border-slate-700/60 p-3.5 rounded-2xl space-y-2">
@@ -554,10 +552,10 @@ export function CommunityScreens({
         </div>
       )}
 
-      {/* 2. PROFILE, FIREBASE AUTH, PII PHONE VERIFICATION & SETTINGS */}
+      {/* 2. PROFILE, FIREBASE AUTH & PII PHONE VERIFICATION (CLEAN & DEDUPLICATED) */}
       {mode === 'profile' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          <section className="lg:col-span-5 space-y-4 min-w-0">
+          <section className="lg:col-span-6 space-y-4 min-w-0">
             {/* Player Identity & Firebase Authentication Card */}
             <div className="bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-4">
               <div className="flex items-center gap-4">
@@ -581,25 +579,6 @@ export function CommunityScreens({
                       ✓ {firebaseUserEmail}
                     </p>
                   )}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div className="p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
-                  <small className="text-[10px] font-bold text-slate-400 block">
-                    {copy.availableBalanceTitle}
-                  </small>
-                  <b className="font-['Outfit'] text-base font-extrabold text-cyan-300 tabular-nums">
-                    {demoBalance.toFixed(2)} ETB
-                  </b>
-                </div>
-                <div className="p-3 rounded-xl bg-[#14223b] border border-amber-400/25">
-                  <small className="text-[10px] font-bold text-amber-300 block">
-                    {copy.winningsBalanceTitle}
-                  </small>
-                  <b className="font-['Outfit'] text-base font-extrabold text-[#facc15] tabular-nums">
-                    {winningsBalance.toFixed(2)} ETB
-                  </b>
                 </div>
               </div>
 
@@ -633,7 +612,7 @@ export function CommunityScreens({
                   <button
                     type="button"
                     onClick={onSignInGoogle}
-                    className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421] text-xs font-extrabold flex items-center justify-center gap-2 shadow-xs hover:brightness-105"
+                    className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421] text-xs font-extrabold flex items-center justify-center gap-2 shadow-xs hover:brightness-105 min-h-[44px]"
                   >
                     <LogIn size={15} />
                     {lang === 'am'
@@ -644,7 +623,7 @@ export function CommunityScreens({
               </div>
             </div>
 
-            {/* Temporary "My Telegram ID" Section (Server-Verified initData Only) */}
+            {/* Server-Verified "My Telegram ID" Section */}
             <div
               data-testid="my-telegram-id-section"
               className="bg-[#0f1a2e] border border-cyan-500/35 rounded-2xl p-5 space-y-3 shadow-xs"
@@ -680,8 +659,8 @@ export function CommunityScreens({
 
               <p className="text-xs text-slate-400 leading-relaxed">
                 {lang === 'am'
-                  ? 'ይህ ቁጥር የሚገኘው ከቴሌግራም Mini App የተፈረመ initData በሰርቨር ላይ ከተረጋገጠ በኋላ ብቻ ነው። ከፍሮንትኤንድ የሚላክ መለያ ቁጥር ተቀባይነት የለውም።'
-                  : 'Retrieved exclusively from cryptographically verified Telegram Mini App initData on the server. Frontend-supplied IDs are never accepted.'}
+                  ? 'ይህ ቁጥር የሚገኘው ከቴሌግራም Mini App የተፈረመ initData በሰርቨር ላይ ከተረጋገጠ በኋላ ብቻ ነው።'
+                  : 'Retrieved exclusively from cryptographically verified Telegram Mini App initData on the server.'}
               </p>
 
               <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-[#14223b] border border-slate-700/70">
@@ -707,7 +686,7 @@ export function CommunityScreens({
                     data-testid="copy-telegram-id-btn"
                     disabled={serverVerifiedTelegramId === null}
                     onClick={handleCopyTelegramId}
-                    className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
+                    className={`px-3.5 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors min-h-[40px] ${
                       serverVerifiedTelegramId !== null
                         ? 'bg-cyan-400 text-[#041421] hover:brightness-105 cursor-pointer'
                         : 'bg-slate-800 text-slate-500 cursor-not-allowed'
@@ -725,7 +704,9 @@ export function CommunityScreens({
                 </div>
               </div>
             </div>
+          </section>
 
+          <section className="lg:col-span-6 space-y-4 min-w-0">
             {/* Secure Phone Number Registration & Verification (PII-Isolated Subcollection) */}
             <form
               onSubmit={handlePhoneSubmit}
@@ -774,7 +755,7 @@ export function CommunityScreens({
                     setPhoneMethod(e.target.value as 'telegram_contact' | 'sms_otp_demo')
                   }
                   aria-label="Phone Verification Method"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-700 bg-[#14223b] text-xs font-bold text-white"
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-700 bg-[#14223b] text-xs font-bold text-white min-h-[42px]"
                 >
                   <option value="telegram_contact">
                     {lang === 'am'
@@ -798,12 +779,12 @@ export function CommunityScreens({
                     onChange={(e) => setPhoneInput(e.target.value)}
                     placeholder="+251911223344"
                     aria-label="Phone Number for Verification"
-                    className="flex-1 min-w-0 px-3 py-2 rounded-xl border border-slate-700 bg-[#14223b] text-xs font-mono font-bold text-white"
+                    className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-slate-700 bg-[#14223b] text-xs font-mono font-bold text-white min-h-[42px]"
                   />
                   <button
                     type="submit"
                     disabled={phoneBusy}
-                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421] text-xs font-extrabold flex items-center gap-1.5 shrink-0"
+                    className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421] text-xs font-extrabold flex items-center gap-1.5 shrink-0 min-h-[42px]"
                   >
                     <Phone size={13} />
                     {phoneBusy ? '...' : lang === 'am' ? 'አረጋግጥ' : 'Verify'}
@@ -813,219 +794,82 @@ export function CommunityScreens({
 
               {phoneError && <p className="text-xs font-bold text-rose-400">{phoneError}</p>}
             </form>
-          </section>
 
-          <section className="lg:col-span-7 space-y-4 min-w-0">
-            {/* Game Preferences Card */}
+            {/* Motion Accessibility & Collapsible Telegram Bot Diagnostics */}
             <div className="bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-3">
-              <h3 className="font-['Outfit'] text-lg font-extrabold text-white">
-                {lang === 'am' ? 'የጨዋታ ምርጫዎች' : 'Game Preferences'}
-              </h3>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="flex items-center justify-between p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
-                  <span className="text-xs font-bold text-slate-200">
-                    {lang === 'am' ? 'ቋንቋ (Language)' : 'App Language'}
+              <div className="flex items-center justify-between p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
+                <div>
+                  <span className="text-xs font-bold text-slate-200 block">
+                    {lang === 'am' ? 'እንቅስቃሴ ቀንስ (Reduced Motion)' : 'Reduced Motion Mode'}
                   </span>
-                  <div className="flex gap-1 bg-[#070d19] p-1 rounded-lg border border-slate-700">
-                    <button
-                      type="button"
-                      onClick={() => onChangeLang('am')}
-                      className={`px-2.5 py-1 rounded text-xs font-extrabold ${
-                        lang === 'am' ? 'bg-cyan-400 text-[#041421]' : 'text-slate-400'
-                      }`}
-                    >
-                      አማርኛ
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onChangeLang('en')}
-                      className={`px-2.5 py-1 rounded text-xs font-extrabold ${
-                        lang === 'en' ? 'bg-cyan-400 text-[#041421]' : 'text-slate-400'
-                      }`}
-                    >
-                      EN
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
-                  <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                    <Volume2 size={15} className="text-cyan-400" />
-                    {lang === 'am' ? 'ድምፅ (Sound FX)' : 'Sound Effects'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={onToggleSound}
-                    className={`px-3 py-1 rounded-lg text-xs font-extrabold ${
-                      soundEnabled
-                        ? 'bg-cyan-400 text-[#041421]'
-                        : 'bg-[#070d19] text-slate-400 border border-slate-700'
-                    }`}
-                  >
-                    {soundEnabled ? 'ON' : 'OFF'}
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
-                  <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                    <CheckSquare size={15} className="text-cyan-400" />
-                    {lang === 'am' ? 'አውቶ ምልክት' : 'Auto-Mark'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={onToggleAutoMark}
-                    className={`px-3 py-1 rounded-lg text-xs font-extrabold ${
-                      autoMark
-                        ? 'bg-cyan-400 text-[#041421]'
-                        : 'bg-[#070d19] text-slate-400 border border-slate-700'
-                    }`}
-                  >
-                    {autoMark ? 'AUTO' : 'MANUAL'}
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between p-3 rounded-xl bg-[#14223b] border border-slate-700/60">
-                  <span className="text-xs font-bold text-slate-200">
-                    {lang === 'am' ? 'እንቅስቃሴ ቀንስ' : 'Reduced Motion'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={onToggleReducedMotion}
-                    className={`px-3 py-1 rounded-lg text-xs font-extrabold ${
-                      reducedMotion
-                        ? 'bg-cyan-400 text-[#041421]'
-                        : 'bg-[#070d19] text-slate-400 border border-slate-700'
-                    }`}
-                  >
-                    {reducedMotion ? 'ON' : 'OFF'}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Game History Card */}
-            <div className="bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="font-['Outfit'] text-xl font-extrabold text-white flex items-center gap-2">
-                  <History size={18} className="text-cyan-400" />
-                  {lang === 'am' ? 'የጨዋታ ታሪክ (Game History)' : 'Recent Game History'}
-                </h3>
-                <span className="text-xs text-slate-400 tabular-nums">
-                  {gameHistory.length} {lang === 'am' ? 'ዙሮች' : 'rounds'}
-                </span>
-              </div>
-
-              {gameHistory.length === 0 ? (
-                <div className="p-6 rounded-2xl bg-[#14223b] border border-slate-700/50 text-center space-y-1">
-                  <p className="text-xs font-extrabold text-slate-200">
-                    {lang === 'am' ? 'ምንም የጨዋታ ታሪክ የለም' : 'No game history yet'}
-                  </p>
-                  <p className="text-[11px] text-slate-400">
+                  <small className="text-[11px] text-slate-400">
                     {lang === 'am'
-                      ? 'የተጠናቀቁ ዙሮች እዚህ ይታያሉ።'
-                      : 'Completed rounds will appear here automatically.'}
-                  </p>
+                      ? 'የ3D ኳስ እና የድል አኒሜሽን ያቃልላል'
+                      : 'Simplifies 3D ball & celebration animations'}
+                  </small>
                 </div>
-              ) : (
-                <div className="divide-y divide-slate-800/80">
-                  {gameHistory.map((item) => (
-                    <div key={item.id} className="py-3.5 flex items-center justify-between gap-3">
-                      <div>
-                        <b className="text-xs font-extrabold text-white block">
-                          {lang === 'am' ? item.roomNameAm : item.roomNameEn}
-                        </b>
-                        <div className="text-[11px] text-slate-400 mt-0.5">
-                          <span>{item.playedAt}</span>
-                          {item.cardIds.length > 0 && (
-                            <>
-                              <span aria-hidden="true"> · </span>
-                              <span>
-                                {lang === 'am' ? 'ካርዶች፦' : 'Cards:'}{' '}
-                                {item.cardIds.map((c) => `#${c}`).join(', ')}
-                              </span>
-                            </>
-                          )}
-                          {item.winningBall && (
-                            <>
-                              <span aria-hidden="true"> · </span>
-                              <span>
-                                {lang === 'am' ? 'ኳስ፦' : 'Ball:'} {item.winningBall}
-                              </span>
-                            </>
-                          )}
-                        </div>
-                      </div>
+                <button
+                  type="button"
+                  onClick={onToggleReducedMotion}
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-extrabold min-h-[38px] ${
+                    reducedMotion
+                      ? 'bg-cyan-400 text-[#041421]'
+                      : 'bg-[#070d19] text-slate-400 border border-slate-700'
+                  }`}
+                >
+                  {reducedMotion ? 'ON' : 'OFF'}
+                </button>
+              </div>
 
-                      <div className="text-right">
-                        <b
-                          className={`font-['Outfit'] text-sm font-extrabold tabular-nums block ${
-                            item.outcome === 'won' ? 'text-[#facc15]' : 'text-slate-400'
-                          }`}
+              <div className="rounded-xl border border-slate-700/50 overflow-hidden bg-[#14223b]/50">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedBot((prev) => !prev)}
+                  className="w-full px-4 py-3 flex items-center justify-between text-xs font-bold text-slate-300 hover:bg-[#14223b] min-h-[44px]"
+                >
+                  <span>
+                    {lang === 'am'
+                      ? 'የቴሌግራም ቦት እና የቴክኒክ ምርመራ'
+                      : 'Telegram Bot & Diagnostics'}
+                  </span>
+                  {showAdvancedBot ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                </button>
+
+                {showAdvancedBot && (
+                  <div className="p-4 pt-2 space-y-4 border-t border-slate-800/70">
+                    <div className="p-3.5 rounded-2xl bg-[#0b1322] border border-slate-700/60 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-extrabold text-white">
+                          {lang === 'am'
+                            ? 'የቴሌግራም initData የሰርቨር ማረጋገጫ'
+                            : 'Telegram initData Backend Check'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={onValidateTelegramInitData}
+                          className="px-2.5 py-1.5 rounded-lg bg-cyan-500/15 border border-cyan-400/30 text-cyan-300 text-[11px] font-extrabold hover:bg-cyan-500/25 shrink-0"
                         >
-                          {item.outcome === 'won'
-                            ? `+${item.prizeDemo.toFixed(2)} ETB (BINGO)`
-                            : `${item.entryFeeDemo.toFixed(2)} ETB`}
-                        </b>
-                        <small className="text-[10px] text-slate-500 tabular-nums">
-                          {item.callsCount} {lang === 'am' ? 'ጥሪዎች' : 'calls'}
-                        </small>
+                          {lang === 'am' ? 'አሁን ፈትሽ' : 'Verify on Server'}
+                        </button>
                       </div>
+                      <p className="text-[11px] text-slate-400 font-mono leading-relaxed break-words">
+                        {telegramBackendStatus}
+                      </p>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
 
-            {/* Collapsible Advanced Telegram Bot & Diagnostics */}
-            <div className="bg-[#0f1a2e] border border-slate-700/50 rounded-2xl overflow-hidden">
-              <button
-                type="button"
-                onClick={() => setShowAdvancedBot((prev) => !prev)}
-                className="w-full px-5 py-3.5 flex items-center justify-between text-xs font-bold text-slate-300 hover:bg-[#14223b] min-h-[44px]"
-              >
-                <span>
-                  {lang === 'am'
-                    ? 'የቴሌግራም ቦት እና የቴክኒክ ምርመራ'
-                    : 'Telegram Bot & Diagnostics'}
-                </span>
-                {showAdvancedBot ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-              </button>
-
-              {showAdvancedBot && (
-                <div className="p-4 pt-2 space-y-4 border-t border-slate-800/70">
-                  <div className="p-3.5 rounded-2xl bg-[#0b1322] border border-slate-700/60 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-extrabold text-white">
-                        {lang === 'am'
-                          ? 'የቴሌግራም initData የሰርቨር ማረጋገጫ'
-                          : 'Telegram initData Backend Check'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={onValidateTelegramInitData}
-                        className="px-2.5 py-1.5 rounded-lg bg-cyan-500/15 border border-cyan-400/30 text-cyan-300 text-[11px] font-extrabold hover:bg-cyan-500/25 shrink-0"
-                      >
-                        {lang === 'am' ? 'አሁን ፈትሽ' : 'Verify on Server'}
-                      </button>
-                    </div>
-                    <p className="text-[11px] text-slate-400 font-mono leading-relaxed break-words">
-                      {telegramBackendStatus}
-                    </p>
+                    <TelegramBotConsole
+                      lang={lang}
+                      user={user}
+                      firebaseUid={firebaseUid}
+                      onSyncLanguage={onChangeLang}
+                      onPhoneVerifiedFromBot={(phone) => {
+                        setPhoneInput(phone);
+                        onVerifyPhone(phone, 'telegram_contact').catch(() => {});
+                      }}
+                    />
                   </div>
-
-                  <TelegramBotConsole
-                    lang={lang}
-                    user={user}
-                    firebaseUid={firebaseUid}
-                    onSyncLanguage={onChangeLang}
-                    onPhoneVerifiedFromBot={(phone) => {
-                      setPhoneInput(phone);
-                      onVerifyPhone(phone, 'telegram_contact').catch(() => {});
-                    }}
-                  />
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </section>
         </div>

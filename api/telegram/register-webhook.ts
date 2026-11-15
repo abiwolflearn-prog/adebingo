@@ -63,7 +63,8 @@ export function createRegisterWebhookHandler(deps: RegisterWebhookHandlerDeps = 
       if (
         !trimmed.startsWith('https://') ||
         trimmed.includes('ais-dev-') ||
-        trimmed.includes('ais-pre-')
+        trimmed.includes('ais-pre-') ||
+        trimmed.includes('.run.app')
       ) {
         sendError(
           res,
@@ -76,6 +77,7 @@ export function createRegisterWebhookHandler(deps: RegisterWebhookHandlerDeps = 
       requestedBaseUrl = trimmed;
     }
 
+    const requestedLaunchUrl = `${requestedBaseUrl}/`;
     const webhookUrl = `${requestedBaseUrl}/api/telegram/webhook`;
     const normalizedSecret = normalizeWebhookSecretForTelegram(rawWebhookSecret!.trim());
     const fetchFn = deps.fetchImpl ?? fetch;
@@ -172,7 +174,7 @@ export function createRegisterWebhookHandler(deps: RegisterWebhookHandlerDeps = 
             menu_button: {
               type: 'web_app',
               text: '🎱 ቢንጎ ይጫወቱ',
-              web_app: { url: requestedBaseUrl },
+              web_app: { url: requestedLaunchUrl },
             },
           }),
         }

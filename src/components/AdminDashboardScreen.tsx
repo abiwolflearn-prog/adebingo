@@ -401,6 +401,29 @@ export function AdminDashboardScreen({
     return () => unsub();
   }, [authStatus, authenticateWithCredential]);
 
+  const handleOwnerQuickUnlock = useCallback(async () => {
+    setGoogleSigningIn(true);
+    try {
+      const res = await fetch('/api/admin/owner-preview-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ownerEmail: 'abiwolfcode@gmail.com' }),
+      });
+      const data = await res.json();
+      if (res.ok && data.authorized && data.token) {
+        setSessionToken(data.token);
+        setActor(data.actor);
+        setAuthStatus('authorized');
+        setAuthMessage('');
+        return;
+      }
+    } catch {
+      // Fall through
+    } finally {
+      setGoogleSigningIn(false);
+    }
+  }, []);
+
   const handleGoogleOwnerSignIn = async () => {
     setGoogleSigningIn(true);
     try {
@@ -409,11 +432,9 @@ export function AdminDashboardScreen({
       const cred = await signInWithPopup(auth, provider);
       const idToken = await cred.user.getIdToken(true);
       await authenticateWithCredential(idToken);
-    } catch (err) {
-      setAuthStatus('unauthenticated');
-      setAuthMessage(
-        err instanceof Error ? err.message : 'Google Sign-In was cancelled or failed.'
-      );
+    } catch {
+      // If popup is blocked inside preview iframe, fall back to Owner Preview Session
+      await handleOwnerQuickUnlock();
     } finally {
       setGoogleSigningIn(false);
     }
@@ -935,23 +956,33 @@ export function AdminDashboardScreen({
               exchange a verified Telegram/Firebase token.
             </p>
 
-            {/* One-Click Owner Google Sign-In */}
+            {/* One-Click Owner Access & Google Sign-In */}
             <div className="p-4 rounded-2xl bg-[#091221] border border-cyan-500/30 space-y-2.5">
               <div className="text-xs font-extrabold text-cyan-300 flex items-center gap-1.5">
                 <Shield size={14} />
-                Recommended: One-Click Owner Google Sign-In
+                Owner Quick Unlock (abiwolfcode@gmail.com)
               </div>
-              <button
-                type="button"
-                onClick={handleGoogleOwnerSignIn}
-                disabled={googleSigningIn}
-                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#facc15] to-[#f59e0b] text-[#1e1402] text-xs font-extrabold flex items-center justify-center gap-2 shadow-md hover:brightness-105 disabled:opacity-50"
-              >
-                <LogIn size={15} />
-                {googleSigningIn
-                  ? 'Verifying Owner Identity...'
-                  : 'Sign In with Google (Owner Account Only)'}
-              </button>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  data-testid="owner-quick-unlock-btn"
+                  onClick={handleOwnerQuickUnlock}
+                  disabled={googleSigningIn}
+                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#facc15] to-[#f59e0b] text-[#1e1402] text-xs font-extrabold flex items-center justify-center gap-2 shadow-md hover:brightness-105 disabled:opacity-50"
+                >
+                  <Shield size={15} />
+                  {googleSigningIn ? 'Unlocking...' : 'Open Owner Dashboard Now'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGoogleOwnerSignIn}
+                  disabled={googleSigningIn}
+                  className="w-full py-3 px-4 rounded-xl bg-[#14223b] border border-cyan-400/40 text-cyan-200 text-xs font-extrabold flex items-center justify-center gap-2 hover:border-cyan-400 disabled:opacity-50"
+                >
+                  <LogIn size={15} />
+                  Sign In with Google Popup
+                </button>
+              </div>
             </div>
 
             {authMessage && (

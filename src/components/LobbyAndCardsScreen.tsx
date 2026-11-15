@@ -366,19 +366,36 @@ export function LobbyAndCardsScreen({
           <button
             type="button"
             onClick={onEnterLiveGame}
-            className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#22d3ee] to-[#0284c7] text-[#041423] text-xs font-extrabold flex items-center justify-center gap-2 hover:brightness-110 transition-all min-h-[46px]"
+            className={`w-full py-3.5 px-4 rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 transition-all min-h-[46px] ${
+              selectedCardIds.length > 0
+                ? 'bg-gradient-to-r from-[#22d3ee] to-[#0284c7] text-[#041423] hover:brightness-110'
+                : 'bg-[#14223b] border border-amber-400/40 text-amber-200 hover:border-amber-400'
+            }`}
           >
             <CheckCircle2 size={16} />
-            {lang === 'am'
-              ? `በ ${selectedCardIds.length} ካርድ ጨዋታ ጀምር (${entryCost} ETB)`
-              : `Start Playing (${selectedCardIds.length} card${selectedCardIds.length === 1 ? '' : 's'} · ${entryCost} ETB)`}
+            {selectedCardIds.length > 0
+              ? lang === 'am'
+                ? `በ ${selectedCardIds.length} ካርድ ጨዋታ ጀምር (${entryCost} ETB)`
+                : `Start Playing (${selectedCardIds.length} card${selectedCardIds.length === 1 ? '' : 's'} · ${entryCost} ETB)`
+              : lang === 'am'
+              ? 'ያለ ካርድ መጫወት አይቻልም — ቢያንስ 1 ካርድ ይምረጡ'
+              : 'Select at least 1 card to play'}
           </button>
 
-          <p className="text-[11px] text-slate-400 text-center tabular-nums">
-            {lang === 'am'
-              ? `ቀሪ ሂሳብ፦ ${demoBalance.toFixed(2)} ETB`
-              : `Available Balance: ${demoBalance.toFixed(2)} ETB`}
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400 tabular-nums">
+            <span>
+              {lang === 'am'
+                ? `ቀሪ ሂሳብ፦ ${demoBalance.toFixed(2)} ETB (ሲቀላቀሉ 15 ብር)`
+                : `Balance: ${demoBalance.toFixed(2)} ETB (15 ETB Join Bonus)`}
+            </span>
+            <button
+              type="button"
+              onClick={() => onNavigate('referral')}
+              className="text-cyan-300 font-extrabold hover:underline"
+            >
+              {lang === 'am' ? 'ጓደኛ ጋብዝ (+20 ብር)' : 'Invite Friends (+20 ETB)'}
+            </button>
+          </div>
         </section>
       </div>
     </div>

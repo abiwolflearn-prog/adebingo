@@ -8,8 +8,10 @@ import {
   buildBotMainMenuMarkup,
   DEFAULT_DEPLOYED_MINI_APP_URL,
   formatTelegramNotification,
+  isDisallowedMiniAppPreviewUrl,
   NotificationEventType,
   RegisteredTelegramPlayer,
+  sanitizeProductionMiniAppUrl,
   TelegramBotResponse,
 } from '../../src/utils/telegramBot.ts';
 import {
@@ -937,7 +939,22 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
     async getBotCustomConfig(): Promise<Partial<BotAdminConfig> | null> {
       const snap = await botConfigCol.doc('default').get();
       if (!snap.exists) return null;
-      return snap.data() as Partial<BotAdminConfig>;
+      const rawData = (snap.data() || {}) as Partial<BotAdminConfig>;
+      if (isDisallowedMiniAppPreviewUrl(rawData.miniAppUrl)) {
+        // Auto-heal stale Google AI Studio preview URL stored in Firestore botConfig/default
+        await botConfigCol
+          .doc('default')
+          .set({ miniAppUrl: DEFAULT_DEPLOYED_MINI_APP_URL }, { merge: true })
+          .catch(() => {});
+        return {
+          ...rawData,
+          miniAppUrl: DEFAULT_DEPLOYED_MINI_APP_URL,
+        };
+      }
+      return {
+        ...rawData,
+        miniAppUrl: sanitizeProductionMiniAppUrl(rawData.miniAppUrl),
+      };
     },
   };
 }
@@ -1002,7 +1019,7 @@ export class PersistentTelegramBotService {
   ) {
     this.store = store;
     this.replayGuard = replayGuard;
-    this.miniAppUrl = miniAppUrl;
+    this.miniAppUrl = sanitizeProductionMiniAppUrl(miniAppUrl);
   }
 
   public async queueNotification(
@@ -1087,7 +1104,9 @@ export class PersistentTelegramBotService {
       rawUsername?.trim() || existingPlayer?.username || `tg_${senderTelegramId}`;
     const currentLang: Language = existingPlayer?.language || 'am';
     const customButtons = customConfig?.buttonLabels;
-    const effectiveMiniAppUrl = customConfig?.miniAppUrl || this.miniAppUrl;
+    const effectiveMiniAppUrl = sanitizeProductionMiniAppUrl(
+      customConfig?.miniAppUrl || this.miniAppUrl
+    );
 
     if (updateId !== undefined) {
       if (!Number.isInteger(updateId) || updateId <= 0) {

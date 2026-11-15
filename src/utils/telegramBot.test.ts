@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import {
   AdeyBingoTelegramBotEngine,
   buildBotMainMenuMarkup,
+  buildContextualInlineKeyboard,
+  DEFAULT_DEPLOYED_MINI_APP_URL,
   formatTelegramNotification,
   normalizeWebhookSecretForTelegram,
+  sanitizeProductionMiniAppUrl,
   ServerGameAuthority,
   verifyWebhookSecretHeader,
 } from './telegramBot';
@@ -503,5 +506,36 @@ test('Milestone 5: Deposit, Withdraw, Referral deep-link, Leaderboard, and persi
   assert.equal(restartEn.language, 'en');
   assert.match(restartEn.text, /Welcome to ADEYBINGO/);
 });
+
+test('Security Fix: Google AI Studio preview URLs (ais-pre-*, ais-dev-*, *.run.app) are rejected and replaced with https://adebingo-3nta.vercel.app/', () => {
+  const leakedPreviewUrl = 'https://ais-pre-evydgg3zevudzz52jzdy5u-529287111346.europe-west1.run.app';
+  const leakedDevUrl = 'https://ais-dev-evydgg3zevudzz52jzdy5u-529287111346.europe-west1.run.app';
+
+  assert.equal(sanitizeProductionMiniAppUrl(leakedPreviewUrl), DEFAULT_DEPLOYED_MINI_APP_URL);
+  assert.equal(sanitizeProductionMiniAppUrl(leakedDevUrl), DEFAULT_DEPLOYED_MINI_APP_URL);
+  assert.equal(sanitizeProductionMiniAppUrl('https://accounts.google.com/v3/signin'), DEFAULT_DEPLOYED_MINI_APP_URL);
+  assert.equal(sanitizeProductionMiniAppUrl('https://adebingo-3nta.vercel.app/'), 'https://adebingo-3nta.vercel.app/');
+
+  const botWithLeakedUrl = new AdeyBingoTelegramBotEngine(leakedPreviewUrl);
+
+  const startRes = botWithLeakedUrl.handleIncomingUpdate({
+    updateId: 6001,
+    senderTelegramId: 444555,
+    firstName: 'Selam',
+    text: '/start',
+  });
+
+  const replyKbButtons = (startRes.replyMarkup.keyboard || []).flat();
+  const playBingoReplyBtn = replyKbButtons.find((b) => b.web_app);
+  assert.equal(playBingoReplyBtn?.web_app?.url, 'https://adebingo-3nta.vercel.app/');
+
+  const inlineKbButtons = (startRes.replyMarkup.inline_keyboard || []).flat();
+  const playBingoInlineBtn = inlineKbButtons.find((b) => b.web_app);
+  assert.equal(playBingoInlineBtn?.web_app?.url, 'https://adebingo-3nta.vercel.app/');
+
+  const directInline = buildContextualInlineKeyboard('welcome', 'am', leakedPreviewUrl).flat();
+  assert.equal(directInline.find((b) => b.web_app)?.web_app?.url, 'https://adebingo-3nta.vercel.app/');
+});
+
 
 

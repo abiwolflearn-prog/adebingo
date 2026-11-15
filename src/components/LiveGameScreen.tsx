@@ -515,25 +515,32 @@ export function LiveGameScreen({
 
           {/* Active Player Cards Grid */}
           {playerCards.length === 0 ? (
-            <div className="py-8 sm:py-10 px-4 text-center rounded-xl bg-[#091221] border border-dashed border-slate-700">
-              <p className="text-xs font-bold text-slate-300">
+            <div className="py-8 sm:py-10 px-4 text-center rounded-xl bg-[#091221] border border-dashed border-amber-400/40 space-y-3">
+              <p className="text-xs font-extrabold text-amber-200">
                 {isCardsLocked
                   ? lang === 'am'
-                    ? 'ጨዋታው በመካሄድ ላይ ነው። ይህ ዙር ሲያልቅ አዲስ ካርድ መምረጥ ይችላሉ።'
-                    : 'Round is live — you can pick cards as soon as this round finishes and the next 60s timer starts.'
+                    ? 'ካርድ ስላልመረጡ በዚህ ዙር መጫወት አይችሉም። ይህ ዙር ሲያልቅ አዲስ ካርድ ይምረጡ።'
+                    : 'You cannot play this round without a selected card. Pick a card when the next 60s timer starts.'
                   : lang === 'am'
-                    ? 'ለመጀመር ከላይ አንድ ካርድ ይንኩ።'
-                    : 'Tap any card number above to start playing.'}
+                    ? 'ያለ ካርድ እና ቀሪ ሂሳብ መጫወት አይቻልም! ለመጀመር ከላይ አንድ ካርድ ይምረጡ (10 ብር)።'
+                    : 'You cannot play without a card & balance! Tap any card number above to play (10 ETB).'}
+              </p>
+              <p className="text-[11px] text-slate-400">
+                {lang === 'am'
+                  ? 'ሲቀላቀሉ 15 ብር ቦነስ ያገኛሉ · ጓደኛ ሲጋብዙ +20 ብር ቦነስ ያገኛሉ!'
+                  : '15 Birr Welcome Join Bonus · +20 Birr Bonus per Invited Friend!'}
               </p>
               {!isCardsLocked && (
-                <button
-                  type="button"
-                  onClick={onAddQuickCard}
-                  className="mt-3 px-4 py-2.5 rounded-xl bg-[#22d3ee] text-[#041423] text-xs font-extrabold inline-flex items-center gap-1.5 min-h-[44px]"
-                >
-                  <Plus size={14} />
-                  {lang === 'am' ? 'ፈጣን ካርድ ምረጥ' : 'Quick Pick a Card'}
-                </button>
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={onAddQuickCard}
+                    className="px-4 py-2.5 rounded-xl bg-[#22d3ee] text-[#041423] text-xs font-extrabold inline-flex items-center gap-1.5 min-h-[42px]"
+                  >
+                    <Plus size={14} />
+                    {lang === 'am' ? 'ፈጣን ካርድ ምረጥ (10 ብር)' : 'Quick Pick a Card (10 ETB)'}
+                  </button>
+                </div>
               )}
             </div>
           ) : (

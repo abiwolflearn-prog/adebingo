@@ -8,10 +8,7 @@ import {
   Clock,
   Receipt,
   Trophy,
-  TicketPercent,
-  Sparkles,
-  Copy,
-  Check,
+  Gift,
 } from 'lucide-react';
 import {
   DepositRequestSummary,
@@ -27,12 +24,9 @@ interface WalletScreensProps {
   lang: Language;
   demoBalance: number;
   winningsBalance: number;
-  referralCode?: string;
-  referredByCode?: string;
   transactions: WalletTransaction[];
   depositRequests?: DepositRequestSummary[];
   payoutRequests?: PayoutRequestSummary[];
-  onApplyPromoCode: (code: string) => Promise<{ ok: boolean; message: string }>;
   onSubmitDepositRequest: (amount: number, provider: string) => Promise<void>;
   onSubmitWithdrawRequest: (amount: number, method: string) => Promise<boolean>;
   onNavigate: (screen: ScreenId) => void;
@@ -49,12 +43,9 @@ export function WalletScreens({
   lang,
   demoBalance,
   winningsBalance,
-  referralCode,
-  referredByCode,
   transactions,
   depositRequests = [],
   payoutRequests = [],
-  onApplyPromoCode,
   onSubmitDepositRequest,
   onSubmitWithdrawRequest,
   onNavigate,
@@ -74,24 +65,8 @@ export function WalletScreens({
   const [withdrawError, setWithdrawError] = useState('');
   const [withdrawBusy, setWithdrawBusy] = useState(false);
 
-  const [promoCodeInput, setPromoCodeInput] = useState('');
-  const [promoFeedback, setPromoFeedback] = useState<{ ok: boolean; text: string } | null>(null);
-  const [promoBusy, setPromoBusy] = useState(false);
-  const [copiedCode, setCopiedCode] = useState(false);
-
   const showDepositForm = mode === 'deposit' || activeActionPanel === 'deposit';
   const showWithdrawForm = mode === 'withdraw' || activeActionPanel === 'withdraw';
-
-  const handleCopyRefCode = async () => {
-    if (!referralCode) return;
-    try {
-      await navigator.clipboard?.writeText(referralCode);
-    } catch {
-      // Ignore clipboard failures inside restricted WebViews
-    }
-    setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 1800);
-  };
 
   const handleDepositSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -149,30 +124,6 @@ export function WalletScreens({
     }
   };
 
-  const handlePromoSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleaned = promoCodeInput.trim();
-    if (cleaned.length < 3) {
-      setPromoFeedback({
-        ok: false,
-        text:
-          lang === 'am'
-            ? 'እባክዎ ትክክለኛ የፕሮሞ ወይም የግብዣ ኮድ ያስገቡ።'
-            : 'Please enter a valid promo or referral code.',
-      });
-      return;
-    }
-    setPromoBusy(true);
-    setPromoFeedback(null);
-    try {
-      const res = await onApplyPromoCode(cleaned);
-      setPromoFeedback({ ok: res.ok, text: res.message });
-      if (res.ok) setPromoCodeInput('');
-    } finally {
-      setPromoBusy(false);
-    }
-  };
-
   return (
     <div className="space-y-4">
       {/* Page Heading */}
@@ -187,16 +138,26 @@ export function WalletScreens({
           <p className="text-xs text-[#94a3b8] mt-0.5">{copy.walletSubheading}</p>
         </div>
 
-        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#f59e0b]/15 border border-[#f59e0b]/35 text-[#fde047] text-[11px] font-bold">
-          <ShieldAlert size={14} />
-          {lang === 'am' ? 'የሙከራ ሁኔታ (Demo Sandbox)' : 'Demo Sandbox Only'}
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onNavigate('referral')}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/15 border border-cyan-400/35 text-cyan-300 text-[11px] font-extrabold hover:bg-cyan-500/25 transition-colors"
+          >
+            <Gift size={13} />
+            {lang === 'am' ? 'ጓደኛ ይጋብዙ (+20 ብር)' : 'Invite Friends (+20 ETB)'}
+          </button>
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#f59e0b]/15 border border-[#f59e0b]/35 text-[#fde047] text-[11px] font-bold">
+            <ShieldAlert size={14} />
+            {lang === 'am' ? 'የሙከራ ሁኔታ (Demo Sandbox)' : 'Demo Sandbox Only'}
+          </span>
+        </div>
       </div>
 
-      {/* 3 Distinct Treatment Cards: Available Balance | Promo/Referral | Winnings Balance */}
+      {/* Clean 2-Column Balance Cards: Available Balance | Winnings Balance */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
         {/* Card 1: Available Balance (Deep Navy + Cyan Highlight) */}
-        <section className="lg:col-span-4 rounded-2xl bg-gradient-to-br from-[#0e1f3a] via-[#102646] to-[#0c1c33] border border-[#22d3ee]/35 p-5 flex flex-col justify-between shadow-[0_12px_32px_rgba(2,6,23,0.45)]">
+        <section className="lg:col-span-6 rounded-2xl bg-gradient-to-br from-[#0e1f3a] via-[#102646] to-[#0c1c33] border border-[#22d3ee]/35 p-5 flex flex-col justify-between shadow-[0_12px_32px_rgba(2,6,23,0.45)]">
           <div className="flex items-start justify-between gap-2">
             <div>
               <span className="text-[11px] font-extrabold uppercase tracking-wider text-[#67e8f9] block">
@@ -209,6 +170,11 @@ export function WalletScreens({
                 {demoBalance.toFixed(2)}{' '}
                 <span className="text-lg font-bold text-[#22d3ee]">ETB</span>
               </b>
+              <p className="text-[11px] text-slate-400 mt-1">
+                {lang === 'am'
+                  ? 'ለካርድ ግዢ እና ለቀጥታ ጨዋታ ዝግጁ የሆነ ቀሪ ሂሳብ'
+                  : 'Ready for Bingo card reservations and live rounds'}
+              </p>
             </div>
             <span className="w-11 h-11 rounded-2xl bg-[#22d3ee]/15 border border-[#22d3ee]/35 flex items-center justify-center text-[#22d3ee] shrink-0">
               <Wallet size={22} />
@@ -222,7 +188,7 @@ export function WalletScreens({
                 setActiveActionPanel((prev) => (prev === 'deposit' ? 'none' : 'deposit'));
                 if (mode !== 'wallet') onNavigate('wallet');
               }}
-              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#22d3ee] to-[#06b6d4] text-[#041423] text-xs font-extrabold flex items-center justify-center gap-2 shadow-[0_6px_20px_rgba(34,211,238,0.28)] hover:brightness-110 transition-all"
+              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#22d3ee] to-[#06b6d4] text-[#041423] text-xs font-extrabold flex items-center justify-center gap-2 shadow-[0_6px_20px_rgba(34,211,238,0.28)] hover:brightness-110 transition-all min-h-[44px]"
             >
               <ArrowDownLeft size={16} />
               {copy.depositBtn}
@@ -230,66 +196,8 @@ export function WalletScreens({
           </div>
         </section>
 
-        {/* Card 2: Promo / Referral Code Section (Distinct Charcoal Card) */}
-        <section className="lg:col-span-4 rounded-2xl bg-[#141c2c] border border-slate-700/60 p-5 flex flex-col justify-between shadow-[0_12px_32px_rgba(2,6,23,0.4)]">
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] font-extrabold uppercase tracking-wider text-[#14b8a6] flex items-center gap-1.5">
-                <TicketPercent size={15} />
-                {copy.promoSectionTitle}
-              </span>
-              {referralCode && (
-                <button
-                  type="button"
-                  onClick={handleCopyRefCode}
-                  className="text-[11px] font-mono font-bold text-[#cbd5e1] bg-[#1e293b] border border-slate-600/60 px-2 py-1 rounded-lg flex items-center gap-1 hover:border-[#22d3ee]"
-                >
-                  {copiedCode ? <Check size={12} className="text-[#22d3ee]" /> : <Copy size={12} />}
-                  {referralCode}
-                </button>
-              )}
-            </div>
-
-            <form onSubmit={handlePromoSubmit} className="mt-3 space-y-2.5">
-              <input
-                type="text"
-                value={promoCodeInput}
-                onChange={(e) => setPromoCodeInput(e.target.value)}
-                disabled={Boolean(referredByCode)}
-                placeholder={
-                  referredByCode
-                    ? lang === 'am'
-                      ? `ተተግብሯል (${referredByCode})`
-                      : `Applied (${referredByCode})`
-                    : copy.promoPlaceholder
-                }
-                aria-label="Promo or referral code"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-[#0b1220] border border-slate-600/60 text-xs font-mono font-bold text-white placeholder:text-slate-500 focus:outline-none focus:border-[#22d3ee] disabled:opacity-60"
-              />
-              <button
-                type="submit"
-                disabled={promoBusy || Boolean(referredByCode)}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#1e293b] border border-[#14b8a6]/50 text-[#5eead4] text-xs font-extrabold flex items-center justify-center gap-1.5 hover:bg-[#14b8a6]/15 transition-colors disabled:opacity-50"
-              >
-                <Sparkles size={14} />
-                {promoBusy ? '...' : copy.applyPromoBtn}
-              </button>
-            </form>
-          </div>
-
-          {promoFeedback && (
-            <p
-              className={`mt-2.5 text-[11px] font-bold ${
-                promoFeedback.ok ? 'text-[#22d3ee]' : 'text-rose-400'
-              }`}
-            >
-              {promoFeedback.text}
-            </p>
-          )}
-        </section>
-
-        {/* Card 3: Winnings Balance (Distinct Gold-Accented Dark Card) */}
-        <section className="lg:col-span-4 rounded-2xl bg-gradient-to-br from-[#1b1912] via-[#171b28] to-[#0f172a] border border-[#facc15]/40 p-5 flex flex-col justify-between shadow-[0_12px_32px_rgba(2,6,23,0.45)]">
+        {/* Card 2: Winnings Balance (Distinct Gold-Accented Dark Card) */}
+        <section className="lg:col-span-6 rounded-2xl bg-gradient-to-br from-[#1b1912] via-[#171b28] to-[#0f172a] border border-[#facc15]/40 p-5 flex flex-col justify-between shadow-[0_12px_32px_rgba(2,6,23,0.45)]">
           <div className="flex items-start justify-between gap-2">
             <div>
               <span className="text-[11px] font-extrabold uppercase tracking-wider text-[#fde047] block">
@@ -302,6 +210,11 @@ export function WalletScreens({
                 {winningsBalance.toFixed(2)}{' '}
                 <span className="text-lg font-bold text-[#fde047]/80">ETB</span>
               </b>
+              <p className="text-[11px] text-slate-400 mt-1">
+                {lang === 'am'
+                  ? 'ከተረጋገጡ የቢንጎ ድሎች የተገኘ ጠቅላላ ሽልማት'
+                  : 'Verified cumulative Bingo round winnings'}
+              </p>
             </div>
             <span className="w-11 h-11 rounded-2xl bg-[#facc15]/15 border border-[#facc15]/40 flex items-center justify-center text-[#facc15] shrink-0">
               <Trophy size={22} />
@@ -315,7 +228,7 @@ export function WalletScreens({
                 setActiveActionPanel((prev) => (prev === 'withdraw' ? 'none' : 'withdraw'));
                 if (mode !== 'wallet') onNavigate('wallet');
               }}
-              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#facc15] to-[#f59e0b] text-[#1e1402] text-xs font-extrabold flex items-center justify-center gap-2 shadow-[0_6px_20px_rgba(245,158,11,0.28)] hover:brightness-105 transition-all"
+              className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#facc15] to-[#f59e0b] text-[#1e1402] text-xs font-extrabold flex items-center justify-center gap-2 shadow-[0_6px_20px_rgba(245,158,11,0.28)] hover:brightness-105 transition-all min-h-[44px]"
             >
               <ArrowUpRight size={16} />
               {copy.withdrawBtn}

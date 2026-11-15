@@ -297,7 +297,9 @@ export function getPublicMiniAppUrl(): string {
       url.startsWith('https://') &&
       url !== 'MY_APP_URL' &&
       !url.includes('ais-dev-') &&
-      !url.includes('ais-pre-')
+      !url.includes('ais-pre-') &&
+      !url.includes('.run.app') &&
+      !url.includes('accounts.google.com')
   );
   const normalized = (candidate || DEFAULT_DEPLOYED_MINI_APP_URL).replace(/\/+$/, '');
   return `${normalized}/`;

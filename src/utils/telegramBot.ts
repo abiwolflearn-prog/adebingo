@@ -155,6 +155,41 @@ export interface BotAdminConfig {
 export const DEFAULT_DEPLOYED_MINI_APP_URL =
   'https://adebingo-3nta.vercel.app/';
 
+/**
+ * Detects whether a URL is a Google AI Studio preview/dev URL (ais-dev-*, ais-pre-*, *.run.app)
+ * or placeholder that would trigger a Google login/verification interstitial inside Telegram WebView.
+ */
+export function isDisallowedMiniAppPreviewUrl(candidate?: string | null): boolean {
+  if (typeof candidate !== 'string') return true;
+  const trimmed = candidate.trim();
+  if (!trimmed || trimmed === 'MY_APP_URL' || !trimmed.startsWith('https://')) {
+    return true;
+  }
+  const lower = trimmed.toLowerCase();
+  return (
+    lower.includes('ais-dev-') ||
+    lower.includes('ais-pre-') ||
+    lower.includes('.run.app') ||
+    lower.includes('accounts.google.com')
+  );
+}
+
+/**
+ * Guarantees that any Mini App URL used in Telegram WebApp buttons or menu buttons
+ * never points to a Google AI Studio preview URL (ais-dev-*, ais-pre-*, *.run.app),
+ * falling back to https://adebingo-3nta.vercel.app/.
+ */
+export function sanitizeProductionMiniAppUrl(candidate?: string | null): string {
+  if (isDisallowedMiniAppPreviewUrl(candidate)) {
+    return DEFAULT_DEPLOYED_MINI_APP_URL;
+  }
+  const trimmed = candidate!.trim();
+  if (trimmed === 'https://adebingo-3nta.vercel.app') {
+    return DEFAULT_DEPLOYED_MINI_APP_URL;
+  }
+  return trimmed;
+}
+
 export const DEFAULT_BOT_BUTTON_LABELS: BotButtonLabelsConfig = {
   playBingoAm: '🎱 ቢንጎ ይጫወቱ',
   playBingoEn: '🎱 Play Bingo',
@@ -194,12 +229,13 @@ export type BotInlineContext =
 export function buildContextualInlineKeyboard(
   context: BotInlineContext,
   lang: Language,
-  miniAppUrl: string = DEFAULT_DEPLOYED_MINI_APP_URL,
+  rawMiniAppUrl: string = DEFAULT_DEPLOYED_MINI_APP_URL,
   options: {
     referralLink?: string;
     labels?: BotButtonLabelsConfig;
   } = {}
 ): TelegramInlineButton[][] {
+  const miniAppUrl = sanitizeProductionMiniAppUrl(rawMiniAppUrl);
   const am = lang === 'am';
   const labels = { ...DEFAULT_BOT_BUTTON_LABELS, ...(options.labels || {}) };
   const playText = am
@@ -324,12 +360,13 @@ export function buildContextualInlineKeyboard(
  */
 export function buildBotMainMenuMarkup(
   lang: Language,
-  miniAppUrl: string = DEFAULT_DEPLOYED_MINI_APP_URL,
+  rawMiniAppUrl: string = DEFAULT_DEPLOYED_MINI_APP_URL,
   phoneVerified: boolean = false,
   labels: BotButtonLabelsConfig = DEFAULT_BOT_BUTTON_LABELS,
   inlineContext: BotInlineContext = 'welcome',
   inlineOptions: { referralLink?: string } = {}
 ): TelegramBotReplyMarkup {
+  const miniAppUrl = sanitizeProductionMiniAppUrl(rawMiniAppUrl);
   const merged = { ...DEFAULT_BOT_BUTTON_LABELS, ...labels };
   const am = lang === 'am';
 
@@ -600,7 +637,7 @@ export class AdeyBingoTelegramBotEngine {
   private configUpdatedBy: string = 'system_init';
 
   constructor(miniAppUrl: string = DEFAULT_DEPLOYED_MINI_APP_URL) {
-    this.miniAppUrl = miniAppUrl;
+    this.miniAppUrl = sanitizeProductionMiniAppUrl(miniAppUrl);
   }
 
   public getBotConfig(): BotAdminConfig {
@@ -625,8 +662,8 @@ export class AdeyBingoTelegramBotEngine {
     },
     adminActor: string = 'admin'
   ): BotAdminConfig {
-    if (typeof patch.miniAppUrl === 'string' && patch.miniAppUrl.trim().startsWith('https://')) {
-      this.miniAppUrl = patch.miniAppUrl.trim();
+    if (typeof patch.miniAppUrl === 'string' && patch.miniAppUrl.trim().length > 0) {
+      this.miniAppUrl = sanitizeProductionMiniAppUrl(patch.miniAppUrl);
     }
     if (patch.customWelcomeAm !== undefined) {
       this.customWelcomeAm =
