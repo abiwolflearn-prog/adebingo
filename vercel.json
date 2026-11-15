@@ -6,19 +6,19 @@
   "rewrites": [
     {
       "source": "/api/admin/:route*",
-      "destination": "/api/admin/[...route]?route=:route*"
+      "destination": "/api/admin?route=:route*"
     },
     {
       "source": "/api/telegram/:route*",
-      "destination": "/api/telegram/[...route]?route=:route*"
+      "destination": "/api/telegram?route=:route*"
     },
     {
       "source": "/api/game/:route*",
-      "destination": "/api/game/[...route]?route=:route*"
+      "destination": "/api/game?route=:route*"
     },
     {
       "source": "/api/player/:route*",
-      "destination": "/api/player/[...route]?route=:route*"
+      "destination": "/api/player?route=:route*"
     },
     {
       "source": "/((?!api(?:/|$)).*)",

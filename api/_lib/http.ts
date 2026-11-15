@@ -300,11 +300,16 @@ export function extractSubRoute(
 ): string {
   const normalizedPrefix = `/${basePrefix.replace(/^\/+|\/+$/g, '')}`;
   const rawUrl = typeof req.url === 'string' ? req.url : '';
-  const pathname = rawUrl.split('?')[0]?.split('#')[0] || '';
+  const withoutHash = rawUrl.split('#')[0] || '';
+  const [pathname = '', queryString = ''] = withoutHash.split('?');
 
   if (pathname) {
-    if (pathname === normalizedPrefix || pathname === `${normalizedPrefix}/`) {
-      const fromQuery = extractRouteFromQuery(req.query);
+    if (
+      pathname === normalizedPrefix ||
+      pathname === `${normalizedPrefix}/` ||
+      pathname === `${normalizedPrefix}/index`
+    ) {
+      const fromQuery = extractRouteFromQuery(req.query) || extractRouteFromQueryString(queryString);
       if (fromQuery) return fromQuery;
       return '';
     }
@@ -315,7 +320,7 @@ export function extractSubRoute(
     }
   }
 
-  return extractRouteFromQuery(req.query);
+  return extractRouteFromQuery(req.query) || extractRouteFromQueryString(queryString);
 }
 
 function extractRouteFromQuery(query: VercelRequest['query'] | undefined): string {
@@ -329,6 +334,23 @@ function extractRouteFromQuery(query: VercelRequest['query'] | undefined): strin
   }
   if (typeof rawRoute === 'string') {
     return rawRoute.trim().replace(/^\/+|\/+$/g, '');
+  }
+  return '';
+}
+
+function extractRouteFromQueryString(queryString: string): string {
+  if (!queryString) return '';
+  try {
+    const params = new URLSearchParams(queryString);
+    const raw = params.getAll('route');
+    if (raw.length > 0) {
+      return raw
+        .map((part) => part.trim().replace(/^\/+|\/+$/g, ''))
+        .filter(Boolean)
+        .join('/');
+    }
+  } catch {
+    // Ignore malformed query string
   }
   return '';
 }

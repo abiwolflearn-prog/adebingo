@@ -298,10 +298,11 @@ function buildSignedInitData(
 async function invokeHandler(
   handler: (req: VercelRequest, res: VercelResponse) => Promise<void> | void,
   options: {
+    url?: string;
     method?: string;
     headers?: Record<string, string>;
     body?: unknown;
-    query?: Record<string, string>;
+    query?: Record<string, string | string[]>;
     ip?: string;
   } = {}
 ): Promise<{
@@ -2000,4 +2001,55 @@ test('Consolidated Vercel catch-all routers (admin, telegram, game, player) rout
   });
   assert.equal(gStart.statusCode, 404);
   assert.equal(gStart.body.reason, 'room_not_found');
+
+  // 5. Vercel rewrite format (/api/<group>?route=<subpath> and direct /api/<group>/<subpath>)
+  const rewrittenAdminOverview = await invokeHandler(adminRouter, {
+    url: '/api/admin?route=overview',
+    method: 'GET',
+    headers: { authorization: 'Bearer tok-admin' },
+  });
+  assert.equal(rewrittenAdminOverview.statusCode, 200);
+  assert.equal(rewrittenAdminOverview.body.ok, true);
+
+  const rewrittenNestedSession = await invokeHandler(adminRouter, {
+    url: '/api/admin?route=session/exchange',
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-admin' },
+    body: {},
+  });
+  assert.equal(rewrittenNestedSession.statusCode, 200);
+  assert.equal(rewrittenNestedSession.body.authorized, true);
+
+  const directNestedAdminPath = await invokeHandler(adminRouter, {
+    url: '/api/admin/bot/config',
+    method: 'GET',
+    headers: { authorization: 'Bearer tok-admin' },
+  });
+  assert.equal(directNestedAdminPath.statusCode, 200);
+  assert.equal(directNestedAdminPath.body.ok, true);
+
+  const rewrittenTelegramCmd = await invokeHandler(telegramRouter, {
+    url: '/api/telegram?route=bot-command',
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-admin' },
+    body: { text: '/balance' },
+  });
+  assert.equal(rewrittenTelegramCmd.statusCode, 200);
+
+  const rewrittenPlayerState = await invokeHandler(playerRouter, {
+    url: '/api/player?route=state',
+    method: 'GET',
+    headers: { authorization: 'Bearer tok-admin' },
+  });
+  assert.equal(rewrittenPlayerState.statusCode, 200);
+
+  const rewrittenGameStart = await invokeHandler(gameRouter, {
+    url: '/api/game?route=start',
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-admin' },
+    body: { roomId: 'missing-room' },
+  });
+  assert.equal(rewrittenGameStart.statusCode, 404);
+  assert.equal(rewrittenGameStart.body.reason, 'room_not_found');
 });
+
