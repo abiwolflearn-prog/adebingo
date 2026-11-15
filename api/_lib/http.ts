@@ -290,6 +290,50 @@ export function isValidGameId(gameId: unknown): gameId is string {
   );
 }
 
+/**
+ * Extracts the normalized sub-route relative to a base API prefix (e.g. '/api/admin').
+ * Supports both raw `req.url` paths and Vercel catch-all `req.query.route` (`string | string[]`).
+ */
+export function extractSubRoute(
+  req: Pick<VercelRequest, 'url' | 'query'>,
+  basePrefix: string
+): string {
+  const normalizedPrefix = `/${basePrefix.replace(/^\/+|\/+$/g, '')}`;
+  const rawUrl = typeof req.url === 'string' ? req.url : '';
+  const pathname = rawUrl.split('?')[0]?.split('#')[0] || '';
+
+  if (pathname) {
+    if (pathname === normalizedPrefix || pathname === `${normalizedPrefix}/`) {
+      const fromQuery = extractRouteFromQuery(req.query);
+      if (fromQuery) return fromQuery;
+      return '';
+    }
+    if (pathname.startsWith(`${normalizedPrefix}/`)) {
+      return pathname
+        .slice(normalizedPrefix.length + 1)
+        .replace(/^\/+|\/+$/g, '');
+    }
+  }
+
+  return extractRouteFromQuery(req.query);
+}
+
+function extractRouteFromQuery(query: VercelRequest['query'] | undefined): string {
+  if (!query) return '';
+  const rawRoute = query.route ?? query['...route'];
+  if (Array.isArray(rawRoute)) {
+    return rawRoute
+      .map((part) => String(part).trim())
+      .filter(Boolean)
+      .join('/');
+  }
+  if (typeof rawRoute === 'string') {
+    return rawRoute.trim().replace(/^\/+|\/+$/g, '');
+  }
+  return '';
+}
+
+
 export function getPublicMiniAppUrl(): string {
   const candidate = [process.env.PUBLIC_MINI_APP_URL, process.env.APP_URL].find(
     (url) =>

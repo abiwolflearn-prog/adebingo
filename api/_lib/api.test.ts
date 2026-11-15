@@ -6,22 +6,31 @@ import type { Firestore } from 'firebase-admin/firestore';
 import type { AuthBackendDeps, DecodedIdTokenLike } from './auth.ts';
 import { BoundedRateLimiter } from './http.ts';
 import { createStatusHandler } from '../backend/status.ts';
-import { createTelegramAuthHandler } from '../telegram/auth.ts';
-import { createValidateInitDataHandler } from '../telegram/validate-init-data.ts';
-import { createTelegramWebhookHandler } from '../telegram/webhook.ts';
-import { createRegisterWebhookHandler } from '../telegram/register-webhook.ts';
-import { createWebhookInfoHandler } from '../telegram/webhook-info.ts';
-import { createBotCommandHandler } from '../telegram/bot-command.ts';
-import { createNotifyHandler } from '../telegram/notify.ts';
-import { createBotStateHandler } from '../telegram/bot-state.ts';
+import {
+  createBotCommandHandler,
+  createBotStateHandler,
+  createNotifyHandler,
+  createRegisterWebhookHandler,
+  createTelegramAuthHandler,
+  createTelegramRouterHandler,
+  createTelegramWebhookHandler,
+  createValidateInitDataHandler,
+  createWebhookInfoHandler,
+} from './telegramHandler.ts';
 import { createRoomsHandler } from '../rooms/index.ts';
 import { createReserveCardHandler } from '../cards/reserve.ts';
-import { createStartGameHandler } from '../game/start.ts';
-import { createDrawBallHandler } from '../game/draw-ball.ts';
-import { createResetRoundHandler } from '../game/reset-round.ts';
-import { createVerifyWinnerHandler } from '../game/verify-winner.ts';
-import { createPlayerStateHandler } from '../player/state.ts';
-import { createPlayerWalletHandler } from '../player/wallet.ts';
+import {
+  createDrawBallHandler,
+  createGameRouterHandler,
+  createResetRoundHandler,
+  createStartGameHandler,
+  createVerifyWinnerHandler,
+} from './gameHandler.ts';
+import {
+  createPlayerRouterHandler,
+  createPlayerStateHandler,
+  createPlayerWalletHandler,
+} from './playerHandler.ts';
 import {
   createAdminBotAnnounceHandler,
   createAdminBotConfigHandler,
@@ -35,6 +44,7 @@ import {
   createAdminReferralsHandler,
   createAdminRoomUpdateHandler,
   createAdminRoomsHandler,
+  createAdminRouterHandler,
   createAdminSessionExchangeHandler,
   createAdminSettingsHandler,
   createAdminUserStatusHandler,
@@ -318,12 +328,22 @@ async function invokeHandler(
   const respHeaders: Record<string, string> = {};
   let jsonBody: Record<string, unknown> = {};
 
+  const invokeOptions = options as {
+    url?: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: unknown;
+    query?: Record<string, string | string[]>;
+    ip?: string;
+  };
+
   const req = {
-    method: options.method || 'GET',
+    url: invokeOptions.url || '/',
+    method: invokeOptions.method || 'GET',
     headers,
-    body: options.body,
-    query: options.query || {},
-    socket: { remoteAddress: options.ip || '198.51.100.10' },
+    body: invokeOptions.body,
+    query: invokeOptions.query || {},
+    socket: { remoteAddress: invokeOptions.ip || '198.51.100.10' },
   } as unknown as VercelRequest;
 
   const res = {
@@ -1806,5 +1826,178 @@ test('Milestone 5 Player API: /api/player/state returns 0 ETB on fresh users, co
   assert.equal(selfRef.statusCode, 400);
 });
 
+test('Consolidated Vercel catch-all routers (admin, telegram, game, player) route all sub-paths and dynamic segments accurately', async () => {
+  const { db, store } = createStrictInMemoryFirestore();
+  const botToken = '123456:TEST_ADEYBINGO_BOT_TOKEN';
+  const webhookSecret = 'webhook_secret_router_test';
+  const sessionSecret = 'router_test_session_secret_2026';
+  const nowUnix = 1_760_000_000;
 
+  const authDeps: AuthBackendDeps = {
+    ...createMockAuthDeps(
+      {
+        'tok-admin': {
+          uid: 'tg_8842109',
+          email: 'abelbimrew868@gmail.com',
+          email_verified: true,
+          telegram_verified: true,
+          telegram_id: 8842109,
+          name: 'Admin Abebe',
+        },
+        'tok-player': {
+          uid: 'tg_7777777',
+          telegram_verified: true,
+          telegram_id: 7777777,
+          name: 'Dawit Player',
+        },
+      },
+      ['tg_8842109']
+    ),
+    getSessionSecret: () => sessionSecret,
+  };
 
+  store.set('users/tg_8842109', {
+    uid: 'tg_8842109',
+    telegramUserId: 'tg_8842109',
+    displayName: 'Admin Abebe',
+    username: '@abebe_adey',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 500,
+  });
+
+  const adminRouter = createAdminRouterHandler({
+    getDb: () => db,
+    getBotToken: () => botToken,
+    authDeps,
+    limiter: new BoundedRateLimiter(),
+  });
+  const telegramRouter = createTelegramRouterHandler({
+    getDb: () => db,
+    getBotToken: () => botToken,
+    getWebhookSecret: () => webhookSecret,
+    isAdminReady: () => true,
+    authDeps,
+    nowUnixSeconds: () => nowUnix,
+    limiter: new BoundedRateLimiter(),
+    mintCustomToken: async ({ telegramUserId }) => ({
+      uid: `tg_${telegramUserId}`,
+      customToken: `custom_${telegramUserId}`,
+    }),
+  });
+  const gameRouter = createGameRouterHandler({
+    getDb: () => db,
+    authDeps,
+    limiter: new BoundedRateLimiter(),
+  });
+  const playerRouter = createPlayerRouterHandler({
+    getDb: () => db,
+    authDeps,
+    limiter: new BoundedRateLimiter(),
+  });
+
+  // 1. Admin router: static & nested & dynamic routes via req.url and req.query.route
+  const sessionRes = await invokeHandler(adminRouter, {
+    method: 'GET',
+    query: { route: 'session' },
+    headers: { authorization: 'Bearer tok-admin' },
+  });
+  assert.equal(sessionRes.statusCode, 200);
+  assert.equal(sessionRes.body.authorized, true);
+
+  const overviewRes = await invokeHandler(adminRouter, {
+    method: 'GET',
+    query: { route: 'overview' },
+    headers: { authorization: 'Bearer tok-admin' },
+  });
+  assert.equal(overviewRes.statusCode, 200);
+  assert.equal(overviewRes.body.ok, true);
+
+  const depReviewRes = await invokeHandler(adminRouter, {
+    method: 'POST',
+    query: { route: 'deposits/DEP-2026-401/review' },
+    headers: { authorization: 'Bearer tok-admin' },
+    body: { nextStatus: 'Approved', reviewNotes: 'Consolidated router test' },
+  });
+  assert.equal(depReviewRes.statusCode, 200);
+
+  const payoutReviewRes = await invokeHandler(adminRouter, {
+    method: 'POST',
+    query: { route: 'payouts/PO-2026-901/review' },
+    headers: { authorization: 'Bearer tok-admin' },
+    body: { nextStatus: 'Under Review', reviewNotes: 'Checking' },
+  });
+  assert.equal(payoutReviewRes.statusCode, 200);
+
+  const roomUpdateRes = await invokeHandler(adminRouter, {
+    method: 'POST',
+    query: { route: 'rooms/adey-main' },
+    headers: { authorization: 'Bearer tok-admin' },
+    body: { cardPriceEtb: 20 },
+  });
+  assert.equal(roomUpdateRes.statusCode, 200);
+
+  const userStatusRes = await invokeHandler(adminRouter, {
+    method: 'POST',
+    query: { route: 'users/tg_7777777/status' },
+    headers: { authorization: 'Bearer tok-admin' },
+    body: { accountStatus: 'suspended', reason: 'Router test' },
+  });
+  assert.equal(userStatusRes.statusCode, 200);
+
+  const unknownAdmin = await invokeHandler(adminRouter, {
+    method: 'GET',
+    query: { route: 'non-existent' },
+    headers: { authorization: 'Bearer tok-admin' },
+  });
+  assert.equal(unknownAdmin.statusCode, 404);
+
+  // 2. Telegram router: validate-init-data, bot-state, bot-command
+  const signedInit = buildSignedInitData(botToken, nowUnix - 5, {
+    id: 8842109,
+    first_name: 'Abebe',
+    username: 'abebe_adey',
+  });
+  const tgValidate = await invokeHandler(telegramRouter, {
+    method: 'POST',
+    query: { route: 'validate-init-data' },
+    body: { initData: signedInit },
+  });
+  assert.equal(tgValidate.statusCode, 200);
+  assert.equal(tgValidate.body.verified, true);
+
+  const tgBotCmd = await invokeHandler(telegramRouter, {
+    method: 'POST',
+    query: { route: 'bot-command' },
+    headers: { authorization: 'Bearer tok-admin' },
+    body: { text: '/help' },
+  });
+  assert.equal(tgBotCmd.statusCode, 200);
+
+  // 3. Player router: state & wallet
+  const pState = await invokeHandler(playerRouter, {
+    method: 'GET',
+    query: { route: 'state' },
+    headers: { authorization: 'Bearer tok-admin' },
+  });
+  assert.equal(pState.statusCode, 200);
+  assert.equal((pState.body.wallet as { availableBalanceEtb: number }).availableBalanceEtb, 500);
+
+  const pWallet = await invokeHandler(playerRouter, {
+    method: 'POST',
+    query: { route: 'wallet' },
+    headers: { authorization: 'Bearer tok-admin' },
+    body: { action: 'deposit_request', amountEtb: 50, provider: 'Telebirr (Demo)' },
+  });
+  assert.equal(pWallet.statusCode, 201);
+
+  // 4. Game router: start (returns 404 room_not_found on missing room, proving route & auth dispatch)
+  const gStart = await invokeHandler(gameRouter, {
+    method: 'POST',
+    query: { route: 'start' },
+    headers: { authorization: 'Bearer tok-admin' },
+    body: { roomId: 'missing-room' },
+  });
+  assert.equal(gStart.statusCode, 404);
+  assert.equal(gStart.body.reason, 'room_not_found');
+});

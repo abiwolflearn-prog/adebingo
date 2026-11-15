@@ -22,6 +22,7 @@ import {
   BoundedRateLimiter,
   enforceMethod,
   enforceRateLimit,
+  extractSubRoute,
   isConfiguredBotToken,
   parseJsonBody,
   sendError,
@@ -102,7 +103,18 @@ function extractPathParam(
   }
   const urlStr = req.url || '';
   const match = urlStr.match(regex);
-  return match && match[1] ? decodeURIComponent(match[1]) : '';
+  if (match && match[1]) {
+    return decodeURIComponent(match[1]);
+  }
+  const subRoute = extractSubRoute(req, '/api/admin');
+  if (subRoute) {
+    const syntheticUrl = `/api/admin/${subRoute}`;
+    const subMatch = syntheticUrl.match(regex);
+    if (subMatch && subMatch[1]) {
+      return decodeURIComponent(subMatch[1]);
+    }
+  }
+  return '';
 }
 
 /**
@@ -842,3 +854,94 @@ export function createAdminSettingsHandler(deps: AdminHandlerDeps = {}) {
     sendJson(res, 200, { ok: true, settings });
   };
 }
+
+/**
+ * Consolidated router for all 17 `/api/admin/*` endpoints.
+ * Preserves every route, method, authentication, RBAC, and dynamic parameter contract.
+ */
+export function createAdminRouterHandler(deps: AdminHandlerDeps = {}) {
+  const sessionHandler = createAdminSessionHandler(deps);
+  const sessionExchangeHandler = createAdminSessionExchangeHandler(deps);
+  const overviewHandler = createAdminOverviewHandler(deps);
+  const usersHandler = createAdminUsersHandler(deps);
+  const userStatusHandler = createAdminUserStatusHandler(deps);
+  const payoutsHandler = createAdminPayoutsHandler(deps);
+  const payoutReviewHandler = createAdminPayoutReviewHandler(deps);
+  const depositsHandler = createAdminDepositsHandler(deps);
+  const depositReviewHandler = createAdminDepositReviewHandler(deps);
+  const roomsHandler = createAdminRoomsHandler(deps);
+  const roomUpdateHandler = createAdminRoomUpdateHandler(deps);
+  const referralsHandler = createAdminReferralsHandler(deps);
+  const botConfigHandler = createAdminBotConfigHandler(deps);
+  const botAnnounceHandler = createAdminBotAnnounceHandler(deps);
+  const notificationsHandler = createAdminNotificationsHandler(deps);
+  const notificationsSendHandler = createAdminNotificationsSendHandler(deps);
+  const settingsHandler = createAdminSettingsHandler(deps);
+
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    const subRoute = extractSubRoute(req, '/api/admin');
+
+    switch (subRoute) {
+      case 'session':
+        return await sessionHandler(req, res);
+      case 'session/exchange':
+        return await sessionExchangeHandler(req, res);
+      case 'overview':
+        return await overviewHandler(req, res);
+      case 'users':
+        return await usersHandler(req, res);
+      case 'payouts':
+        return await payoutsHandler(req, res);
+      case 'deposits':
+        return await depositsHandler(req, res);
+      case 'rooms':
+        return await roomsHandler(req, res);
+      case 'referrals':
+        return await referralsHandler(req, res);
+      case 'bot/config':
+        return await botConfigHandler(req, res);
+      case 'bot/announce':
+        return await botAnnounceHandler(req, res);
+      case 'notifications':
+        return await notificationsHandler(req, res);
+      case 'notifications/send':
+        return await notificationsSendHandler(req, res);
+      case 'settings':
+        return await settingsHandler(req, res);
+      default:
+        break;
+    }
+
+    const userStatusMatch = /^users\/([^/]+)\/status$/.exec(subRoute);
+    if (userStatusMatch) {
+      req.query = { ...req.query, uid: decodeURIComponent(userStatusMatch[1]) };
+      return await userStatusHandler(req, res);
+    }
+
+    const payoutReviewMatch = /^payouts\/([^/]+)\/review$/.exec(subRoute);
+    if (payoutReviewMatch) {
+      req.query = { ...req.query, requestId: decodeURIComponent(payoutReviewMatch[1]) };
+      return await payoutReviewHandler(req, res);
+    }
+
+    const depositReviewMatch = /^deposits\/([^/]+)\/review$/.exec(subRoute);
+    if (depositReviewMatch) {
+      req.query = { ...req.query, depositId: decodeURIComponent(depositReviewMatch[1]) };
+      return await depositReviewHandler(req, res);
+    }
+
+    const roomUpdateMatch = /^rooms\/([^/]+)$/.exec(subRoute);
+    if (roomUpdateMatch) {
+      req.query = { ...req.query, roomId: decodeURIComponent(roomUpdateMatch[1]) };
+      return await roomUpdateHandler(req, res);
+    }
+
+    sendError(
+      res,
+      404,
+      'admin_endpoint_not_found',
+      `Unknown admin endpoint: /api/admin/${subRoute}`
+    );
+  };
+}
+
