@@ -807,6 +807,13 @@ export async function submitPlayerWalletAction(
   deposit?: import('../types/bingo').DepositRequestSummary;
   withdrawal?: import('../types/bingo').PayoutRequestSummary;
 }> {
+  const token = await getActiveBearerToken();
+  if (!token) {
+    return {
+      ok: false,
+      error: 'unauthenticated_demo_mode',
+    };
+  }
   const headers = await buildAuthenticatedHeaders();
   const resp = await fetch('/api/player/wallet', {
     method: 'POST',

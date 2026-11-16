@@ -9,13 +9,25 @@ export interface TelegramUserProfile {
   languageCode: string;
   isTelegramWebApp: boolean;
   initials: string;
+  startParam?: string;
+}
+
+interface TelegramBackButton {
+  isVisible?: boolean;
+  show?: () => void;
+  hide?: () => void;
+  onClick?: (cb: () => void) => void;
+  offClick?: (cb: () => void) => void;
 }
 
 interface TelegramWebAppWindow {
   Telegram?: {
     WebApp?: {
+      version?: string;
+      isVersionAtLeast?: (version: string) => boolean;
       initData?: string;
       initDataUnsafe?: {
+        start_param?: string;
         user?: {
           id: number;
           first_name: string;
@@ -26,6 +38,10 @@ interface TelegramWebAppWindow {
       };
       ready?: () => void;
       expand?: () => void;
+      setHeaderColor?: (color: string) => void;
+      setBackgroundColor?: (color: string) => void;
+      setBottomBarColor?: (color: string) => void;
+      BackButton?: TelegramBackButton;
       HapticFeedback?: {
         impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void;
         notificationOccurred?: (type: 'error' | 'success' | 'warning') => void;
@@ -34,13 +50,85 @@ interface TelegramWebAppWindow {
   };
 }
 
+function supportsVersion(
+  tg: NonNullable<TelegramWebAppWindow['Telegram']>['WebApp'],
+  minVersion: string
+): boolean {
+  if (!tg || typeof tg.isVersionAtLeast !== 'function') return false;
+  try {
+    return Boolean(tg.isVersionAtLeast(minVersion));
+  } catch {
+    return false;
+  }
+}
+
+function applyTelegramBrandTheme(tg: NonNullable<TelegramWebAppWindow['Telegram']>['WebApp']) {
+  if (!tg) return;
+  try {
+    if (supportsVersion(tg, '6.1')) {
+      tg.setHeaderColor?.('#159447');
+      tg.setBackgroundColor?.('#FFF9ED');
+    }
+    if (supportsVersion(tg, '7.10')) {
+      tg.setBottomBarColor?.('#FFFFFF');
+    }
+  } catch {
+    // Ignore on older Telegram WebApp versions
+  }
+}
+
+export function getTelegramStartParam(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    const tgStart =
+      (window as unknown as TelegramWebAppWindow).Telegram?.WebApp?.initDataUnsafe?.start_param || '';
+    if (tgStart.trim()) return tgStart.trim();
+    const params = new URLSearchParams(window.location.search);
+    return (
+      params.get('start')?.trim() ||
+      params.get('ref')?.trim() ||
+      params.get('tgWebAppStartParam')?.trim() ||
+      ''
+    );
+  } catch {
+    return '';
+  }
+}
+
+export function syncTelegramBackButton(visible: boolean, onBack: () => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const tg = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp;
+  if (!tg || !supportsVersion(tg, '6.1')) return () => {};
+  const backButton = tg.BackButton;
+  if (!backButton) return () => {};
+  try {
+    if (visible) {
+      backButton.onClick?.(onBack);
+      backButton.show?.();
+    } else {
+      backButton.hide?.();
+    }
+  } catch {
+    // Ignore outside Telegram environment
+  }
+  return () => {
+    try {
+      backButton.offClick?.(onBack);
+    } catch {
+      // Ignore cleanup error
+    }
+  };
+}
+
 export function initTelegramMiniApp(): TelegramUserProfile {
+  const startParam = getTelegramStartParam();
   if (typeof window !== 'undefined') {
     const tg = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp;
     if (tg) {
       try {
         tg.ready?.();
         tg.expand?.();
+        applyTelegramBrandTheme(tg);
       } catch {
         // Ignore outside Telegram environment
       }
@@ -57,6 +145,7 @@ export function initTelegramMiniApp(): TelegramUserProfile {
           languageCode: u.language_code || 'am',
           isTelegramWebApp: true,
           initials,
+          startParam: startParam || undefined,
         };
       }
     }
@@ -70,6 +159,7 @@ export function initTelegramMiniApp(): TelegramUserProfile {
     languageCode: 'am',
     isTelegramWebApp: false,
     initials: 'AB',
+    startParam: startParam || undefined,
   };
 }
 
@@ -92,6 +182,7 @@ export async function waitForTelegramWebAppInitData(timeoutMs = 1500): Promise<{
       try {
         tg.ready?.();
         tg.expand?.();
+        applyTelegramBrandTheme(tg);
       } catch {
         // Ignore outside Telegram environment
       }
@@ -132,7 +223,9 @@ export async function waitForTelegramWebAppInitData(timeoutMs = 1500): Promise<{
 
 export function triggerHaptic(type: 'light' | 'medium' | 'success' | 'error' = 'light') {
   if (typeof window === 'undefined') return;
-  const haptics = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp?.HapticFeedback;
+  const tg = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp;
+  if (!tg || !supportsVersion(tg, '6.1')) return;
+  const haptics = tg.HapticFeedback;
   try {
     if (type === 'success' || type === 'error') {
       haptics?.notificationOccurred?.(type);

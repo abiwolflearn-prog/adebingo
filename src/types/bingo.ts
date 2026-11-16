@@ -14,6 +14,8 @@ export type ScreenId =
   | 'support'
   | 'terms';
 
+export type AppScreen = ScreenId;
+
 export type BingoLetter = 'B' | 'I' | 'N' | 'G' | 'O';
 
 export interface BingoColumnSpec {

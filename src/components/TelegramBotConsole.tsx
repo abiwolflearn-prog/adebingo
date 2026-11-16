@@ -266,16 +266,16 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
   const dynamicInlineRows = botReply?.replyMarkup?.inline_keyboard || [];
 
   return (
-    <div className="bg-[#0f1a2e] border border-slate-700/60 rounded-2xl p-5 space-y-4 text-slate-100">
+    <div className="bg-white border border-[#E7EDE8] rounded-2xl p-5 space-y-4 text-[#183326] shadow-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <span className="text-[10px] font-extrabold uppercase tracking-wider text-cyan-400 flex items-center gap-1">
+          <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#159447] flex items-center gap-1">
             <Bot size={13} />
             {lang === 'am'
               ? 'ADEYBINGO · አማርኛ-መጀመሪያ የቴሌግራም ቦት'
               : 'ADEYBINGO · AMHARIC-FIRST TELEGRAM BOT'}
           </span>
-          <h3 className="font-['Outfit'] text-lg font-extrabold text-white">
+          <h3 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
             {lang === 'am'
               ? 'የቴሌግራም ቦት ዋና ሜኑ፣ ቦርሳ፣ ደረጃ ሰንጠረዥ እና ማሳወቂያዎች'
               : 'Telegram Bot Main Menu, Wallet, Leaderboard & Mini App Sync'}
@@ -284,10 +284,10 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
         <span
           className={`text-[11px] font-extrabold px-2.5 py-1 rounded-lg flex items-center gap-1 ${
             botReply?.registrationStatus === 'verified'
-              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+              ? 'bg-[#E6F6EB] text-[#08743A] border border-[#159447]/30'
               : botReply?.registrationStatus === 'duplicate_blocked'
-              ? 'bg-red-500/15 text-red-300 border border-red-500/30'
-              : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+              ? 'bg-[#FFF5F5] text-[#D94B4B] border border-[#D94B4B]/40'
+              : 'bg-[#FEF5DC] text-[#9A6B0B] border border-[#F5BD42]'
           }`}
         >
           {botReply?.registrationStatus === 'verified' ? (
@@ -309,9 +309,9 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
         </span>
       </div>
 
-      {/* Slash Commands (/start, /wallet, /deposit, /withdraw, /invite, /leaderboard, /history, /profile, /support, /language) */}
+      {/* Slash Commands */}
       <div className="space-y-1.5">
-        <small className="text-[11px] font-bold text-slate-400 block">
+        <small className="text-[11px] font-bold text-[#68776D] block">
           {lang === 'am' ? 'የቦት ትዕዛዞች (Bot Slash Commands):' : 'Bot Slash Commands:'}
         </small>
         <div className="flex flex-wrap gap-1.5">
@@ -321,7 +321,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
               type="button"
               disabled={busy}
               onClick={() => sendBotCommand(cmd)}
-              className="px-2.5 py-1.5 rounded-xl bg-[#14223b] border border-slate-700/70 text-cyan-300 font-mono text-xs font-extrabold hover:border-cyan-400/50 hover:bg-[#192b4a]"
+              className="px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[#08743A] font-mono text-xs font-extrabold hover:border-[#159447] hover:bg-[#E6F6EB]"
             >
               {cmd}
             </button>
@@ -330,10 +330,10 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
       </div>
 
       {/* Contact Ownership Verification Controls */}
-      <div className="p-3.5 rounded-2xl bg-[#14223b] border border-slate-700/60 space-y-2.5">
+      <div className="p-3.5 rounded-2xl bg-[#FFF9ED] border border-[#E7EDE8] space-y-2.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-extrabold text-white flex items-center gap-1.5">
-            <PhoneCall size={14} className="text-cyan-400" />
+          <span className="text-xs font-extrabold text-[#183326] flex items-center gap-1.5">
+            <PhoneCall size={14} className="text-[#159447]" />
             {lang === 'am'
               ? 'የስልክ ባለቤትነት ማረጋገጫ (Contact Ownership Check)'
               : 'Telegram Contact Ownership & Anti-Spoof Tests'}
@@ -353,7 +353,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
                 },
               })
             }
-            className="px-3 py-2 rounded-xl bg-gradient-to-r from-cyan-400 to-teal-400 text-[#041421] text-xs font-extrabold flex items-center gap-1.5 hover:brightness-105"
+            className="px-3 py-2 rounded-xl bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-xs font-extrabold flex items-center gap-1.5 hover:brightness-105"
           >
             <CheckCircle2 size={14} />
             {lang === 'am'
@@ -373,7 +373,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
                 },
               })
             }
-            className="px-3 py-2 rounded-xl bg-[#0b1322] border border-slate-700/70 text-slate-300 text-xs font-extrabold hover:border-slate-500"
+            className="px-3 py-2 rounded-xl bg-white border border-[#E7EDE8] text-[#183326] text-xs font-extrabold hover:bg-[#E6F6EB]"
           >
             {lang === 'am'
               ? '🚫 የሌላ ሰው ስልክ ሞክር (Spoof Test)'
@@ -384,7 +384,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
             type="button"
             disabled={busy}
             onClick={() => sendBotCommand('+251911223344')}
-            className="px-3 py-2 rounded-xl bg-[#0b1322] border border-slate-700/70 text-slate-300 text-xs font-extrabold hover:border-slate-500"
+            className="px-3 py-2 rounded-xl bg-white border border-[#E7EDE8] text-[#183326] text-xs font-extrabold hover:bg-[#E6F6EB]"
           >
             {lang === 'am'
               ? '🚫 በጽሁፍ ስልክ ሞክር (Plain-Text Reject)'
@@ -395,7 +395,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
             type="button"
             disabled={busy}
             onClick={() => sendBotCommand('/start', { overrideUid: 'attacker_different_uid' })}
-            className="px-3 py-2 rounded-xl bg-[#0b1322] border border-slate-700/70 text-slate-300 text-xs font-extrabold hover:border-slate-500"
+            className="px-3 py-2 rounded-xl bg-white border border-[#E7EDE8] text-[#183326] text-xs font-extrabold hover:bg-[#E6F6EB]"
           >
             {lang === 'am'
               ? '🚫 ድጋሚ መለያ ሞክር (Duplicate Block)'
@@ -407,22 +407,22 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
       {/* Live Bot Response Bubble + Dynamic Contextual Inline Keyboard */}
       {botReply && (
         <div className="space-y-2">
-          <div className="p-4 rounded-2xl bg-[#070d19] border border-cyan-500/25 text-slate-100 space-y-2.5 font-sans">
-            <div className="flex items-center justify-between text-[11px] text-cyan-300">
+          <div className="p-4 rounded-2xl bg-[#FFF9ED] border border-[#159447]/30 text-[#183326] space-y-2.5 font-sans">
+            <div className="flex items-center justify-between text-[11px] text-[#08743A]">
               <span className="font-mono font-bold">
                 @AdeyBingoBot · Chat #{botReply.chatId} ({botReply.language.toUpperCase()})
               </span>
               {botReply.securityCode && (
-                <span className="px-2 py-0.5 rounded bg-white/10 font-mono text-[10px] text-[#facc15]">
+                <span className="px-2 py-0.5 rounded bg-[#FEF5DC] border border-[#F5BD42] font-mono text-[10px] font-bold text-[#9A6B0B]">
                   {botReply.securityCode}
                 </span>
               )}
             </div>
-            <pre className="whitespace-pre-wrap font-sans text-xs leading-relaxed m-0 text-slate-100">
+            <pre className="whitespace-pre-wrap font-sans text-xs leading-relaxed m-0 text-[#183326]">
               {botReply.text}
             </pre>
             {callbackToast && (
-              <div className="text-[11px] font-bold text-[#facc15] bg-amber-500/10 border border-amber-400/20 px-2.5 py-1 rounded-lg">
+              <div className="text-[11px] font-bold text-[#9A6B0B] bg-[#FEF5DC] border border-[#F5BD42] px-2.5 py-1 rounded-lg">
                 {callbackToast}
               </div>
             )}
@@ -452,8 +452,8 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
                       onClick={() => handleInlineButtonClick(btn)}
                       className={`px-3 py-2 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1 transition-colors ${
                         btn.web_app
-                          ? 'bg-gradient-to-r from-[#facc15] to-[#f59e0b] text-[#1e1402] shadow-xs'
-                          : 'bg-[#14223b] border border-cyan-500/30 text-cyan-300 hover:bg-[#192b4a]'
+                          ? 'bg-gradient-to-r from-[#F5BD42] to-[#D99B20] text-[#183326] shadow-xs'
+                          : 'bg-[#E6F6EB] border border-[#159447]/30 text-[#08743A] hover:bg-[#159447] hover:text-white'
                       }`}
                     >
                       <span>{btn.text}</span>
@@ -470,12 +470,12 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
       {/* 5-Row Amharic-First Main Menu Reply Keyboard (10 Buttons) */}
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-2">
-          <small className="text-[11px] font-bold text-slate-400">
+          <small className="text-[11px] font-bold text-[#68776D]">
             {lang === 'am'
               ? 'የቦት ዋና ሜኑ (Amharic-First 5-Row Main Menu — 10 Buttons):'
               : 'Bot 5-Row Main Menu Reply Keyboard (10 Buttons):'}
           </small>
-          <span className="text-[10px] font-mono text-cyan-400 truncate max-w-[210px]">
+          <span className="text-[10px] font-mono text-[#159447] truncate max-w-[210px]">
             {miniAppUrl}
           </span>
         </div>
@@ -491,8 +491,8 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
                   onClick={() => sendBotCommand(btn.label)}
                   className={`px-3 py-2.5 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition-colors ${
                     btn.isPlay
-                      ? 'bg-gradient-to-r from-cyan-400 to-sky-500 text-[#041421] shadow-xs'
-                      : 'bg-[#14223b] border border-slate-700/70 text-slate-200 hover:border-cyan-400/40'
+                      ? 'bg-gradient-to-r from-[#159447] to-[#08743A] text-white shadow-xs'
+                      : 'bg-[#FFF9ED] border border-[#E7EDE8] text-[#183326] hover:border-[#159447]/40 hover:bg-[#E6F6EB]'
                   }`}
                 >
                   <span>{btn.label}</span>
@@ -503,7 +503,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
           ))}
         </div>
 
-        <small className="text-[11px] font-bold text-slate-400 block pt-1">
+        <small className="text-[11px] font-bold text-[#68776D] block pt-1">
           {lang === 'am'
             ? 'ፈጣን የውስጥ ቁልፎች (Interactive Callback Shortcuts):'
             : 'Interactive Callback Shortcuts:'}
@@ -521,7 +521,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
                   callbackQueryId: `cbq_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
                 })
               }
-              className="px-2.5 py-1.5 rounded-xl bg-[#14223b] border border-cyan-500/25 text-cyan-300 text-xs font-extrabold hover:bg-[#192b4a]"
+              className="px-2.5 py-1.5 rounded-xl bg-[#E6F6EB] border border-[#159447]/25 text-[#08743A] text-xs font-extrabold hover:bg-[#159447] hover:text-white transition-colors"
             >
               {lang === 'am' ? cb.labelAm : cb.labelEn}
             </button>
@@ -530,15 +530,15 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
       </div>
 
       {/* Secure Notifications Dispatcher & Outbox */}
-      <div className="pt-2 border-t border-slate-700/60 space-y-2.5">
+      <div className="pt-2 border-t border-[#E7EDE8] space-y-2.5">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-extrabold text-white flex items-center gap-1.5">
-            <BellRing size={14} className="text-cyan-400" />
+          <span className="text-xs font-extrabold text-[#183326] flex items-center gap-1.5">
+            <BellRing size={14} className="text-[#159447]" />
             {lang === 'am'
               ? 'የቴሌግራም ማሳወቂያዎች (Secure Notifications — አማርኛ Default)'
               : 'Telegram Bot Notifications (Amharic Default)'}
           </span>
-          <span className="text-[10px] font-mono font-bold text-slate-400">
+          <span className="text-[10px] font-mono font-bold text-[#68776D]">
             <Globe size={11} className="inline mr-1" />
             {lang === 'am' ? 'አማርኛ (Default)' : 'English'}
           </span>
@@ -551,7 +551,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
               type="button"
               disabled={busy}
               onClick={() => triggerNotification(ev.id)}
-              className="px-2.5 py-1.5 rounded-lg bg-[#14223b] border border-cyan-500/25 text-cyan-300 text-[11px] font-bold flex items-center gap-1 hover:bg-[#192b4a]"
+              className="px-2.5 py-1.5 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-[#08743A] text-[11px] font-bold flex items-center gap-1 hover:bg-[#E6F6EB]"
             >
               <Send size={11} />
               {lang === 'am' ? ev.labelAm : ev.labelEn}
@@ -564,18 +564,18 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
             {outbox.slice(0, 4).map((msg) => (
               <div
                 key={msg.id}
-                className="p-2.5 rounded-xl bg-[#070d19] border border-slate-700/60 text-xs space-y-0.5"
+                className="p-2.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs space-y-0.5"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <strong className="text-cyan-300 font-extrabold flex items-center gap-1">
-                    <Sparkles size={12} />
+                  <strong className="text-[#08743A] font-extrabold flex items-center gap-1">
+                    <Sparkles size={12} className="text-[#D99B20]" />
                     {msg.title}
                   </strong>
-                  <span className="text-[10px] font-mono text-slate-500 shrink-0">
+                  <span className="text-[10px] font-mono text-[#68776D] shrink-0">
                     {msg.event}
                   </span>
                 </div>
-                <p className="text-[11px] text-slate-300 m-0 leading-relaxed">{msg.body}</p>
+                <p className="text-[11px] text-[#183326] m-0 leading-relaxed">{msg.body}</p>
               </div>
             ))}
           </div>

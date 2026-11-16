@@ -29,30 +29,34 @@ export function BingoCardView({
   return (
     <div
       data-testid={`bingo-card-${card.id}`}
-      className={`bg-[#0b1526] border transition-all ${
+      className={`bg-white border transition-all ${
         winCheck.won
-          ? 'border-[#facc15] ring-2 ring-[#facc15]/60 shadow-[0_0_24px_rgba(250,204,21,0.22)]'
+          ? 'border-[#F5BD42] ring-2 ring-[#F5BD42]/70 shadow-[0_10px_28px_rgba(245,189,66,0.28)]'
           : isOneAway
-          ? 'border-[#22d3ee] shadow-[0_0_20px_rgba(34,211,238,0.18)]'
-          : 'border-[#1e3252]'
-      } ${compact ? 'p-1.5 rounded-lg' : 'p-2.5 sm:p-3 rounded-2xl'}`}
+          ? 'border-[#159447] ring-2 ring-[#159447]/35 shadow-[0_8px_22px_rgba(21,148,71,0.16)]'
+          : 'border-[#E7EDE8] shadow-[0_4px_14px_rgba(24,51,38,0.06)]'
+      } ${compact ? 'p-1.5 rounded-xl' : 'p-3 sm:p-3.5 rounded-2xl'}`}
     >
       {/* Card Top Meta Row */}
       <div
         className={`flex items-center justify-between px-0.5 ${
-          compact ? 'pb-0.5 text-[10px]' : 'pb-2 text-xs'
+          compact ? 'pb-1 text-[10px]' : 'pb-2.5 text-xs'
         }`}
       >
-        <div className="flex items-center gap-1 font-bold text-[#e2e8f0] min-w-0">
-          <span className={`font-['Outfit'] text-[#22d3ee] ${compact ? 'text-[11px]' : 'text-sm'}`}>
-            {card.id}
+        <div className="flex items-center gap-1.5 font-bold text-[#183326] min-w-0">
+          <span
+            className={`font-['Outfit'] font-extrabold text-[#08743A] bg-[#E6F6EB] border border-[#159447]/25 rounded-md ${
+              compact ? 'text-[10px] px-1.5 py-0.5' : 'text-xs px-2 py-0.5'
+            }`}
+          >
+            #{card.id}
           </span>
           {!compact && (
             <>
-              <span aria-hidden="true" className="text-[#475569]">
+              <span aria-hidden="true" className="text-[#68776D]">
                 ·
               </span>
-              <span className="font-mono text-[11px] text-[#94a3b8] truncate">{card.serial}</span>
+              <span className="font-mono text-[11px] text-[#68776D] truncate">{card.serial}</span>
             </>
           )}
         </div>
@@ -60,15 +64,19 @@ export function BingoCardView({
         <div className="flex items-center gap-1">
           {winCheck.won && (
             <span
-              className={`font-extrabold text-[#451a03] bg-[#facc15] rounded ${
-                compact ? 'text-[8px] px-1 py-0.5' : 'text-[11px] px-2 py-0.5 rounded-md'
+              className={`font-extrabold text-[#183326] bg-[#F5BD42] border border-[#D99B20]/40 rounded-md shadow-xs ${
+                compact ? 'text-[8px] px-1 py-0.5' : 'text-[11px] px-2 py-0.5'
               }`}
             >
               ★ BINGO!
             </span>
           )}
           {!winCheck.won && isOneAway && (
-            <span className={`font-bold text-[#22d3ee] ${compact ? 'text-[9px]' : 'text-[11px]'}`}>
+            <span
+              className={`font-extrabold text-[#08743A] bg-[#E6F6EB] rounded-md px-1.5 py-0.5 ${
+                compact ? 'text-[9px]' : 'text-[11px]'
+              }`}
+            >
               {lang === 'am' ? '1 ቀረው!' : '1 Away!'}
             </span>
           )}
@@ -76,7 +84,7 @@ export function BingoCardView({
             <button
               type="button"
               onClick={() => onRemoveCard(card.id)}
-              className={`text-[#94a3b8] hover:text-red-400 rounded transition-colors ${
+              className={`text-[#68776D] hover:text-[#D94B4B] hover:bg-red-50 rounded-md transition-colors ${
                 compact ? 'text-[10px] px-1 leading-none' : 'text-[11px] px-1.5 py-0.5'
               }`}
               aria-label={`Remove card ${card.id}`}
@@ -89,12 +97,14 @@ export function BingoCardView({
 
       {/* B I N G O Header */}
       <div className={`grid grid-cols-5 ${compact ? 'gap-0.5 mb-0.5' : 'gap-1.5 mb-1.5'}`}>
-        {BINGO_COLUMNS.map((col) => (
+        {BINGO_COLUMNS.map((col, idx) => (
           <div
             key={col.letter}
-            className={`bg-gradient-to-br from-[#22d3ee] to-[#0284c7] text-[#04101d] flex items-center justify-center font-['Outfit'] font-extrabold shadow-xs ${
-              compact ? 'h-4 text-[9px] rounded' : 'h-8 text-sm rounded-lg'
-            }`}
+            className={`flex items-center justify-center font-['Outfit'] font-extrabold shadow-xs ${
+              idx === 2
+                ? 'bg-gradient-to-br from-[#F5BD42] to-[#D99B20] text-[#183326]'
+                : 'bg-gradient-to-br from-[#159447] to-[#08743A] text-white'
+            } ${compact ? 'h-4 text-[9px] rounded' : 'h-8 text-sm rounded-lg'}`}
           >
             {col.letter}
           </div>
@@ -112,19 +122,19 @@ export function BingoCardView({
               const isWinningCell = winningCoords.has(`${rIdx}-${cIdx}`);
 
               let cellClasses =
-                'bg-[#13223b] text-[#e2e8f0] hover:bg-[#1a2e4f] border border-[#1f3458]';
+                'bg-[#FFF9ED] text-[#183326] hover:bg-[#E6F6EB]/70 border border-[#E7EDE8]';
               if (isFree) {
                 cellClasses =
-                  'bg-gradient-to-br from-[#fde047] to-[#f59e0b] text-[#451a03] font-black border border-[#fef08a]/60';
+                  'bg-gradient-to-br from-[#F5BD42] to-[#D99B20] text-[#183326] font-black border border-[#D99B20]/60 shadow-[0_2px_8px_rgba(245,189,66,0.35)]';
               } else if (isWinningCell) {
                 cellClasses =
-                  'bg-gradient-to-br from-[#fde047] to-[#f59e0b] text-[#451a03] font-black border border-[#fef08a] scale-[1.03] shadow-[0_0_12px_rgba(250,204,21,0.45)]';
+                  'bg-gradient-to-br from-[#F5BD42] to-[#D99B20] text-[#183326] font-black border-2 border-[#D99B20] scale-[1.03] shadow-[0_4px_12px_rgba(245,189,66,0.45)]';
               } else if (isMarked) {
                 cellClasses =
-                  'bg-gradient-to-br from-[#22d3ee] to-[#14b8a6] text-[#041824] font-black border border-[#a5f3fc]/60 shadow-[0_0_10px_rgba(34,211,238,0.3)]';
+                  'bg-gradient-to-br from-[#159447] to-[#08743A] text-white font-black border border-[#08743A] shadow-[0_3px_10px_rgba(21,148,71,0.28)]';
               } else if (isCalled) {
                 cellClasses =
-                  'bg-[#0f2f46] text-[#67e8f9] border border-[#22d3ee]/60';
+                  'bg-[#E6F6EB] text-[#08743A] font-extrabold border border-[#159447]/60';
               }
 
               return (
@@ -143,7 +153,7 @@ export function BingoCardView({
                   className={`aspect-square font-['Outfit'] font-bold flex items-center justify-center transition-all select-none tabular-nums ${
                     compact
                       ? 'text-[10px] min-h-[20px] rounded'
-                      : 'text-sm sm:text-base min-h-[42px] rounded-lg'
+                      : 'text-sm sm:text-base min-h-[42px] rounded-xl'
                   } ${cellClasses} ${
                     canToggleCells && !isFree ? 'active:scale-95 cursor-pointer' : 'cursor-default'
                   }`}

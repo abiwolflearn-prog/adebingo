@@ -2,21 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithCustomToken, User as FirebaseUser } from 'firebase/auth';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  Volume2,
-  VolumeX,
-  Languages,
   Wallet,
   Gift,
-  Headphones,
-  Home,
   X,
   Trophy,
-  User as UserIcon,
   Play,
   Shuffle,
   Search,
   Clock,
-  Shield,
+  Sparkles,
+  Users,
+  Grid,
 } from 'lucide-react';
 import {
   DEFAULT_GAME_RULES,
@@ -43,10 +39,10 @@ import {
   WalletTransaction,
   WinResult,
 } from './types/bingo';
-import { t } from './utils/i18n';
 import { soundFX } from './utils/sound';
 import {
   initTelegramMiniApp,
+  syncTelegramBackButton,
   triggerHaptic,
   waitForTelegramWebAppInitData,
 } from './utils/telegram';
@@ -80,6 +76,17 @@ import { LiveGameScreen } from './components/LiveGameScreen';
 import { WalletScreens } from './components/WalletScreens';
 import { CommunityScreens } from './components/CommunityScreens';
 import { AdminDashboardScreen } from './components/AdminDashboardScreen';
+import {
+  AppHeader,
+  BalanceCard,
+  RewardCard,
+  BingoBall,
+  BingoNumberTile,
+  PrimaryButton,
+  SecondaryButton,
+  GameStatusBadge,
+  BottomNavigation,
+} from './components/DesignSystem';
 
 function checkIsAdminRoute(): boolean {
   if (typeof window === 'undefined') return false;
@@ -113,7 +120,7 @@ export default function App() {
 
   // Default language is Amharic ('am'), with English ('en') switching
   const [lang, setLang] = useState<Language>('am');
-  const copy = t(lang);
+  const autoAppliedStartRef = useRef<boolean>(false);
 
   // Support ?autostart=1 to jump directly to the live Bingo game
   const [screen, setScreen] = useState<ScreenId>(() => {
@@ -125,6 +132,11 @@ export default function App() {
     }
     return 'home';
   });
+
+  // Sync native Telegram WebApp BackButton whenever player navigates away from home
+  useEffect(() => {
+    return syncTelegramBackButton(screen !== 'home', () => setScreen('home'));
+  }, [screen]);
 
   // Firebase Auth & Firestore connectivity state
   const [fbUser, setFbUser] = useState<FirebaseUser | null>(null);
@@ -1594,6 +1606,18 @@ export default function App() {
     void syncLanguagePreference(nextLang, fbUser?.uid, serverVerifiedTelegramId ?? user.id);
   }
 
+  // Automatically attribute invited player referral code (?start=ADEY-... or Telegram start_param)
+  // while keeping the player on the exact same unified ADEYBINGO visual theme
+  useEffect(() => {
+    if (autoAppliedStartRef.current) return;
+    const rawStart = (user.startParam || '').trim().toUpperCase();
+    if (!rawStart || !/^ADEY-[A-Z0-9_-]{2,}$/.test(rawStart)) return;
+    if (rawStart === referralCode.toUpperCase() || referredByCode) return;
+    autoAppliedStartRef.current = true;
+    void handleApplyPromoCode(rawStart);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.startParam, referralCode, referredByCode]);
+
   if (isAdminRoute) {
     return (
       <AdminDashboardScreen
@@ -1618,142 +1642,137 @@ export default function App() {
 
   return (
     <div className="app">
-      {/* Compact Top Header */}
-      <header className="adey-header">
-        <button
-          type="button"
-          onClick={() => setScreen('home')}
-          className="brand text-left bg-transparent border-0 p-0 min-h-[44px]"
-        >
-          <b className="logo">A</b>
-          <strong>
-            ADEY<span>BINGO</span>
-          </strong>
-        </button>
-
-        <div className="actions">
-          <button
-            type="button"
-            onClick={() => void handleEnterLiveGame()}
-            aria-label={lang === 'am' ? 'የዙር ሰዓት ቆጣሪ' : 'Round timer'}
-            data-testid="header-timer"
-          >
-            <Clock
-              size={15}
-              className={
-                isCardsLocked
-                  ? 'text-rose-400'
-                  : isUrgentCountdown
-                    ? 'text-amber-400 animate-pulse'
-                    : 'text-[#facc15]'
-              }
-            />
-            <span
-              className={`font-mono font-extrabold tabular-nums ${
-                isCardsLocked
-                  ? 'text-rose-300'
-                  : isUrgentCountdown
-                    ? 'text-amber-300'
-                    : 'text-[#facc15]'
-              }`}
-            >
-              {activeRoom.status === 'countdown'
-                ? countdownLabel
-                : activeRoom.status === 'live'
-                  ? 'LIVE'
-                  : '00:05'}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setScreen('wallet')}
-            aria-label={copy.demoBalanceLabel}
-          >
-            <Wallet size={15} className="text-cyan-400" />
-            <span data-testid="home-demo-balance" className="text-cyan-300 font-extrabold tabular-nums">
-              {demoBalance.toFixed(2)} ETB
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleChangeLanguage((l) => (l === 'am' ? 'en' : 'am'))}
-            aria-label="Switch language between Amharic and English"
-            data-testid="lang-toggle"
-          >
-            <Languages size={15} />
-            {lang === 'am' ? 'አማ' : 'EN'}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (sound) soundFX.stopVoice();
-              setSound((s) => !s);
-            }}
-            aria-label={sound ? 'Mute sound' : 'Unmute sound'}
-          >
-            {sound ? <Volume2 size={15} /> : <VolumeX size={15} />}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              window.history.pushState({}, '', '/admin');
-              setIsAdminRoute(true);
-            }}
-            aria-label="Owner Admin Panel"
-            data-testid="owner-admin-btn"
-            className="!border-[#facc15]/50 !text-[#fde047] !bg-[#facc15]/10"
-          >
-            <Shield size={14} className="text-[#facc15]" />
-            <span>{lang === 'am' ? 'አስተዳዳሪ' : 'Admin'}</span>
-          </button>
-        </div>
-      </header>
+      {/* Centralized Global ADEYBINGO Header */}
+      <AppHeader
+        lang={lang}
+        countdownLabel={
+          activeRoom.status === 'countdown'
+            ? countdownLabel
+            : activeRoom.status === 'live'
+              ? 'LIVE'
+              : '00:05'
+        }
+        isLive={activeRoom.status === 'live'}
+        isUrgent={isUrgentCountdown}
+        demoBalance={demoBalance}
+        sound={sound}
+        onToggleSound={() => {
+          if (sound) soundFX.stopVoice();
+          setSound((s) => !s);
+        }}
+        showBackButton={screen !== 'home'}
+        onBack={() => setScreen('home')}
+        onBrandClick={() => setScreen('home')}
+        onTimerClick={() => void handleEnterLiveGame()}
+        onWalletClick={() => setScreen('wallet')}
+        onToggleLanguage={() => handleChangeLanguage((l) => (l === 'am' ? 'en' : 'am'))}
+        showAdminButton
+        isAdminActive={isAdminRoute}
+        onAdminClick={() => {
+          window.history.pushState({}, '', '/admin');
+          setIsAdminRoute(true);
+        }}
+      />
 
       {/* Main View Switcher */}
-      <main className="mt-3 sm:mt-5">
+      <main className="mt-3 sm:mt-4">
         {screen === 'home' && (
-          <div className="space-y-3.5 sm:space-y-4">
-            {/* 1. Primary Play Card (Mobile-First) */}
-            <section className="rounded-2xl sm:rounded-3xl bg-[#0f1a2e] border border-slate-700/60 p-4 sm:p-7 space-y-3.5 sm:space-y-5">
-              <div className="flex items-start justify-between gap-3">
-                <div className="space-y-1 min-w-0 flex-1">
-                  <h1 className="font-['Outfit'] text-xl sm:text-3xl font-extrabold text-white tracking-tight leading-tight">
-                    {lang === 'am' ? 'ቢንጎ ይጫወቱ' : 'Play Live Bingo'}
-                  </h1>
-                  <p className="text-xs sm:text-sm text-slate-400 max-w-xl leading-snug">
+          <div className="space-y-4">
+            {/* 1. Hero Dashboard Card: Friendly ADEYBINGO Branding, 3D Bingo Balls, Room Status & Play CTA */}
+            <section className="rounded-3xl bg-white border border-[#E7EDE8] p-4 sm:p-6 shadow-[0_10px_28px_rgba(24,51,38,0.06)] space-y-4 relative overflow-hidden">
+              {/* Subtle warm decorative glow */}
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute -top-20 -right-20 w-56 h-56 rounded-full bg-gradient-to-br from-[#E6F6EB] via-[#FEF5DC]/60 to-transparent blur-2xl"
+              />
+
+              <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                <div className="space-y-2 min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <GameStatusBadge
+                      status={
+                        activeRoom.status === 'live'
+                          ? 'live'
+                          : activeRoom.status === 'completed'
+                            ? 'completed'
+                            : 'open'
+                      }
+                      pulse={activeRoom.status === 'live' || activeRoom.status === 'countdown'}
+                      label={
+                        activeRoom.status === 'live'
+                          ? lang === 'am'
+                            ? 'ቀጥታ ጨዋታ በሂደት ላይ'
+                            : 'LIVE GAME IN PROGRESS'
+                          : activeRoom.status === 'completed'
+                            ? lang === 'am'
+                              ? 'ዙሩ ተጠናቋል · አዲስ ዙር ይጀምራል'
+                              : 'ROUND COMPLETED · NEXT STARTING'
+                            : lang === 'am'
+                              ? `${activeRoom.nameAm} · ክፍት ነው`
+                              : `${activeRoom.nameEn} · Open for Cards`
+                      }
+                    />
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#FEF5DC] border border-[#F5BD42]/60 text-[11px] font-extrabold text-[#9A6B0B]">
+                      <Sparkles size={12} className="text-[#D99B20]" />
+                      {cardPrice} ETB / {lang === 'am' ? 'ካርድ' : 'Card'}
+                    </span>
+                    {referredByCode && (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#E6F6EB] border border-[#159447]/30 text-[11px] font-extrabold text-[#08743A]">
+                        <Gift size={12} className="text-[#159447]" />
+                        {lang === 'am' ? `ተጋባዥ (${referredByCode})` : `Invited (${referredByCode})`}
+                      </span>
+                    )}
+                  </div>
+
+                  <h1 className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold text-[#183326] tracking-tight leading-tight">
                     {lang === 'am'
-                      ? 'ካርድ ይምረጡ፣ ከዚያ ወዲያውኑ ወደ ቀጥታ ጨዋታው ይግቡ።'
-                      : 'Choose your cards, then jump straight into the live game.'}
+                      ? 'ADEYBINGO — የቀጥታ ቢንጎ ይጫወቱ!'
+                      : 'ADEYBINGO — Play Live Bingo!'}
+                  </h1>
+                  <p className="text-xs sm:text-sm text-[#68776D] max-w-xl leading-relaxed">
+                    {lang === 'am'
+                      ? 'ከ1–600 የሚወዷቸውን ካርዶች ይምረጡ፣ ባለ 3D ኳሶችን ይከታተሉ እና ወዲያውኑ ሽልማት ያሸንፉ።'
+                      : 'Pick your lucky cards from 1–600, follow the colorful 3D Bingo balls, and win instant rewards.'}
                   </p>
+
+                  {/* Colorful 3D Bingo Ball Artwork Showcase */}
+                  <div className="pt-1 flex flex-wrap items-center gap-2 sm:gap-2.5">
+                    <BingoBall number={7} size="sm" animate={!reducedMotion} />
+                    <BingoBall number={22} size="sm" animate={!reducedMotion} />
+                    <BingoBall number={38} size="sm" animate={!reducedMotion} />
+                    <BingoBall number={54} size="sm" animate={!reducedMotion} />
+                    <BingoBall number={71} size="sm" animate={!reducedMotion} />
+                    <span className="text-[11px] font-bold text-[#68776D] ml-1">
+                      {activeRoom.activePlayers} {lang === 'am' ? 'ተጫዋቾች በክፍሉ ውስጥ' : 'players in room'} ·{' '}
+                      {DEFAULT_GAME_RULES.maxCardsPerRoom - activeRoom.takenCardIds.length}{' '}
+                      {lang === 'am' ? 'ነፃ ካርዶች' : 'cards available'}
+                    </span>
+                  </div>
                 </div>
 
-                {/* Prominent Mobile-First Round Timer Display */}
+                {/* Prominent Round Timer Card */}
                 <div
                   data-testid="home-timer"
-                  className={`rounded-2xl border px-3 py-2 sm:px-4 sm:py-3 min-w-[122px] sm:min-w-[165px] shrink-0 space-y-1.5 sm:space-y-2 ${
+                  className={`rounded-2xl border-2 px-4 py-3 sm:px-5 sm:py-4 min-w-[150px] sm:min-w-[185px] shrink-0 space-y-2 ${
                     activeRoom.status === 'live'
-                      ? 'bg-rose-500/10 border-rose-400/40'
+                      ? 'bg-[#E6F6EB] border-[#159447]'
                       : activeRoom.status === 'completed'
-                        ? 'bg-amber-500/10 border-amber-400/40'
+                        ? 'bg-[#FFF9ED] border-[#F5BD42]'
                         : isUrgentCountdown
-                          ? 'bg-amber-500/10 border-amber-400/50'
-                          : 'bg-[#091221] border-cyan-400/35'
+                          ? 'bg-[#FEF5DC] border-[#D99B20]'
+                          : 'bg-[#FFF9ED] border-[#159447]/30'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-1.5 text-[10px] sm:text-[11px] font-bold uppercase tracking-wide">
-                    <span className="text-slate-400 flex items-center gap-1">
+                  <div className="flex items-center justify-between gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-[#08743A]">
+                    <span className="flex items-center gap-1.5">
                       <Clock
-                        size={12}
+                        size={14}
                         className={
                           isCardsLocked
-                            ? 'text-rose-400'
+                            ? 'text-[#D94B4B]'
                             : isUrgentCountdown
-                              ? 'text-amber-400'
-                              : 'text-cyan-400'
+                              ? 'text-[#D99B20]'
+                              : 'text-[#159447]'
                         }
                       />
                       {activeRoom.status === 'live'
@@ -1770,14 +1789,12 @@ export default function App() {
                     </span>
                   </div>
                   <div
-                    className={`font-mono text-xl sm:text-3xl font-extrabold tabular-nums leading-none ${
+                    className={`font-mono text-2xl sm:text-3xl font-extrabold tabular-nums leading-none ${
                       activeRoom.status === 'live'
-                        ? 'text-rose-300'
-                        : activeRoom.status === 'completed'
-                          ? 'text-amber-300'
-                          : isUrgentCountdown
-                            ? 'text-amber-300'
-                            : 'text-[#facc15]'
+                        ? 'text-[#08743A]'
+                        : isUrgentCountdown
+                          ? 'text-[#D99B20]'
+                          : 'text-[#183326]'
                     }`}
                   >
                     {activeRoom.status === 'countdown'
@@ -1786,16 +1803,16 @@ export default function App() {
                         ? `${calls.length}/75`
                         : '00:05'}
                   </div>
-                  <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                  <div className="w-full h-2 rounded-full bg-white border border-[#E7EDE8] overflow-hidden">
                     <div
                       className={`h-full transition-all duration-500 ${
                         activeRoom.status === 'live'
-                          ? 'bg-rose-400 w-full animate-pulse'
+                          ? 'bg-[#159447] w-full animate-pulse'
                           : activeRoom.status === 'completed'
-                            ? 'bg-amber-400 w-1/3'
+                            ? 'bg-[#F5BD42] w-1/3'
                             : isUrgentCountdown
-                              ? 'bg-amber-400'
-                              : 'bg-gradient-to-r from-[#22d3ee] to-[#facc15]'
+                              ? 'bg-[#D99B20]'
+                              : 'bg-gradient-to-r from-[#159447] to-[#F5BD42]'
                       }`}
                       style={
                         activeRoom.status === 'countdown'
@@ -1804,203 +1821,288 @@ export default function App() {
                       }
                     />
                   </div>
+                  <p className="text-[11px] font-bold text-[#68776D]">
+                    {activeRoom.status === 'live'
+                      ? lang === 'am'
+                        ? 'ካርዶች ተቆልፈዋል'
+                        : 'Cards Locked for Round'
+                      : lang === 'am'
+                        ? 'ከመጀመሩ በፊት ካርድ ይምረጡ'
+                        : 'Select cards before 00:00'}
+                  </p>
                 </div>
               </div>
 
-              {/* Unboxed Metadata Line */}
-              <p className="text-xs text-slate-300 tabular-nums">
-                {activeRoom.activePlayers} {lang === 'am' ? 'ተጫዋቾች' : 'players'} ·{' '}
-                {activeRoom.status === 'live' ? (
-                  <b className="text-rose-300">
-                    {lang === 'am' ? 'ካርድ ተቆልፏል' : 'Cards Locked'}
-                  </b>
-                ) : activeRoom.status === 'completed' ? (
-                  <b className="text-amber-300">
-                    {lang === 'am' ? 'ዙሩ አልቋል · አዲስ ዙር ይጀምራል' : 'Round Over · Next Starting'}
-                  </b>
-                ) : (
-                  <>
-                    {lang === 'am' ? 'ቀሪ ጊዜ' : 'Time Left'}{' '}
-                    <b className="font-mono text-[#facc15]">{countdownLabel}</b>
-                  </>
-                )}{' '}
-                · {cardPrice} ETB / {lang === 'am' ? 'ካርድ' : 'card'}
-              </p>
+              {/* Balance & Rewards Summary Strip */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                <BalanceCard
+                  variant="emerald"
+                  label={lang === 'am' ? 'የመጫወቻ ቀሪ ሂሳብ' : 'Playable Balance'}
+                  amount={demoBalance.toFixed(2)}
+                  unit="ETB"
+                  badgeText={lang === 'am' ? '15 ብር ቦነስ' : '15 ETB Welcome'}
+                  subtitle={
+                    lang === 'am'
+                      ? `የተመረጡ ካርዶች፦ ${selectedCardIds.length}/4`
+                      : `Selected Cards: ${selectedCardIds.length}/4`
+                  }
+                  icon={<Wallet className="w-3.5 h-3.5" />}
+                />
 
-              {/* Welcome 15 ETB & Invite Friend +20 ETB Banner */}
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#091221] border border-cyan-400/25 px-3 py-2 text-xs">
-                <span className="text-slate-200 font-bold">
-                  {lang === 'am'
-                    ? '🎁 ሲቀላቀሉ 15 ብር ቦነስ · ጓደኛ ሲጋብዙ +20 ብር ቦነስ!'
-                    : '🎁 15 Birr Welcome Join Bonus · +20 Birr per Invited Friend!'}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setScreen('referral')}
-                  className="px-2.5 py-1 rounded-lg bg-cyan-500/15 border border-cyan-400/35 text-cyan-300 font-extrabold text-[11px] hover:bg-cyan-500/25"
-                >
-                  {lang === 'am' ? 'ጓደኛ ጋብዝ (+20 ብር)' : 'Invite Friends (+20 ETB)'}
-                </button>
+                <BalanceCard
+                  variant="gold"
+                  label={lang === 'am' ? 'የሽልማት ሂሳብ' : 'Winnings & Rewards'}
+                  amount={winningsBalance.toFixed(2)}
+                  unit="ETB"
+                  badgeText={lang === 'am' ? '+20 ብር ግብዣ' : '+20 ETB Invite'}
+                  subtitle={
+                    lang === 'am'
+                      ? 'ጓደኛ ሲጋብዙ ወዲያውኑ +20 ብር ያግኙ'
+                      : 'Earn +20 ETB per invited friend'
+                  }
+                  icon={<Trophy className="w-3.5 h-3.5 text-[#D99B20]" />}
+                />
+
+                <div className="rounded-2xl bg-[#FFF9ED] border border-[#E7EDE8] p-4 flex flex-col justify-between gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-extrabold uppercase tracking-wider text-[#68776D] flex items-center gap-1.5">
+                      <Users size={14} className="text-[#159447]" />
+                      {lang === 'am' ? 'ፈጣን መዳረሻ' : 'Quick Actions'}
+                    </span>
+                    <span className="text-[11px] font-extrabold text-[#159447]">
+                      1–600 {lang === 'am' ? 'ካርዶች' : 'Cards'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <SecondaryButton
+                      size="sm"
+                      onClick={() => setScreen('cards')}
+                      icon={<Grid size={14} className="text-[#159447]" />}
+                      className="flex-1"
+                    >
+                      {lang === 'am' ? 'ሙሉ ካርድ መምረጫ' : 'Full Card Picker'}
+                    </SecondaryButton>
+                    <SecondaryButton
+                      size="sm"
+                      onClick={() => setScreen('referral')}
+                      icon={<Gift size={14} className="text-[#D99B20]" />}
+                      className="flex-1"
+                    >
+                      {lang === 'am' ? 'ጓደኛ ጋብዝ' : 'Invite (+20)'}
+                    </SecondaryButton>
+                  </div>
+                </div>
               </div>
 
-              {/* Primary Play Action (Disabled look if no card selected; clicking enforces card requirement) */}
-              <div className="flex flex-wrap items-center gap-3 pt-0.5">
-                <button
-                  type="button"
+              {/* Large Emerald Green Play Bingo Button */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
+                <PrimaryButton
                   data-start="true"
+                  variant="emerald"
+                  size="lg"
+                  fullWidth
                   onClick={handleEnterLiveGame}
-                  className={`w-full sm:w-auto px-6 py-3 rounded-2xl font-['Outfit'] text-base font-extrabold flex items-center justify-center gap-2 shadow-sm transition-all min-h-[48px] whitespace-nowrap ${
-                    selectedCardIds.length > 0
-                      ? 'bg-gradient-to-r from-[#facc15] to-[#eab308] text-[#1e1402] hover:brightness-105'
-                      : 'bg-[#14223b] border border-amber-400/40 text-amber-200 hover:border-amber-400'
-                  }`}
+                  icon={<Play size={20} className="fill-current" />}
+                  className="text-base sm:text-lg py-4 shadow-[0_10px_24px_rgba(21,148,71,0.3)]"
                 >
-                  <Play size={18} />
                   {selectedCardIds.length > 0
                     ? lang === 'am'
-                      ? `በ ${selectedCardIds.length} ካርድ ጨዋታ ጀምር`
-                      : `Start Game (${selectedCardIds.length} Card${selectedCardIds.length === 1 ? '' : 's'})`
+                      ? `ቢንጎ ይጫወቱ (${selectedCardIds.length} ካርድ · ${(selectedCardIds.length * cardPrice).toFixed(0)} ብር)`
+                      : `Play Bingo Now (${selectedCardIds.length} Card${selectedCardIds.length === 1 ? '' : 's'} · ${(selectedCardIds.length * cardPrice).toFixed(0)} ETB)`
                     : demoBalance < cardPrice
-                    ? lang === 'am'
-                      ? 'ለመጫወት ጓደኛ ይጋብዙ (+20 ብር) ወይም ሂሳብ ይሙሉ'
-                      : 'Invite Friends (+20 ETB) or Deposit to Play'
-                    : lang === 'am'
-                    ? 'ለመጫወት መጀመሪያ ካርድ ይምረጡ (10 ብር)'
-                    : 'Select a Card (10 ETB) to Play'}
-                </button>
+                      ? lang === 'am'
+                        ? 'ለመጫወት ጓደኛ ይጋብዙ (+20 ብር) ወይም ሂሳብ ይሙሉ'
+                        : 'Invite Friends (+20 ETB) or Deposit to Play'
+                      : lang === 'am'
+                        ? 'ቢንጎ ይጫወቱ — መጀመሪያ ከታች ካርድ ይምረጡ (10 ብር)'
+                        : 'Play Bingo — Select a Card Below (10 ETB)'}
+                </PrimaryButton>
+
+                {selectedCardIds.length === 0 && !isCardsLocked && (
+                  <PrimaryButton
+                    variant="gold"
+                    size="lg"
+                    onClick={() => handleQuickPickCards(1)}
+                    icon={<Shuffle size={18} />}
+                    className="sm:w-auto shrink-0 whitespace-nowrap"
+                  >
+                    {lang === 'am' ? '1 ዕድለኛ ካርድ ምረጥ' : 'Quick Pick 1 Card'}
+                  </PrimaryButton>
+                )}
               </div>
             </section>
 
-            {/* 2. All Cards Selector (1–600) — Mobile-First */}
-            <section className="rounded-2xl sm:rounded-3xl bg-[#0f1a2e] border border-slate-700/60 p-3.5 sm:p-5 space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            {/* 2. All Cards Selector (1–600) — Bright White/Cream & Emerald/Gold Design */}
+            <section className="rounded-3xl bg-white border border-[#E7EDE8] p-4 sm:p-6 shadow-[0_8px_24px_rgba(24,51,38,0.05)] space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                  <h2 className="font-['Outfit'] text-base font-extrabold text-white">
-                    {lang === 'am'
-                      ? `ሁሉም ካርዶች (1–600) · ${selectedCardIds.length}/4`
-                      : `All Cards (1–600) · ${selectedCardIds.length}/4`}
-                  </h2>
-                  <p className="text-xs text-slate-400">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="font-['Outfit'] text-lg sm:text-xl font-extrabold text-[#08743A]">
+                      {lang === 'am'
+                        ? `የቢንጎ ካርድ መምረጫ (1–600)`
+                        : `Select Your Bingo Cards (1–600)`}
+                    </h2>
+                    <span className="px-2.5 py-0.5 rounded-full bg-[#E6F6EB] border border-[#159447]/30 text-xs font-extrabold text-[#08743A]">
+                      {selectedCardIds.length} / {DEFAULT_GAME_RULES.maxCardsPerPlayer}{' '}
+                      {lang === 'am' ? 'ተመርጧል' : 'Selected'}
+                    </span>
+                  </div>
+                  <p className="text-xs sm:text-sm text-[#68776D] mt-0.5">
                     {isCardsLocked
                       ? lang === 'am'
                         ? '60 ሰከንዱ አልቋል — ይህ ዙር እስኪያልቅ ድረስ ካርድ መምረጥ አይቻልም'
-                        : '60s closed — cards are locked until this round ends'
+                        : '60s window closed — cards are locked until this round finishes'
                       : lang === 'am'
-                      ? 'የሚፈልጉትን ካርድ ቁጥር ይንኩ (እስከ 4 ካርዶች)'
-                      : 'Tap any card number below to choose (up to 4 cards)'}
+                        ? 'የሚፈልጉትን ነጭ የካርድ ቁጥር ይንኩ (አረንጓዴ = የተመረጠ፣ ወርቃማ = ልዩ ዕድለኛ ቁጥር)'
+                        : 'Tap any white number tile below to reserve (Emerald = Selected, Gold = Lucky Milestone)'}
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2 w-full sm:w-auto">
-                  <div className="relative flex-1 sm:w-44">
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                  <div className="relative flex-1 sm:w-48">
                     <Search
-                      size={14}
-                      className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500"
+                      size={15}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-[#68776D]"
                     />
                     <input
                       type="search"
                       value={homeCardSearch}
                       onChange={(e) => setHomeCardSearch(e.target.value)}
-                      placeholder={lang === 'am' ? 'ካርድ ፈልግ...' : 'Search card...'}
+                      placeholder={lang === 'am' ? 'ካርድ ቁጥር ፈልግ (1-600)...' : 'Search card (1-600)...'}
                       aria-label="Search card number 1 to 600"
-                      className="w-full pl-8 pr-2.5 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400 min-h-[40px]"
+                      className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs sm:text-sm font-bold text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447] min-h-[42px]"
                     />
                   </div>
 
                   {selectedCardIds.length < 4 && (
-                    <button
-                      type="button"
+                    <SecondaryButton
+                      size="sm"
                       disabled={isCardsLocked}
                       onClick={() =>
                         selectedCardIds.length === 0
                           ? handleQuickPickCards(1)
                           : handleAddQuickCard()
                       }
-                      className="px-3 py-2 rounded-xl bg-cyan-500/15 border border-cyan-400/30 text-cyan-300 text-xs font-extrabold flex items-center justify-center gap-1.5 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed min-h-[40px] whitespace-nowrap shrink-0"
+                      icon={<Shuffle size={14} className="text-[#159447]" />}
+                      className="shrink-0 min-h-[42px]"
                     >
-                      <Shuffle size={14} />
                       {selectedCardIds.length === 0
                         ? lang === 'am'
                           ? 'ፈጣን ምርጫ'
                           : 'Quick Pick'
                         : lang === 'am'
-                        ? '+ ካርድ ጨምር'
-                        : '+ Add Card'}
-                    </button>
+                          ? '+ ካርድ ጨምር'
+                          : '+ Add Card'}
+                    </SecondaryButton>
                   )}
                 </div>
               </div>
 
+              {/* Legend Strip */}
+              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-2xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-bold text-[#68776D]">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-3.5 h-3.5 rounded-md bg-white border border-[#E7EDE8] inline-block" />
+                    {lang === 'am' ? 'ክፍት' : 'Available'}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-[#08743A]">
+                    <span className="w-3.5 h-3.5 rounded-md bg-[#159447] inline-block" />
+                    {lang === 'am' ? 'የእርስዎ ምርጫ' : 'Your Selection'}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-[#9A6B0B]">
+                    <span className="w-3.5 h-3.5 rounded-md bg-[#FEF5DC] border border-[#F5BD42] inline-block" />
+                    {lang === 'am' ? 'ወርቃማ ዕድል' : 'Lucky Gold'}
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 text-[#D94B4B]">
+                    <span className="w-3.5 h-3.5 rounded-md bg-[#FFF4F4] border border-[#D94B4B]/40 inline-block" />
+                    {lang === 'am' ? 'የተያዘ' : 'Reserved'}
+                  </span>
+                </div>
+                <span className="text-[#183326] font-extrabold">
+                  {cardPrice} ETB / {lang === 'am' ? 'ካርድ' : 'card'}
+                </span>
+              </div>
+
               {isCardsLocked && (
-                <div className="rounded-xl bg-rose-500/10 border border-rose-400/30 px-3 py-2.5 text-xs text-rose-200 flex items-center justify-between gap-2">
+                <div className="rounded-2xl bg-[#FFF5F5] border border-[#D94B4B]/35 px-3.5 py-2.5 text-xs font-bold text-[#D94B4B] flex items-center justify-between gap-2">
                   <span>
                     {activeRoom.status === 'completed'
                       ? lang === 'am'
                         ? 'ዙሩ ተጠናቋል — አዲስ የ60 ሰከንድ ዙር በጥቂት ሰከንዶች ውስጥ ይጀምራል።'
                         : 'Round completed — a fresh 60s card window starts automatically in seconds.'
                       : lang === 'am'
-                      ? 'ጨዋታው ቀጥታ እየተካሄደ ነው — ዙሩ እስኪያልቅ ካርዶች ተቆልፈዋል።'
-                      : 'Live round in progress — cards are locked until this round finishes.'}
+                        ? 'ጨዋታው ቀጥታ እየተካሄደ ነው — ዙሩ እስኪያልቅ ካርዶች ተቆልፈዋል።'
+                        : 'Live round in progress — cards are locked until this round finishes.'}
                   </span>
                 </div>
               )}
 
-              <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-12 gap-1.5 max-h-[260px] sm:max-h-[360px] overflow-y-auto overscroll-contain p-0.5">
-                {(homeCardSearch.trim()
-                  ? ALL_CARD_NUMBERS.filter((id) => String(id).includes(homeCardSearch.trim()))
-                  : ALL_CARD_NUMBERS
-                ).map((cardNum) => {
-                  const isSelected = selectedCardIds.includes(cardNum);
-                  const isTaken = activeRoom.takenCardIds.includes(cardNum);
-                  return (
-                    <button
-                      key={cardNum}
-                      type="button"
-                      disabled={isTaken || isCardsLocked}
-                      onClick={() => handleToggleCardId(cardNum)}
-                      aria-label={`Card ${cardNum}${isSelected ? ' selected' : isTaken ? ' taken' : isCardsLocked ? ' locked' : ''}`}
-                      className={`min-h-[40px] h-10 rounded-lg font-['Outfit'] text-xs font-bold tabular-nums transition-all flex items-center justify-center ${
-                        isSelected
-                          ? 'bg-[#22d3ee] text-[#041423] ring-2 ring-[#facc15]'
-                          : isTaken
-                            ? 'bg-slate-800/70 text-slate-600 line-through cursor-not-allowed'
-                            : isCardsLocked
-                              ? 'bg-[#14223b]/50 text-slate-500 border border-slate-800 cursor-not-allowed opacity-60'
-                              : 'bg-[#14223b] text-slate-200 border border-slate-700 hover:border-cyan-400'
-                      }`}
-                    >
-                      {cardNum}
-                    </button>
-                  );
-                })}
+              {/* Warm Cream Container with Rounded White/Emerald/Gold Number Tiles */}
+              <div className="rounded-2xl bg-[#FFF9ED] border border-[#E7EDE8] p-2.5 sm:p-3">
+                <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12 gap-2 max-h-[300px] sm:max-h-[380px] overflow-y-auto overscroll-contain pr-1">
+                  {(homeCardSearch.trim()
+                    ? ALL_CARD_NUMBERS.filter((id) => String(id).includes(homeCardSearch.trim()))
+                    : ALL_CARD_NUMBERS
+                  ).map((cardNum) => {
+                    const isSelected = selectedCardIds.includes(cardNum);
+                    const isTaken = activeRoom.takenCardIds.includes(cardNum);
+                    const isSpecialGold = cardNum % 25 === 0 || cardNum === 1 || cardNum === 77;
+                    return (
+                      <BingoNumberTile
+                        key={cardNum}
+                        cardNumber={cardNum}
+                        isSelected={isSelected}
+                        isTakenByOther={isTaken}
+                        isSpecialGold={isSpecialGold}
+                        disabled={isCardsLocked}
+                        onSelect={handleToggleCardId}
+                        size="md"
+                      />
+                    );
+                  })}
+                </div>
               </div>
 
+              {/* Selected Cards Preview & Confirmation Strip */}
               {selectedCardIds.length > 0 && (
-                <div className="space-y-2 pt-2 border-t border-slate-800/80">
-                  <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-[#091221] border border-cyan-400/30 text-[11px]">
-                    <span className="text-slate-300">
-                      {lang === 'am' ? 'የተመረጡ ካርዶች፦' : 'Your Cards:'}{' '}
-                      <b className="text-cyan-300 font-mono">
-                        {selectedCardIds.join(', ')}
-                      </b>
+                <div className="space-y-3 pt-3 border-t border-[#E7EDE8]">
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-2xl bg-[#E6F6EB] border border-[#159447]/30 text-xs">
+                    <span className="text-[#183326] font-bold">
+                      {lang === 'am' ? 'የተመረጡ ካርዶች፦' : 'Your Selected Cards:'}{' '}
+                      <b className="text-[#08743A] font-mono text-sm">
+                        #{selectedCardIds.join(', #')}
+                      </b>{' '}
+                      <span className="text-[#68776D]">
+                        ({(selectedCardIds.length * cardPrice).toFixed(2)} ETB)
+                      </span>
                     </span>
-                    {!isCardsLocked && (
-                      <button
-                        type="button"
-                        onClick={handleClearSelectedCards}
-                        className="text-rose-400 font-bold hover:underline"
+                    <div className="flex items-center gap-3">
+                      {!isCardsLocked && (
+                        <button
+                          type="button"
+                          onClick={handleClearSelectedCards}
+                          className="text-[#D94B4B] font-extrabold hover:underline"
+                        >
+                          {lang === 'am' ? 'ሁሉንም አጽዳ' : 'Clear All'}
+                        </button>
+                      )}
+                      <PrimaryButton
+                        size="sm"
+                        variant="emerald"
+                        onClick={handleEnterLiveGame}
+                        icon={<Play size={14} className="fill-current" />}
                       >
-                        {lang === 'am' ? 'አጽዳ' : 'Clear'}
-                      </button>
-                    )}
+                        {lang === 'am' ? 'ወደ ጨዋታ ቀጥል' : 'Confirm & Play'}
+                      </PrimaryButton>
+                    </div>
                   </div>
 
-                  {/* Small selected 5x5 cards displayed below the 1–600 grid */}
+                  {/* Live 5x5 Previews of Selected Cards */}
                   <div
-                    className={`grid gap-2 ${
+                    className={`grid gap-3 ${
                       playerCards.length === 1
-                        ? 'grid-cols-1 max-w-[165px]'
-                        : 'grid-cols-2 sm:grid-cols-4 max-w-[560px]'
+                        ? 'grid-cols-1 max-w-[230px]'
+                        : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
                     }`}
                   >
                     {playerCards.map((card) => (
@@ -2020,6 +2122,24 @@ export default function App() {
                 </div>
               )}
             </section>
+
+            {/* 3. Referral & Rewards Banner Card */}
+            <RewardCard
+              title={
+                lang === 'am'
+                  ? 'ጓደኞችዎን ይጋብዙ — ለእያንዳንዱ ጓደኛ +20 ብር ያግኙ!'
+                  : 'Invite Friends & Earn +20 ETB Instant Bonus!'
+              }
+              badge={lang === 'am' ? 'የጓደኛ ሽልማት' : 'Referral Rewards'}
+              rewardHighlight="+20 ETB / Friend"
+              description={
+                lang === 'am'
+                  ? `የእርስዎ መጋበዣ ኮድ ${referralCode} ነው። ጓደኞችዎ በሊንክዎ ሲገቡ ተመሳሳይ ውብ የADEYBINGO ገጽታ ያገኛሉ እንዲሁም ሁለታችሁም ቦነስ ታገኛላችሁ!`
+                  : `Your personal invite code is ${referralCode}. Every invited friend gets the exact same bright ADEYBINGO experience plus welcome & referral bonuses!`
+              }
+              actionLabel={lang === 'am' ? 'ጓደኛ ጋብዝ (+20 ብር)' : 'Invite Friends (+20 ETB)'}
+              onAction={() => setScreen('referral')}
+            />
           </div>
         )}
 
@@ -2158,54 +2278,8 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Compact 4-Tab Player Bottom Navigation Bar */}
-      <nav className="bottom-nav" aria-label="Primary Bottom Navigation">
-        <button
-          type="button"
-          className={
-            screen === 'home' || screen === 'lobby' || screen === 'cards' || screen === 'game'
-              ? 'selected'
-              : ''
-          }
-          onClick={() => setScreen('home')}
-        >
-          <Home size={16} />
-          <span>{copy.navHome}</span>
-        </button>
-        <button
-          type="button"
-          className={screen === 'leaderboard' ? 'selected' : ''}
-          onClick={() => setScreen('leaderboard')}
-        >
-          <Trophy size={16} />
-          <span>{copy.navRank}</span>
-        </button>
-        <button
-          type="button"
-          className={
-            screen === 'profile' ||
-            screen === 'referral' ||
-            screen === 'support' ||
-            screen === 'terms'
-              ? 'selected'
-              : ''
-          }
-          onClick={() => setScreen('profile')}
-        >
-          <UserIcon size={16} />
-          <span>{copy.navProfile}</span>
-        </button>
-        <button
-          type="button"
-          className={
-            screen === 'wallet' || screen === 'deposit' || screen === 'withdraw' ? 'selected' : ''
-          }
-          onClick={() => setScreen('wallet')}
-        >
-          <Wallet size={16} />
-          <span>{copy.navWallet}</span>
-        </button>
-      </nav>
+      {/* Standardized Global Bottom Navigation */}
+      <BottomNavigation screen={screen} lang={lang} onNavigate={setScreen} />
 
       <footer className="adey-footer">
         <div className="flex flex-wrap items-center justify-center gap-3">

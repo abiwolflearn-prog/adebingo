@@ -20,14 +20,14 @@ interface WinnerModalProps {
 }
 
 const CELEBRATION_COLORS = [
-  '#facc15', // Gold
-  '#22d3ee', // Cyan
-  '#34d399', // Emerald
-  '#f59e0b', // Amber
-  '#38bdf8', // Sky
+  '#F5BD42', // Gold
+  '#159447', // Primary Emerald
+  '#34d399', // Bright Mint
+  '#D99B20', // Dark Gold
+  '#2563eb', // Royal Blue
   '#fde047', // Bright Yellow
-  '#f472b6', // Pink Spark
-  '#a78bfa', // Violet Spark
+  '#f97316', // Coral Orange
+  '#e11d48', // Rose Spark
 ];
 
 const CONFETTI_PARTICLES = Array.from({ length: 42 }, (_, idx) => {
@@ -59,11 +59,11 @@ const RADIAL_BURST_SPARKS = Array.from({ length: 24 }, (_, idx) => {
 });
 
 const BINGO_LETTERS = [
-  { letter: 'B', bg: 'from-cyan-400 to-cyan-600', text: 'text-slate-950' },
-  { letter: 'I', bg: 'from-yellow-300 to-amber-500', text: 'text-amber-950' },
-  { letter: 'N', bg: 'from-teal-300 to-emerald-500', text: 'text-emerald-950' },
-  { letter: 'G', bg: 'from-sky-400 to-blue-600', text: 'text-white' },
-  { letter: 'O', bg: 'from-amber-300 to-yellow-500', text: 'text-amber-950' },
+  { letter: 'B', bg: 'from-[#159447] to-[#08743A]', text: 'text-white' },
+  { letter: 'I', bg: 'from-[#F5BD42] to-[#D99B20]', text: 'text-[#183326]' },
+  { letter: 'N', bg: 'from-[#f97316] to-[#c2410c]', text: 'text-white' },
+  { letter: 'G', bg: 'from-[#2563eb] to-[#1d4ed8]', text: 'text-white' },
+  { letter: 'O', bg: 'from-[#e11d48] to-[#9f1239]', text: 'text-white' },
 ];
 
 type ParticleShape = 'ribbon' | 'star' | 'spark' | 'diamond';
@@ -155,7 +155,7 @@ export function WinnerModal({
           y: oy,
           radius: 12,
           maxRadius: Math.min(width, height) * 0.46,
-          color: '#facc15',
+          color: '#F5BD42',
           alpha: 0.9,
           lineWidth: 4,
         });
@@ -164,7 +164,7 @@ export function WinnerModal({
           y: oy,
           radius: 4,
           maxRadius: Math.min(width, height) * 0.34,
-          color: '#22d3ee',
+          color: '#159447',
           alpha: 0.75,
           lineWidth: 2.5,
         });
@@ -207,19 +207,15 @@ export function WinnerModal({
 
   const triggerFullCelebrationSequence = useCallback(() => {
     if (reducedMotion) return;
-    // 1. Immediate center supernova explosion
     spawnExplosion(0.5, 0.42, 110, 'explosion');
-    // 2. Dual side confetti cannons
     const t1 = window.setTimeout(() => {
       spawnExplosion(0.06, 0.86, 55, 'cannon-left');
       spawnExplosion(0.94, 0.86, 55, 'cannon-right');
     }, 240);
-    // 3. Upper-left & upper-right sky firework starbursts
     const t2 = window.setTimeout(() => {
       spawnExplosion(0.24, 0.26, 70, 'explosion');
       spawnExplosion(0.76, 0.26, 70, 'explosion');
     }, 680);
-    // 4. Finale gold & cyan crown burst
     const t3 = window.setTimeout(() => {
       spawnExplosion(0.5, 0.22, 85, 'explosion');
     }, 1250);
@@ -251,7 +247,6 @@ export function WinnerModal({
     ringsRef.current = [];
     const clearInitialSequence = triggerFullCelebrationSequence();
 
-    // Periodic celebratory firework bursts while modal stays open
     const periodicInterval = window.setInterval(() => {
       const rx = 0.2 + Math.random() * 0.6;
       const ry = 0.18 + Math.random() * 0.35;
@@ -262,7 +257,6 @@ export function WinnerModal({
     const renderFrame = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Update & draw shockwave rings
       for (let i = ringsRef.current.length - 1; i >= 0; i--) {
         const ring = ringsRef.current[i];
         ring.radius += (ring.maxRadius - ring.radius) * 0.09 + 2.5;
@@ -283,7 +277,6 @@ export function WinnerModal({
         ctx.restore();
       }
 
-      // Update & draw particles
       for (let i = particlesRef.current.length - 1; i >= 0; i--) {
         const p = particlesRef.current[i];
         p.vx *= p.drag;
@@ -351,7 +344,7 @@ export function WinnerModal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#030712]/85 backdrop-blur-sm overflow-hidden"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#183326]/65 backdrop-blur-sm overflow-hidden"
           role="dialog"
           aria-modal="true"
           aria-labelledby="winner-modal-title"
@@ -434,22 +427,14 @@ export function WinnerModal({
             />
           )}
 
-          {/* Layer 4: Winner Celebration Card */}
+          {/* Layer 4: Bright ADEYBINGO Winner Celebration Card */}
           <motion.div
             initial={{ scale: 0.78, y: 28, opacity: 0 }}
             animate={{ scale: 1, y: 0, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
             transition={{ type: 'spring', stiffness: 250, damping: 18 }}
-            className="relative z-30 w-full max-w-md rounded-3xl bg-gradient-to-b from-[#13233f] via-[#0f1a2e] to-[#091221] border-2 border-[#facc15] p-6 shadow-[0_0_55px_rgba(250,204,21,0.35),0_24px_60px_rgba(0,0,0,0.8)] text-[#f1f5f9] max-h-[90vh] overflow-y-auto"
+            className="relative z-30 w-full max-w-md rounded-3xl bg-gradient-to-b from-[#FFF9ED] via-white to-[#E6F6EB]/55 border-2 border-[#F5BD42] p-6 shadow-[0_24px_60px_rgba(24,51,38,0.35)] text-[#183326] max-h-[90vh] overflow-y-auto"
           >
-            {/* Ambient Radial Gold & Cyan Aura */}
-            <motion.div
-              aria-hidden="true"
-              animate={{ scale: [1, 1.12, 1], opacity: [0.25, 0.45, 0.25] }}
-              transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
-              className="pointer-events-none absolute -top-12 left-1/2 -translate-x-1/2 w-56 h-32 rounded-full bg-gradient-to-r from-[#22d3ee]/30 via-[#facc15]/40 to-[#22d3ee]/30 blur-2xl"
-            />
-
             {/* Staggered Animated B-I-N-G-O Celebration Ribbon */}
             <div className="flex items-center justify-center gap-1.5 mb-3">
               {BINGO_LETTERS.map((item, idx) => (
@@ -463,14 +448,14 @@ export function WinnerModal({
                     repeat: Infinity,
                     repeatDelay: 0.6,
                   }}
-                  className={`w-7 h-7 rounded-lg bg-gradient-to-br ${item.bg} ${item.text} font-['Outfit'] text-sm font-black flex items-center justify-center shadow-md border border-white/30`}
+                  className={`w-7 h-7 rounded-lg bg-gradient-to-br ${item.bg} ${item.text} font-['Outfit'] text-sm font-black flex items-center justify-center shadow-sm`}
                 >
                   {item.letter}
                 </motion.span>
               ))}
             </div>
 
-            {/* Gold Trophy Banner with Pulsing Halo Rings (Tap Trophy to Trigger Extra Particle Burst) */}
+            {/* Gold Trophy Banner with Pulsing Halo Rings */}
             <div
               onClick={() => spawnExplosion(0.5, 0.35, 95, 'explosion')}
               title={lang === 'am' ? 'ለተጨማሪ ርችት ይንኩ' : 'Tap for extra firework burst'}
@@ -480,45 +465,45 @@ export function WinnerModal({
                 aria-hidden="true"
                 animate={{ scale: [1, 1.35, 1], opacity: [0.6, 0, 0.6] }}
                 transition={{ duration: 1.8, repeat: Infinity, ease: 'easeOut' }}
-                className="absolute inset-0 rounded-2xl border-2 border-[#facc15]"
+                className="absolute inset-0 rounded-2xl border-2 border-[#F5BD42]"
               />
               <motion.span
                 aria-hidden="true"
                 animate={{ rotate: 360 }}
                 transition={{ duration: 12, repeat: Infinity, ease: 'linear' }}
-                className="absolute -inset-1.5 rounded-3xl border border-dashed border-[#22d3ee]/60"
+                className="absolute -inset-1.5 rounded-3xl border border-dashed border-[#159447]/60"
               />
               <motion.div
                 animate={{ rotate: [-5, 5, -5], scale: [1, 1.07, 1] }}
                 transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
-                className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-[#fde047] via-[#facc15] to-[#f59e0b] flex items-center justify-center text-[#451a03] shadow-[0_10px_28px_rgba(250,204,21,0.5)]"
+                className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-[#F5BD42] to-[#D99B20] flex items-center justify-center text-[#183326] shadow-[0_10px_28px_rgba(245,189,66,0.45)]"
               >
                 <Trophy size={34} />
               </motion.div>
             </div>
 
             <div className="text-center">
-              <p className="text-xs font-extrabold tracking-widest uppercase text-[#22d3ee] flex items-center justify-center gap-1">
-                <Sparkles size={14} className="animate-spin" />
+              <p className="text-xs font-extrabold tracking-widest uppercase text-[#159447] flex items-center justify-center gap-1">
+                <Sparkles size={14} className="animate-spin text-[#D99B20]" />
                 {lang === 'am' ? 'እንኳን ደስ አለዎት! BINGO!' : 'CONGRATULATIONS! BINGO!'}
-                <Crown size={14} className="text-[#facc15]" />
+                <Crown size={14} className="text-[#D99B20]" />
               </p>
               <motion.h2
                 id="winner-modal-title"
                 initial={{ scale: 0.9 }}
                 animate={{ scale: [1, 1.03, 1] }}
                 transition={{ duration: 1.8, repeat: Infinity }}
-                className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold text-white mt-1 drop-shadow-[0_2px_10px_rgba(250,204,21,0.3)]"
+                className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold text-[#183326] mt-1"
               >
                 {isShared
                   ? lang === 'am'
                     ? `${winners.length} አሸናፊዎች (ሽልማት ተከፋፍሏል)!`
                     : `${winners.length} Simultaneous Winners!`
                   : lang === 'am'
-                    ? 'ዙሩን አሸንፈዋል!'
-                    : 'Round Winner Confirmed!'}
+                  ? 'ዙሩን አሸንፈዋል!'
+                  : 'Round Winner Confirmed!'}
               </motion.h2>
-              <p className="text-xs text-cyan-200 font-semibold mt-1">
+              <p className="text-xs text-[#08743A] font-extrabold mt-1">
                 {lang === 'am'
                   ? `ካርድ #${winningCard.id} · ${winResult.patternLabelAm}`
                   : `Card #${winningCard.id} · ${winResult.patternLabelEn}`}
@@ -526,43 +511,43 @@ export function WinnerModal({
             </div>
 
             {/* Stats Summary Strip */}
-            <div className="grid grid-cols-3 gap-2 my-4 bg-[#091221] p-3 rounded-2xl border border-[#22d3ee]/30 text-center shadow-inner">
+            <div className="grid grid-cols-3 gap-2 my-4 bg-white p-3 rounded-2xl border border-[#E7EDE8] text-center shadow-xs">
               <motion.div
-                animate={{ scale: [1, 1.05, 1] }}
+                animate={{ scale: [1, 1.04, 1] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
               >
-                <small className="block text-[10px] font-bold text-[#94a3b8] uppercase">
+                <small className="block text-[10px] font-bold text-[#68776D] uppercase">
                   {isShared
                     ? lang === 'am'
                       ? 'የእርስዎ ድርሻ'
                       : 'YOUR SHARE'
                     : lang === 'am'
-                      ? 'የሽልማት ሂሳብ'
-                      : 'PRIZE'}
+                    ? 'የሽልማት ሂሳብ'
+                    : 'PRIZE'}
                 </small>
-                <b className="font-['Outfit'] text-lg font-extrabold text-[#facc15] tabular-nums">
+                <b className="font-['Outfit'] text-lg font-extrabold text-[#D99B20] tabular-nums">
                   +{prizeDemoEtb.toFixed(2)} ETB
                 </b>
               </motion.div>
               <div>
-                <small className="block text-[10px] font-bold text-[#94a3b8] uppercase">
+                <small className="block text-[10px] font-bold text-[#68776D] uppercase">
                   {lang === 'am' ? 'የተጠሩ ቁጥሮች' : 'CALLS'}
                 </small>
-                <b className="font-['Outfit'] text-lg font-extrabold text-[#22d3ee] tabular-nums">
+                <b className="font-['Outfit'] text-lg font-extrabold text-[#159447] tabular-nums">
                   {calledNumbers.length}/75
                 </b>
               </div>
               <div>
-                <small className="block text-[10px] font-bold text-[#94a3b8] uppercase">
+                <small className="block text-[10px] font-bold text-[#68776D] uppercase">
                   {isShared
                     ? lang === 'am'
                       ? 'ጠቅላላ ሽልማት'
                       : 'TOTAL POOL'
                     : lang === 'am'
-                      ? 'አሸናፊ ካርድ'
-                      : 'CARD ID'}
+                    ? 'አሸናፊ ካርድ'
+                    : 'CARD ID'}
                 </small>
-                <b className="font-['Outfit'] text-lg font-extrabold text-white tabular-nums">
+                <b className="font-['Outfit'] text-lg font-extrabold text-[#183326] tabular-nums">
                   {isShared ? `${totalPool.toFixed(0)} ETB` : `#${winningCard.id}`}
                 </b>
               </div>
@@ -570,13 +555,13 @@ export function WinnerModal({
 
             {/* Simultaneous Winners Distribution Breakdown */}
             {winners.length > 0 && (
-              <div className="mb-3 rounded-2xl bg-[#091221] border border-[#1e3252] p-3 space-y-2">
-                <div className="flex items-center justify-between text-[11px] font-extrabold text-cyan-300">
+              <div className="mb-3 rounded-2xl bg-white border border-[#E7EDE8] p-3 space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-extrabold text-[#159447]">
                   <span className="flex items-center gap-1.5">
                     <Users size={13} />
                     {lang === 'am' ? 'የሽልማት ክፍፍል' : 'Payout Distribution'}
                   </span>
-                  <span className="text-slate-400">
+                  <span className="text-[#68776D]">
                     {winners.length} {lang === 'am' ? 'አሸናፊ' : 'winner(s)'}
                   </span>
                 </div>
@@ -584,12 +569,12 @@ export function WinnerModal({
                   {winners.map((w) => (
                     <div
                       key={`${w.uid}-${w.cardId}`}
-                      className="flex items-center justify-between text-xs px-2.5 py-1.5 rounded-lg bg-[#14223b] border border-slate-700/60"
+                      className="flex items-center justify-between text-xs px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]"
                     >
-                      <span className="truncate text-slate-200 font-bold">
+                      <span className="truncate text-[#183326] font-bold">
                         {w.displayName} · {lang === 'am' ? 'ካርድ' : 'Card'} #{w.cardId}
                       </span>
-                      <b className="font-mono text-[#facc15] tabular-nums shrink-0">
+                      <b className="font-mono text-[#08743A] tabular-nums shrink-0">
                         +{w.prizeEtb.toFixed(2)} ETB
                       </b>
                     </div>
@@ -603,7 +588,7 @@ export function WinnerModal({
               initial={{ scale: 0.94, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               transition={{ delay: 0.12 }}
-              className="my-2.5 max-w-[240px] mx-auto rounded-xl ring-2 ring-[#facc15]/60 shadow-[0_0_20px_rgba(250,204,21,0.2)]"
+              className="my-2.5 max-w-[240px] mx-auto rounded-2xl ring-2 ring-[#F5BD42] shadow-[0_8px_22px_rgba(245,189,66,0.25)]"
             >
               <BingoCardView
                 card={winningCard}
@@ -614,8 +599,8 @@ export function WinnerModal({
               />
             </motion.div>
 
-            <div className="flex items-center gap-2 text-[11px] text-[#cbd5e1] bg-[#14223b] border border-[#1e3252] px-3 py-2 rounded-xl mb-4">
-              <CheckCircle2 size={16} className="text-[#22d3ee] shrink-0" />
+            <div className="flex items-center gap-2 text-[11px] text-[#08743A] bg-[#E6F6EB] border border-[#159447]/30 px-3 py-2.5 rounded-xl mb-4 font-semibold">
+              <CheckCircle2 size={16} className="text-[#159447] shrink-0" />
               <span>
                 {lang === 'am'
                   ? 'ቁጥር መጥራት ቆሟል! ሽልማቱ ወደ አሸናፊዎች ሂሳብ ተጨምሯል። አዲስ ዙር ወዲያውኑ ይጀምራል።'
@@ -627,7 +612,7 @@ export function WinnerModal({
               <button
                 type="button"
                 onClick={onClose}
-                className="flex-1 py-3 px-4 rounded-xl border border-[#2a4066] bg-[#14223b] text-[#e2e8f0] text-xs font-extrabold hover:bg-[#1b2e4f] transition-colors"
+                className="flex-1 py-3 px-4 rounded-xl border border-[#E7EDE8] bg-white text-[#183326] text-xs font-extrabold hover:bg-[#E6F6EB] transition-colors"
               >
                 {lang === 'am' ? 'ካርዱን እይ' : 'Inspect Board'}
               </button>
@@ -635,7 +620,7 @@ export function WinnerModal({
                 type="button"
                 data-start="true"
                 onClick={onPlayAgain}
-                className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-[#facc15] to-[#f59e0b] text-[#1e1402] text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-[0_6px_20px_rgba(250,204,21,0.35)] hover:brightness-110 transition-all"
+                className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-[0_6px_20px_rgba(21,148,71,0.3)] hover:brightness-105 transition-all"
               >
                 <RotateCcw size={15} />
                 {lang === 'am' ? 'አዲስ ዙር ጀምር' : 'Next Round'}

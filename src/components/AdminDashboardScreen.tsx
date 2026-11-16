@@ -800,35 +800,35 @@ export function AdminDashboardScreen({
   return (
     <div
       data-testid="admin-dashboard"
-      className="min-h-screen bg-[#070d19] text-[#f1f5f9] pb-16"
+      className="min-h-screen bg-[#FFF9ED] text-[#183326] pb-16"
     >
-      {/* Top Admin Authority Bar (Original ADEYBINGO Deep Navy, Cyan & Gold Theme) */}
-      <header className="sticky top-0 z-30 bg-[#070d19]/95 backdrop-blur-md border-b border-slate-800 px-4 py-3">
+      {/* Top Admin Authority Bar (Unified ADEYBINGO Emerald, Gold & Clean White Theme) */}
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-[#E7EDE8] px-4 py-3 shadow-xs">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={handleExitAdmin}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#14223b] border border-slate-700 text-xs font-extrabold text-cyan-300 hover:border-cyan-400 transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#E6F6EB] border border-[#159447]/30 text-xs font-extrabold text-[#08743A] hover:border-[#159447] transition-colors"
             >
               <ArrowLeft size={14} />
               {lang === 'am' ? 'ወደ ጨዋታ ተመለስ' : 'Back to Player App'}
             </button>
 
             <div className="flex items-center gap-2">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#22d3ee] to-[#facc15] text-[#04101d] flex items-center justify-center font-black shadow-md">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#159447] to-[#08743A] text-white flex items-center justify-center font-black shadow-sm">
                 <Shield size={18} />
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <h1 className="font-['Outfit'] text-base sm:text-lg font-extrabold text-white">
+                  <h1 className="font-['Outfit'] text-base sm:text-lg font-extrabold text-[#183326]">
                     ADEYBINGO Owner Admin Center
                   </h1>
-                  <span className="px-2 py-0.5 rounded-md bg-[#facc15]/15 border border-[#facc15]/40 text-[#fde047] text-[10px] font-extrabold uppercase">
+                  <span className="px-2 py-0.5 rounded-md bg-[#FEF5DC] border border-[#F5BD42] text-[#9A6B0B] text-[10px] font-extrabold uppercase">
                     Owner Only
                   </span>
                 </div>
-                <p className="text-[11px] text-slate-400">
+                <p className="text-[11px] text-[#68776D]">
                   Payouts & Withdrawals · Payment Reference Verification · Protected by Server Allowlist
                 </p>
               </div>
@@ -838,11 +838,11 @@ export function AdminDashboardScreen({
           {/* Authenticated Owner Badge & Refresh */}
           <div className="flex items-center gap-2">
             {actor && authStatus === 'authorized' && (
-              <div className="px-3 py-1.5 rounded-xl bg-[#0f1a2e] border border-cyan-500/30 text-xs flex items-center gap-2">
-                <CheckCircle2 size={14} className="text-[#22d3ee]" />
-                <span className="font-bold text-white">{actor.displayName}</span>
+              <div className="px-3 py-1.5 rounded-xl bg-[#E6F6EB] border border-[#159447]/30 text-xs flex items-center gap-2">
+                <CheckCircle2 size={14} className="text-[#159447]" />
+                <span className="font-bold text-[#183326]">{actor.displayName}</span>
                 {actor.email && (
-                  <span className="font-mono text-[10px] text-cyan-300">({actor.email})</span>
+                  <span className="font-mono text-[10px] text-[#08743A]">({actor.email})</span>
                 )}
               </div>
             )}
@@ -851,7 +851,7 @@ export function AdminDashboardScreen({
               <button
                 type="button"
                 onClick={() => fetchAllAdminData(sessionToken, userSearchQuery, payoutFilter)}
-                className="p-2 rounded-xl bg-[#14223b] border border-slate-700 text-cyan-300 hover:border-cyan-400"
+                className="p-2 rounded-xl bg-white border border-[#E7EDE8] text-[#159447] hover:border-[#159447]"
                 title="Refresh Server State"
               >
                 <RefreshCw size={15} />
@@ -864,15 +864,15 @@ export function AdminDashboardScreen({
       {/* Toast Notification */}
       {bannerToast && (
         <div className="max-w-7xl mx-auto px-4 mt-3">
-          <div className="px-4 py-2.5 rounded-xl bg-[#14223b] border border-[#22d3ee] text-cyan-200 text-xs font-bold flex items-center justify-between shadow-lg">
+          <div className="px-4 py-2.5 rounded-xl bg-white border-2 border-[#159447] text-[#183326] text-xs font-bold flex items-center justify-between shadow-md">
             <span className="flex items-center gap-2">
-              <CheckCircle2 size={15} className="text-[#22d3ee]" />
+              <CheckCircle2 size={15} className="text-[#159447]" />
               {bannerToast}
             </span>
             <button
               type="button"
               onClick={() => setBannerToast(null)}
-              className="text-xs underline text-slate-300"
+              className="text-xs underline text-[#68776D]"
             >
               Dismiss
             </button>
@@ -885,19 +885,19 @@ export function AdminDashboardScreen({
         {authStatus === 'forbidden' && (
           <div
             data-testid="admin-access-denied"
-            className="rounded-3xl bg-[#0f1a2e] border-2 border-rose-500/50 p-8 text-center max-w-xl mx-auto my-8 space-y-4 shadow-2xl"
+            className="rounded-3xl bg-white border-2 border-[#D94B4B]/50 p-8 text-center max-w-xl mx-auto my-8 space-y-4 shadow-lg"
           >
-            <div className="w-14 h-14 rounded-2xl bg-rose-500/20 text-rose-400 flex items-center justify-center mx-auto border border-rose-500/30">
+            <div className="w-14 h-14 rounded-2xl bg-[#FFF5F5] text-[#D94B4B] flex items-center justify-center mx-auto border border-[#D94B4B]/30">
               <Lock size={28} />
             </div>
-            <span className="inline-block px-3 py-1 rounded-md bg-rose-500/20 text-rose-300 text-[11px] font-extrabold uppercase">
+            <span className="inline-block px-3 py-1 rounded-md bg-[#FFF5F5] text-[#D94B4B] text-[11px] font-extrabold uppercase">
               HTTP 403 FORBIDDEN — OWNER ACCESS ONLY
             </span>
-            <h2 className="font-['Outfit'] text-2xl font-extrabold text-white">
+            <h2 className="font-['Outfit'] text-2xl font-extrabold text-[#183326]">
               Administrator Access Restricted
             </h2>
-            <p className="text-xs text-slate-300 leading-relaxed">{authMessage}</p>
-            <div className="p-3 rounded-xl bg-[#091221] border border-slate-800 text-left text-[11px] space-y-1 font-mono text-slate-300">
+            <p className="text-xs text-[#68776D] leading-relaxed">{authMessage}</p>
+            <div className="p-3 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-left text-[11px] space-y-1 font-mono text-[#183326]">
               <div>Actor UID: {actor?.uid || 'unknown'}</div>
               <div>Email: {actor?.email || 'none'}</div>
               <div>Server Verified Role: {actor?.role || 'player'}</div>
@@ -908,7 +908,7 @@ export function AdminDashboardScreen({
                 type="button"
                 onClick={handleGoogleOwnerSignIn}
                 disabled={googleSigningIn}
-                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#22d3ee] to-[#06b6d4] text-[#04101d] text-xs font-extrabold flex items-center gap-1.5"
+                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-xs font-extrabold flex items-center gap-1.5"
               >
                 <LogIn size={14} />
                 Sign in with Owner Google Account
@@ -916,14 +916,14 @@ export function AdminDashboardScreen({
               <button
                 type="button"
                 onClick={() => setAuthStatus('unauthenticated')}
-                className="px-4 py-2.5 rounded-xl bg-[#14223b] border border-slate-700 text-slate-200 text-xs font-extrabold"
+                className="px-4 py-2.5 rounded-xl bg-white border border-[#E7EDE8] text-[#183326] text-xs font-extrabold"
               >
                 Provide Another Credential
               </button>
               <button
                 type="button"
                 onClick={handleExitAdmin}
-                className="px-4 py-2.5 rounded-xl border border-slate-700 text-slate-300 text-xs font-bold"
+                className="px-4 py-2.5 rounded-xl border border-[#E7EDE8] text-[#68776D] text-xs font-bold"
               >
                 Return to Lobby
               </button>
@@ -934,32 +934,32 @@ export function AdminDashboardScreen({
         {authStatus === 'unauthenticated' && (
           <div
             data-testid="admin-auth-gate"
-            className="rounded-3xl bg-[#0f1a2e] border border-slate-700/70 p-8 max-w-xl mx-auto my-8 space-y-5 shadow-2xl"
+            className="rounded-3xl bg-white border border-[#E7EDE8] p-8 max-w-xl mx-auto my-8 space-y-5 shadow-lg"
           >
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-[#facc15]/15 border border-[#facc15]/40 text-[#facc15] flex items-center justify-center shrink-0">
+              <div className="w-12 h-12 rounded-2xl bg-[#FEF5DC] border border-[#F5BD42] text-[#D99B20] flex items-center justify-center shrink-0">
                 <Lock size={24} />
               </div>
               <div>
-                <span className="inline-block px-2.5 py-0.5 rounded-md bg-cyan-500/15 text-cyan-300 text-[10px] font-extrabold uppercase">
+                <span className="inline-block px-2.5 py-0.5 rounded-md bg-[#E6F6EB] text-[#08743A] text-[10px] font-extrabold uppercase">
                   OWNER AUTHENTICATION GATE
                 </span>
-                <h2 className="font-['Outfit'] text-xl font-extrabold text-white mt-0.5">
+                <h2 className="font-['Outfit'] text-xl font-extrabold text-[#183326] mt-0.5">
                   Owner-Only Admin Management
                 </h2>
               </div>
             </div>
 
-            <p className="text-xs text-slate-300 leading-relaxed">
+            <p className="text-xs text-[#68776D] leading-relaxed">
               This panel is strictly locked to the game owner. Players cannot view or access Payouts,
               Withdrawals, or Payment Verification. Sign in with your authorized Google account or
               exchange a verified Telegram/Firebase token.
             </p>
 
             {/* One-Click Owner Access & Google Sign-In */}
-            <div className="p-4 rounded-2xl bg-[#091221] border border-cyan-500/30 space-y-2.5">
-              <div className="text-xs font-extrabold text-cyan-300 flex items-center gap-1.5">
-                <Shield size={14} />
+            <div className="p-4 rounded-2xl bg-[#FFF9ED] border border-[#159447]/30 space-y-2.5">
+              <div className="text-xs font-extrabold text-[#08743A] flex items-center gap-1.5">
+                <Shield size={14} className="text-[#159447]" />
                 Owner Quick Unlock (abiwolfcode@gmail.com)
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
@@ -968,7 +968,7 @@ export function AdminDashboardScreen({
                   data-testid="owner-quick-unlock-btn"
                   onClick={handleOwnerQuickUnlock}
                   disabled={googleSigningIn}
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#facc15] to-[#f59e0b] text-[#1e1402] text-xs font-extrabold flex items-center justify-center gap-2 shadow-md hover:brightness-105 disabled:opacity-50"
+                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#F5BD42] to-[#D99B20] text-[#183326] text-xs font-extrabold flex items-center justify-center gap-2 shadow-sm hover:brightness-105 disabled:opacity-50"
                 >
                   <Shield size={15} />
                   {googleSigningIn ? 'Unlocking...' : 'Open Owner Dashboard Now'}
@@ -977,7 +977,7 @@ export function AdminDashboardScreen({
                   type="button"
                   onClick={handleGoogleOwnerSignIn}
                   disabled={googleSigningIn}
-                  className="w-full py-3 px-4 rounded-xl bg-[#14223b] border border-cyan-400/40 text-cyan-200 text-xs font-extrabold flex items-center justify-center gap-2 hover:border-cyan-400 disabled:opacity-50"
+                  className="w-full py-3 px-4 rounded-xl bg-white border border-[#159447]/40 text-[#08743A] text-xs font-extrabold flex items-center justify-center gap-2 hover:border-[#159447] disabled:opacity-50"
                 >
                   <LogIn size={15} />
                   Sign In with Google Popup
@@ -988,14 +988,14 @@ export function AdminDashboardScreen({
             {authMessage && (
               <div
                 data-testid="admin-auth-error"
-                className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/40 text-xs text-rose-300 font-semibold"
+                className="p-3 rounded-xl bg-[#FFF5F5] border border-[#D94B4B]/40 text-xs text-[#D94B4B] font-semibold"
               >
                 {authMessage}
               </div>
             )}
 
-            <div className="space-y-2 pt-2 border-t border-slate-800">
-              <label className="block text-[11px] font-extrabold text-slate-300">
+            <div className="space-y-2 pt-2 border-t border-[#E7EDE8]">
+              <label className="block text-[11px] font-extrabold text-[#183326]">
                 Or Paste Telegram WebApp initData / Firebase ID Token / Session Token
               </label>
               <textarea
@@ -1004,7 +1004,7 @@ export function AdminDashboardScreen({
                 value={rawTokenInput}
                 onChange={(e) => setRawTokenInput(e.target.value)}
                 placeholder="Paste signed Telegram initData (user=...&hash=...) or Bearer token..."
-                className="w-full px-3 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs font-mono text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                className="w-full px-3 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-mono text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447]"
               />
             </div>
 
@@ -1013,14 +1013,14 @@ export function AdminDashboardScreen({
                 type="button"
                 data-testid="admin-authenticate-btn"
                 onClick={() => authenticateWithCredential(rawTokenInput)}
-                className="px-5 py-2.5 rounded-xl bg-[#22d3ee] text-[#04101d] text-xs font-extrabold hover:brightness-110 transition-all"
+                className="px-5 py-2.5 rounded-xl bg-[#159447] text-white text-xs font-extrabold hover:bg-[#08743A] transition-all"
               >
                 Verify & Authenticate Session
               </button>
               <button
                 type="button"
                 onClick={handleExitAdmin}
-                className="px-4 py-2.5 rounded-xl border border-slate-700 bg-[#14223b] text-slate-200 text-xs font-bold"
+                className="px-4 py-2.5 rounded-xl border border-[#E7EDE8] bg-white text-[#183326] text-xs font-bold"
               >
                 Back to Game Lobby
               </button>
@@ -1033,7 +1033,7 @@ export function AdminDashboardScreen({
             {/* 9-Section Navigation Strip (Mobile-First Touch Scroll) */}
             <nav
               aria-label="Admin sections"
-              className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-2 border-b border-slate-800"
+              className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-2 border-b border-[#E7EDE8]"
             >
               {navItems.map((item) => {
                 const Icon = item.icon;
@@ -1046,8 +1046,8 @@ export function AdminDashboardScreen({
                     onClick={() => setActiveTab(item.id)}
                     className={`px-3.5 py-2 min-h-[40px] rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5 transition-all shrink-0 ${
                       active
-                        ? 'bg-[#22d3ee] text-[#04101d] shadow-[0_0_16px_rgba(34,211,238,0.35)]'
-                        : 'bg-[#0f1a2e] border border-slate-800 text-slate-300 hover:border-cyan-400/50 hover:text-white'
+                        ? 'bg-[#159447] text-white shadow-[0_4px_12px_rgba(21,148,71,0.28)]'
+                        : 'bg-white border border-[#E7EDE8] text-[#68776D] hover:border-[#159447]/50 hover:text-[#183326]'
                     }`}
                   >
                     <Icon size={14} />
@@ -1061,56 +1061,56 @@ export function AdminDashboardScreen({
             {activeTab === 'overview' && overview && (
               <section data-testid="admin-overview-section" className="space-y-4 sm:space-y-5">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  <div className="p-4 rounded-2xl bg-[#0f1a2e] border border-slate-800">
-                    <span className="text-[11px] font-bold text-slate-400 uppercase">
+                  <div className="p-4 rounded-2xl bg-white border border-[#E7EDE8] shadow-xs">
+                    <span className="text-[11px] font-bold text-[#68776D] uppercase">
                       Total Players
                     </span>
-                    <b className="block font-['Outfit'] text-2xl font-extrabold text-white mt-1">
+                    <b className="block font-['Outfit'] text-2xl font-extrabold text-[#183326] mt-1">
                       {overview.totalUsers}
                     </b>
-                    <span className="text-[11px] text-cyan-300 font-semibold">
+                    <span className="text-[11px] text-[#159447] font-semibold">
                       {overview.activeUsers} active · {overview.suspendedUsers} suspended
                     </span>
                   </div>
 
                   <div
                     onClick={() => setActiveTab('payouts')}
-                    className="p-4 rounded-2xl bg-[#0f1a2e] border border-[#facc15]/40 cursor-pointer hover:border-[#facc15] transition-colors"
+                    className="p-4 rounded-2xl bg-white border border-[#F5BD42] cursor-pointer hover:border-[#D99B20] transition-colors shadow-xs"
                   >
-                    <span className="text-[11px] font-bold text-[#fde047] uppercase">
+                    <span className="text-[11px] font-bold text-[#9A6B0B] uppercase">
                       Player Withdrawals / Payouts
                     </span>
-                    <b className="block font-['Outfit'] text-2xl font-extrabold text-[#facc15] mt-1">
+                    <b className="block font-['Outfit'] text-2xl font-extrabold text-[#D99B20] mt-1">
                       {overview.payoutCounts.Pending + overview.payoutCounts['Under Review']} Pending
                     </b>
-                    <span className="text-[11px] text-slate-300">
+                    <span className="text-[11px] text-[#68776D]">
                       {overview.payoutCounts.Completed} completed · {overview.payoutCounts.total} total
                     </span>
                   </div>
 
                   <div
                     onClick={() => setActiveTab('deposits')}
-                    className="p-4 rounded-2xl bg-[#0f1a2e] border border-cyan-500/40 cursor-pointer hover:border-cyan-400 transition-colors"
+                    className="p-4 rounded-2xl bg-white border border-[#159447]/40 cursor-pointer hover:border-[#159447] transition-colors shadow-xs"
                   >
-                    <span className="text-[11px] font-bold text-cyan-300 uppercase">
+                    <span className="text-[11px] font-bold text-[#08743A] uppercase">
                       Payment Verifications
                     </span>
-                    <b className="block font-['Outfit'] text-2xl font-extrabold text-[#22d3ee] mt-1">
+                    <b className="block font-['Outfit'] text-2xl font-extrabold text-[#159447] mt-1">
                       {overview.depositCounts.Pending} Awaiting Verify
                     </b>
-                    <span className="text-[11px] text-slate-300">
+                    <span className="text-[11px] text-[#68776D]">
                       {overview.depositCounts.Approved} verified & credited
                     </span>
                   </div>
 
-                  <div className="p-4 rounded-2xl bg-[#0f1a2e] border border-slate-800">
-                    <span className="text-[11px] font-bold text-slate-400 uppercase">
+                  <div className="p-4 rounded-2xl bg-white border border-[#E7EDE8] shadow-xs">
+                    <span className="text-[11px] font-bold text-[#68776D] uppercase">
                       SHA-256 Audit Chain
                     </span>
-                    <b className="block font-['Outfit'] text-2xl font-extrabold text-emerald-400 mt-1">
+                    <b className="block font-['Outfit'] text-2xl font-extrabold text-[#168A49] mt-1">
                       {overview.auditIntegrity.valid ? 'Verified' : 'Tampered'}
                     </b>
-                    <span className="text-[11px] text-slate-400">
+                    <span className="text-[11px] text-[#68776D]">
                       {overview.auditTrailEntries} immutable log entries
                     </span>
                   </div>
@@ -1118,54 +1118,54 @@ export function AdminDashboardScreen({
 
                 {/* Quick Owner Action Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-5 space-y-2">
+                  <div className="rounded-2xl bg-white border border-[#E7EDE8] p-5 space-y-2 shadow-xs">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-['Outfit'] text-base font-extrabold text-white">
+                      <h3 className="font-['Outfit'] text-base font-extrabold text-[#183326]">
                         Payment Verification Queue
                       </h3>
-                      <ArrowDownCircle size={18} className="text-[#22d3ee]" />
+                      <ArrowDownCircle size={18} className="text-[#159447]" />
                     </div>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-[#68776D]">
                       Inspect Telebirr, CBE Birr, and Chapa reference codes and credit verified
                       player balances in one click.
                     </p>
                     <button
                       type="button"
                       onClick={() => setActiveTab('deposits')}
-                      className="px-4 py-2 rounded-xl bg-[#22d3ee] text-[#04101d] text-xs font-extrabold"
+                      className="px-4 py-2 rounded-xl bg-[#159447] text-white text-xs font-extrabold"
                     >
                       Open Payment Verification ({overview.depositCounts.Pending})
                     </button>
                   </div>
 
-                  <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-5 space-y-2">
+                  <div className="rounded-2xl bg-white border border-[#E7EDE8] p-5 space-y-2 shadow-xs">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-['Outfit'] text-base font-extrabold text-white">
+                      <h3 className="font-['Outfit'] text-base font-extrabold text-[#183326]">
                         Players Payout & Withdrawals
                       </h3>
-                      <Wallet size={18} className="text-[#facc15]" />
+                      <Wallet size={18} className="text-[#D99B20]" />
                     </div>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-[#68776D]">
                       Review player withdrawal requests, verify destination numbers, mark payouts
                       Completed, or Reject & auto-refund.
                     </p>
                     <button
                       type="button"
                       onClick={() => setActiveTab('payouts')}
-                      className="px-4 py-2 rounded-xl bg-[#facc15] text-[#1e1402] text-xs font-extrabold"
+                      className="px-4 py-2 rounded-xl bg-[#F5BD42] text-[#183326] text-xs font-extrabold"
                     >
                       Manage Withdrawals ({overview.payoutCounts.Pending})
                     </button>
                   </div>
 
-                  <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-5 space-y-2">
+                  <div className="rounded-2xl bg-white border border-[#E7EDE8] p-5 space-y-2 shadow-xs">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-['Outfit'] text-base font-extrabold text-white">
+                      <h3 className="font-['Outfit'] text-base font-extrabold text-[#183326]">
                         Player Wallets & Round Control
                       </h3>
-                      <Users size={18} className="text-emerald-400" />
+                      <Users size={18} className="text-[#159447]" />
                     </div>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-[#68776D]">
                       Directly credit/debit player balances, inspect transaction ledgers, or force
                       start/reset live Bingo rounds.
                     </p>
@@ -1173,14 +1173,14 @@ export function AdminDashboardScreen({
                       <button
                         type="button"
                         onClick={() => setActiveTab('users')}
-                        className="px-3.5 py-2 rounded-xl bg-[#14223b] border border-slate-700 text-cyan-300 text-xs font-extrabold"
+                        className="px-3.5 py-2 rounded-xl bg-[#E6F6EB] border border-[#159447]/30 text-[#08743A] text-xs font-extrabold"
                       >
                         Manage Players
                       </button>
                       <button
                         type="button"
                         onClick={() => setActiveTab('rooms')}
-                        className="px-3.5 py-2 rounded-xl bg-[#14223b] border border-slate-700 text-[#facc15] text-xs font-extrabold"
+                        className="px-3.5 py-2 rounded-xl bg-[#FEF5DC] border border-[#F5BD42] text-[#9A6B0B] text-xs font-extrabold"
                       >
                         Live Rooms
                       </button>
@@ -1193,12 +1193,12 @@ export function AdminDashboardScreen({
             {/* SECTION 2: USER MANAGEMENT & DIRECT WALLET CREDIT/DEBIT */}
             {activeTab === 'users' && (
               <section data-testid="admin-users-section" className="space-y-4">
-                <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="rounded-2xl bg-white border border-[#E7EDE8] p-4 flex flex-wrap items-center justify-between gap-3 shadow-xs">
                   <div>
-                    <h2 className="font-['Outfit'] text-lg font-extrabold text-white">
+                    <h2 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
                       Players, Wallet Adjustment & Account Status
                     </h2>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-[#68776D]">
                       Search players, credit/debit ETB balances directly, inspect wallet ledgers, or
                       suspend/reactivate accounts.
                     </p>
@@ -1207,7 +1207,7 @@ export function AdminDashboardScreen({
                   <div className="relative w-full sm:w-72">
                     <Search
                       size={15}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-[#68776D]"
                     />
                     <input
                       type="text"
@@ -1215,7 +1215,7 @@ export function AdminDashboardScreen({
                       value={userSearchQuery}
                       onChange={(e) => setUserSearchQuery(e.target.value)}
                       placeholder="Search name, @handle, Telegram ID..."
-                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447]"
                     />
                   </div>
                 </div>
@@ -1225,18 +1225,18 @@ export function AdminDashboardScreen({
                     <div
                       key={u.uid}
                       data-testid={`admin-user-row-${u.uid}`}
-                      className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4 space-y-3"
+                      className="rounded-2xl bg-white border border-[#E7EDE8] p-4 space-y-3 shadow-xs"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-4">
                         <div className="space-y-1">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <b className="text-sm font-extrabold text-white">{u.displayName}</b>
-                            <span className="text-xs font-mono text-slate-400">@{u.username}</span>
+                            <b className="text-sm font-extrabold text-[#183326]">{u.displayName}</b>
+                            <span className="text-xs font-mono text-[#68776D]">@{u.username}</span>
                             <span
                               className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase ${
                                 u.role === 'admin'
-                                  ? 'bg-[#22d3ee]/20 text-[#22d3ee] border border-[#22d3ee]/40'
-                                  : 'bg-slate-800 text-slate-300'
+                                  ? 'bg-[#E6F6EB] text-[#08743A] border border-[#159447]/40'
+                                  : 'bg-[#FFF9ED] text-[#68776D] border border-[#E7EDE8]'
                               }`}
                             >
                               {u.role}
@@ -1245,24 +1245,24 @@ export function AdminDashboardScreen({
                               data-testid={`admin-user-status-${u.uid}`}
                               className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase ${
                                 u.accountStatus === 'active'
-                                  ? 'bg-emerald-500/20 text-emerald-300'
-                                  : 'bg-rose-500/20 text-rose-300'
+                                  ? 'bg-[#E6F6EB] text-[#168A49]'
+                                  : 'bg-[#FFF5F5] text-[#D94B4B]'
                               }`}
                             >
                               {u.accountStatus}
                             </span>
                           </div>
-                          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                          <div className="flex flex-wrap items-center gap-3 text-xs text-[#68776D]">
                             <span>TG ID: #{u.telegramUserId}</span>
                             <span>·</span>
                             <span>
-                              Phone: <b className="text-slate-200">{u.maskedPhone}</b>{' '}
+                              Phone: <b className="text-[#183326]">{u.maskedPhone}</b>{' '}
                               {u.phoneVerified ? '✓' : '(Unverified)'}
                             </span>
                             <span>·</span>
                             <span>
                               Balance:{' '}
-                              <b className="text-[#facc15] font-mono">
+                              <b className="text-[#08743A] font-mono">
                                 {u.demoBalanceEtb.toFixed(2)} ETB
                               </b>
                             </span>
@@ -1272,7 +1272,7 @@ export function AdminDashboardScreen({
                             </span>
                           </div>
                           {u.suspensionReason && (
-                            <p className="text-[11px] text-rose-400 font-semibold">
+                            <p className="text-[11px] text-[#D94B4B] font-semibold">
                               Suspension Note: {u.suspensionReason}
                             </p>
                           )}
@@ -1286,7 +1286,7 @@ export function AdminDashboardScreen({
                                 selectedUserLedger?.uid === u.uid ? null : u
                               )
                             }
-                            className="px-3 py-1.5 rounded-xl bg-[#14223b] border border-slate-700 text-xs font-bold text-cyan-300 hover:border-cyan-400"
+                            className="px-3 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-bold text-[#08743A] hover:border-[#159447]"
                           >
                             {selectedUserLedger?.uid === u.uid
                               ? 'Hide Ledger'
@@ -1305,7 +1305,7 @@ export function AdminDashboardScreen({
                                     [u.uid]: e.target.value,
                                   }))
                                 }
-                                className="flex-1 sm:w-40 px-2.5 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white min-h-[38px]"
+                                className="flex-1 sm:w-40 px-2.5 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs text-[#183326] min-h-[38px]"
                               />
                               <button
                                 type="button"
@@ -1313,8 +1313,8 @@ export function AdminDashboardScreen({
                                 onClick={() => handleToggleUserStatus(u)}
                                 className={`px-3 py-2 min-h-[38px] rounded-xl text-xs font-extrabold flex items-center gap-1 ${
                                   u.accountStatus === 'active'
-                                    ? 'bg-rose-500/20 border border-rose-500/40 text-rose-300 hover:bg-rose-500/30'
-                                    : 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/30'
+                                    ? 'bg-[#FFF5F5] border border-[#D94B4B]/40 text-[#D94B4B] hover:bg-[#D94B4B]/10'
+                                    : 'bg-[#E6F6EB] border border-[#159447]/40 text-[#08743A] hover:bg-[#159447]/20'
                                 }`}
                               >
                                 {u.accountStatus === 'active' ? (
@@ -1333,8 +1333,8 @@ export function AdminDashboardScreen({
                       </div>
 
                       {/* Direct Owner Wallet Credit / Payout Debit Controls (Mobile-First) */}
-                      <div className="pt-2.5 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                        <span className="text-[11px] font-bold text-slate-400">
+                      <div className="pt-2.5 border-t border-[#E7EDE8] flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                        <span className="text-[11px] font-bold text-[#68776D]">
                           Direct Wallet Adjustment (Credit / Payout Debit):
                         </span>
                         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
@@ -1350,7 +1350,7 @@ export function AdminDashboardScreen({
                                 [u.uid]: e.target.value,
                               }))
                             }
-                            className="w-24 sm:w-28 px-2.5 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs font-mono text-white min-h-[38px]"
+                            className="w-24 sm:w-28 px-2.5 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-mono text-[#183326] min-h-[38px]"
                           />
                           <input
                             type="text"
@@ -1362,19 +1362,19 @@ export function AdminDashboardScreen({
                                 [u.uid]: e.target.value,
                               }))
                             }
-                            className="flex-1 min-w-[140px] sm:w-48 px-2.5 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white min-h-[38px]"
+                            className="flex-1 min-w-[140px] sm:w-48 px-2.5 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs text-[#183326] min-h-[38px]"
                           />
                           <button
                             type="button"
                             onClick={() => handleAdjustUserBalance(u, 1)}
-                            className="flex-1 sm:flex-initial justify-center px-3 py-2 min-h-[38px] rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-extrabold flex items-center gap-1 hover:bg-emerald-500/30"
+                            className="flex-1 sm:flex-initial justify-center px-3 py-2 min-h-[38px] rounded-xl bg-[#E6F6EB] border border-[#159447]/40 text-[#08743A] font-extrabold flex items-center gap-1 hover:bg-[#159447]/20"
                           >
                             <PlusCircle size={13} /> +Credit ETB
                           </button>
                           <button
                             type="button"
                             onClick={() => handleAdjustUserBalance(u, -1)}
-                            className="flex-1 sm:flex-initial justify-center px-3 py-2 min-h-[38px] rounded-xl bg-amber-500/20 border border-amber-500/40 text-[#fde047] font-extrabold flex items-center gap-1 hover:bg-amber-500/30"
+                            className="flex-1 sm:flex-initial justify-center px-3 py-2 min-h-[38px] rounded-xl bg-[#FEF5DC] border border-[#F5BD42] text-[#9A6B0B] font-extrabold flex items-center gap-1 hover:bg-[#F5BD42]/40"
                           >
                             <MinusCircle size={13} /> -Debit / Payout
                           </button>
@@ -1382,28 +1382,28 @@ export function AdminDashboardScreen({
                       </div>
 
                       {selectedUserLedger?.uid === u.uid && (
-                        <div className="pt-3 border-t border-slate-800">
-                          <h4 className="text-xs font-extrabold text-cyan-300 mb-2">
+                        <div className="pt-3 border-t border-[#E7EDE8]">
+                          <h4 className="text-xs font-extrabold text-[#08743A] mb-2">
                             Wallet Ledger History — {u.displayName}
                           </h4>
                           {u.walletLedger.length === 0 ? (
-                            <p className="text-xs text-slate-500">No ledger entries recorded.</p>
+                            <p className="text-xs text-[#68776D]">No ledger entries recorded.</p>
                           ) : (
                             <div className="space-y-1.5">
                               {u.walletLedger.map((tx) => (
                                 <div
                                   key={tx.id}
-                                  className="flex items-center justify-between text-xs px-3 py-2 rounded-xl bg-[#091221] border border-slate-800"
+                                  className="flex items-center justify-between text-xs px-3 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]"
                                 >
                                   <div>
-                                    <b className="font-bold text-white">{tx.description}</b>
-                                    <span className="block text-[10px] font-mono text-slate-400">
+                                    <b className="font-bold text-[#183326]">{tx.description}</b>
+                                    <span className="block text-[10px] font-mono text-[#68776D]">
                                       Ref: {tx.reference} · {tx.timestamp}
                                     </span>
                                   </div>
                                   <span
                                     className={`font-mono font-extrabold ${
-                                      tx.amountEtb >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                                      tx.amountEtb >= 0 ? 'text-[#168A49]' : 'text-[#D94B4B]'
                                     }`}
                                   >
                                     {tx.amountEtb >= 0 ? `+${tx.amountEtb}` : tx.amountEtb} ETB
@@ -1423,17 +1423,17 @@ export function AdminDashboardScreen({
             {/* SECTION 3: PLAYERS PAYOUT & WITHDRAWAL MANAGEMENT */}
             {activeTab === 'payouts' && (
               <section data-testid="admin-payouts-section" className="space-y-4">
-                <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="rounded-2xl bg-white border border-[#E7EDE8] p-4 flex flex-wrap items-center justify-between gap-3 shadow-xs">
                   <div>
                     <div className="flex items-center gap-2">
-                      <h2 className="font-['Outfit'] text-lg font-extrabold text-white">
+                      <h2 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
                         Players Payout & Withdrawal Management
                       </h2>
-                      <span className="px-2.5 py-0.5 rounded-md bg-[#facc15]/15 border border-[#facc15]/40 text-[#fde047] text-[10px] font-extrabold uppercase">
+                      <span className="px-2.5 py-0.5 rounded-md bg-[#FEF5DC] border border-[#F5BD42] text-[#9A6B0B] text-[10px] font-extrabold uppercase">
                         Withdrawal Queue
                       </span>
                     </div>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-[#68776D]">
                       Approve, complete, or reject player withdrawal requests. Rejecting a withdrawal
                       automatically refunds the player’s ETB balance.
                     </p>
@@ -1448,8 +1448,8 @@ export function AdminDashboardScreen({
                           onClick={() => setPayoutFilter(st)}
                           className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
                             payoutFilter === st
-                              ? 'bg-[#facc15] text-[#1e1402]'
-                              : 'bg-[#14223b] border border-slate-700 text-slate-300'
+                              ? 'bg-[#F5BD42] text-[#183326]'
+                              : 'bg-[#FFF9ED] border border-[#E7EDE8] text-[#68776D]'
                           }`}
                         >
                           {st}
@@ -1464,40 +1464,40 @@ export function AdminDashboardScreen({
                     <div
                       key={order.requestId}
                       data-testid={`admin-payout-row-${order.requestId}`}
-                      className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4 space-y-3"
+                      className="rounded-2xl bg-white border border-[#E7EDE8] p-4 space-y-3 shadow-xs"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div>
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono text-xs font-extrabold text-cyan-300">
+                            <span className="font-mono text-xs font-extrabold text-[#08743A]">
                               {order.requestId}
                             </span>
-                            <b className="text-sm font-extrabold text-white">
+                            <b className="text-sm font-extrabold text-[#183326]">
                               {order.userDisplayName}
                             </b>
-                            <span className="text-xs text-slate-400">
+                            <span className="text-xs text-[#68776D]">
                               (TG #{order.telegramUserId})
                             </span>
                             <span
                               data-testid={`admin-payout-status-${order.requestId}`}
                               className={`px-2.5 py-0.5 rounded-md text-[10px] font-extrabold uppercase ${
                                 order.status === 'Completed' || order.status === 'Approved'
-                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                  ? 'bg-[#E6F6EB] text-[#168A49] border border-[#159447]/40'
                                   : order.status === 'Rejected'
-                                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                                    : 'bg-[#facc15]/20 text-[#fde047] border border-[#facc15]/40'
+                                    ? 'bg-[#FFF5F5] text-[#D94B4B] border border-[#D94B4B]/40'
+                                    : 'bg-[#FEF5DC] text-[#9A6B0B] border border-[#F5BD42]'
                               }`}
                             >
                               {order.status}
                             </span>
                           </div>
-                          <div className="text-xs text-slate-400 mt-1">
+                          <div className="text-xs text-[#68776D] mt-1">
                             Withdrawal Amount:{' '}
-                            <b className="text-[#facc15] font-mono">
+                            <b className="text-[#D99B20] font-mono">
                               {order.requestedAmountEtb.toFixed(2)} ETB
                             </b>{' '}
-                            · Method: <b className="text-white">{order.paymentMethod}</b> ·
-                            Destination: <b className="text-cyan-300">{order.destinationMasked}</b>{' '}
+                            · Method: <b className="text-[#183326]">{order.paymentMethod}</b> ·
+                            Destination: <b className="text-[#08743A]">{order.destinationMasked}</b>{' '}
                             · Requested: {order.requestDate}
                           </div>
                         </div>
@@ -1509,21 +1509,21 @@ export function AdminDashboardScreen({
                               <button
                                 type="button"
                                 onClick={() => handleUpdatePayoutStatus(order, 'Approved')}
-                                className="px-3 py-2 min-h-[38px] rounded-xl bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-xs font-extrabold hover:bg-cyan-500/30"
+                                className="px-3 py-2 min-h-[38px] rounded-xl bg-[#E6F6EB] border border-[#159447]/40 text-[#08743A] text-xs font-extrabold hover:bg-[#159447]/20"
                               >
                                 Approve
                               </button>
                               <button
                                 type="button"
                                 onClick={() => handleUpdatePayoutStatus(order, 'Completed')}
-                                className="px-3 py-2 min-h-[38px] rounded-xl bg-emerald-500 text-slate-950 text-xs font-extrabold hover:brightness-110"
+                                className="px-3 py-2 min-h-[38px] rounded-xl bg-[#159447] text-white text-xs font-extrabold hover:bg-[#08743A]"
                               >
                                 Mark Paid / Completed
                               </button>
                               <button
                                 type="button"
                                 onClick={() => handleUpdatePayoutStatus(order, 'Rejected')}
-                                className="px-3 py-2 min-h-[38px] rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-extrabold hover:bg-rose-500/30"
+                                className="px-3 py-2 min-h-[38px] rounded-xl bg-[#FFF5F5] border border-[#D94B4B]/40 text-[#D94B4B] text-xs font-extrabold hover:bg-[#D94B4B]/10"
                               >
                                 Reject & Refund
                               </button>
@@ -1540,7 +1540,7 @@ export function AdminDashboardScreen({
                                 [order.requestId]: e.target.value as AdminPayoutOrder['status'],
                               }))
                             }
-                            className="px-3 py-2 min-h-[38px] rounded-xl bg-[#091221] border border-slate-700 text-xs font-bold text-white"
+                            className="px-3 py-2 min-h-[38px] rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-bold text-[#183326]"
                           >
                             <option value="Pending">Pending</option>
                             <option value="Under Review">Under Review</option>
@@ -1560,25 +1560,26 @@ export function AdminDashboardScreen({
                               }))
                             }
                             placeholder="Payout transfer ref / review notes..."
-                            className="flex-1 min-w-[150px] sm:w-52 px-3 py-2 min-h-[38px] rounded-xl bg-[#091221] border border-slate-700 text-xs text-white"
+                            className="flex-1 min-w-[150px] sm:w-52 px-3 py-2 min-h-[38px] rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs text-[#183326]"
                           />
 
                           <button
                             type="button"
                             data-testid={`admin-payout-save-${order.requestId}`}
                             onClick={() => handleUpdatePayoutStatus(order)}
-                            className="w-full sm:w-auto px-3.5 py-2 min-h-[38px] rounded-xl bg-[#22d3ee] text-[#04101d] text-xs font-extrabold hover:brightness-110"
+                            className="w-full sm:w-auto px-3.5 py-2 min-h-[38px] rounded-xl bg-[#159447] text-white text-xs font-extrabold hover:bg-[#08743A]"
                           >
                             Update Status
                           </button>
                         </div>
                       </div>
 
-                      <div className="p-2.5 rounded-xl bg-[#091221] border border-slate-800 text-[11px] space-y-1">
-                        <div className="font-bold text-slate-300">
-                          Review Notes: <span className="font-normal text-slate-400">{order.reviewNotes}</span>
+                      <div className="p-2.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[11px] space-y-1">
+                        <div className="font-bold text-[#183326]">
+                          Review Notes:{' '}
+                          <span className="font-normal text-[#68776D]">{order.reviewNotes}</span>
                           {order.reviewedBy && (
-                            <span className="ml-2 text-cyan-300">
+                            <span className="ml-2 text-[#08743A]">
                               (Reviewed by {order.reviewedBy})
                             </span>
                           )}
@@ -1587,7 +1588,7 @@ export function AdminDashboardScreen({
                           {order.auditTrail.map((tr, i) => (
                             <span
                               key={i}
-                              className="px-2 py-0.5 rounded bg-[#14223b] border border-slate-700 font-mono text-[10px] text-slate-300"
+                              className="px-2 py-0.5 rounded bg-white border border-[#E7EDE8] font-mono text-[10px] text-[#68776D]"
                             >
                               {tr.fromStatus} → {tr.toStatus} ({tr.reviewedBy})
                             </span>
@@ -1603,17 +1604,17 @@ export function AdminDashboardScreen({
             {/* SECTION 4: PAYMENT VERIFICATION & DEPOSIT REQUESTS */}
             {activeTab === 'deposits' && (
               <section data-testid="admin-deposits-section" className="space-y-4">
-                <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="rounded-2xl bg-white border border-[#E7EDE8] p-4 flex flex-wrap items-center justify-between gap-3 shadow-xs">
                   <div>
                     <div className="flex items-center gap-2">
-                      <h2 className="font-['Outfit'] text-lg font-extrabold text-white">
+                      <h2 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
                         Payment Verification & Deposit Approval
                       </h2>
-                      <span className="px-2.5 py-0.5 rounded-md bg-cyan-500/15 border border-cyan-500/40 text-cyan-300 text-[10px] font-extrabold uppercase">
+                      <span className="px-2.5 py-0.5 rounded-md bg-[#E6F6EB] border border-[#159447]/40 text-[#08743A] text-[10px] font-extrabold uppercase">
                         Reference Check
                       </span>
                     </div>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-[#68776D]">
                       Verify player Telebirr, CBE Birr, or Chapa transaction reference codes.
                       Approving a deposit immediately credits the player’s wallet balance.
                     </p>
@@ -1622,14 +1623,14 @@ export function AdminDashboardScreen({
                   <div className="relative w-full sm:w-72">
                     <Search
                       size={15}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-[#68776D]"
                     />
                     <input
                       type="text"
                       value={depositSearchRef}
                       onChange={(e) => setDepositSearchRef(e.target.value)}
                       placeholder="Verify Reference Code (e.g. REF-...)"
-                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs font-mono text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                      className="w-full pl-9 pr-3 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-mono text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447]"
                     />
                   </div>
                 </div>
@@ -1639,39 +1640,39 @@ export function AdminDashboardScreen({
                     <div
                       key={dep.depositId}
                       data-testid={`admin-deposit-row-${dep.depositId}`}
-                      className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4 flex flex-wrap items-center justify-between gap-3"
+                      className="rounded-2xl bg-white border border-[#E7EDE8] p-4 flex flex-wrap items-center justify-between gap-3 shadow-xs"
                     >
                       <div className="space-y-1">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-mono text-xs font-extrabold text-cyan-300">
+                          <span className="font-mono text-xs font-extrabold text-[#08743A]">
                             {dep.depositId}
                           </span>
-                          <b className="text-sm font-extrabold text-white">{dep.userDisplayName}</b>
-                          <span className="px-2 py-0.5 rounded bg-[#14223b] border border-cyan-500/30 font-mono text-xs font-bold text-[#facc15]">
+                          <b className="text-sm font-extrabold text-[#183326]">{dep.userDisplayName}</b>
+                          <span className="px-2 py-0.5 rounded bg-[#FEF5DC] border border-[#F5BD42] font-mono text-xs font-bold text-[#9A6B0B]">
                             Ref: {dep.referenceCode}
                           </span>
                           <span
                             data-testid={`admin-deposit-status-${dep.depositId}`}
                             className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase ${
                               dep.status === 'Approved'
-                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                ? 'bg-[#E6F6EB] text-[#168A49] border border-[#159447]/40'
                                 : dep.status === 'Rejected'
-                                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                                  : 'bg-[#facc15]/20 text-[#fde047] border border-[#facc15]/40'
+                                  ? 'bg-[#FFF5F5] text-[#D94B4B] border border-[#D94B4B]/40'
+                                  : 'bg-[#FEF5DC] text-[#9A6B0B] border border-[#F5BD42]'
                             }`}
                           >
                             {dep.status}
                           </span>
                         </div>
-                        <div className="text-xs text-slate-400">
+                        <div className="text-xs text-[#68776D]">
                           Amount:{' '}
-                          <b className="text-emerald-400 font-mono">
+                          <b className="text-[#168A49] font-mono">
                             +{dep.amountEtb.toFixed(2)} ETB
                           </b>{' '}
-                          · Provider: <b className="text-white">{dep.provider}</b> · Submitted:{' '}
+                          · Provider: <b className="text-[#183326]">{dep.provider}</b> · Submitted:{' '}
                           {dep.requestDate}
                         </div>
-                        <div className="text-[11px] text-slate-400">
+                        <div className="text-[11px] text-[#68776D]">
                           Verification Note: {dep.reviewNotes}
                         </div>
                       </div>
@@ -1687,14 +1688,14 @@ export function AdminDashboardScreen({
                             }))
                           }
                           placeholder="Verification note..."
-                          className="w-full sm:w-48 px-3 py-2 min-h-[38px] rounded-xl bg-[#091221] border border-slate-700 text-xs text-white"
+                          className="w-full sm:w-48 px-3 py-2 min-h-[38px] rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs text-[#183326]"
                         />
                         <button
                           type="button"
                           data-testid={`admin-deposit-approve-${dep.depositId}`}
                           disabled={dep.status !== 'Pending'}
                           onClick={() => handleReviewDeposit(dep, 'Approved')}
-                          className="flex-1 sm:flex-initial justify-center px-3.5 py-2 min-h-[38px] rounded-xl bg-emerald-500 text-slate-950 text-xs font-extrabold disabled:opacity-40 flex items-center gap-1 hover:brightness-110"
+                          className="flex-1 sm:flex-initial justify-center px-3.5 py-2 min-h-[38px] rounded-xl bg-[#159447] text-white text-xs font-extrabold disabled:opacity-40 flex items-center gap-1 hover:bg-[#08743A]"
                         >
                           <CheckCircle2 size={13} /> Verify & Approve
                         </button>
@@ -1703,7 +1704,7 @@ export function AdminDashboardScreen({
                           data-testid={`admin-deposit-reject-${dep.depositId}`}
                           disabled={dep.status !== 'Pending'}
                           onClick={() => handleReviewDeposit(dep, 'Rejected')}
-                          className="flex-1 sm:flex-initial justify-center px-3 py-2 min-h-[38px] rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-extrabold disabled:opacity-40 flex items-center gap-1 hover:bg-rose-500/30"
+                          className="flex-1 sm:flex-initial justify-center px-3 py-2 min-h-[38px] rounded-xl bg-[#FFF5F5] border border-[#D94B4B]/40 text-[#D94B4B] text-xs font-extrabold disabled:opacity-40 flex items-center gap-1 hover:bg-[#D94B4B]/10"
                         >
                           <XCircle size={13} /> Reject
                         </button>
@@ -1717,11 +1718,11 @@ export function AdminDashboardScreen({
             {/* SECTION 5: GAME ROOM MANAGEMENT & LIVE ROUND CONTROL */}
             {activeTab === 'rooms' && (
               <section data-testid="admin-rooms-section" className="space-y-4">
-                <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4">
-                  <h2 className="font-['Outfit'] text-lg font-extrabold text-white">
+                <div className="rounded-2xl bg-white border border-[#E7EDE8] p-4 shadow-xs">
+                  <h2 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
                     Game Room Configuration & Live Round Control
                   </h2>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-[#68776D]">
                     Configure entry card price (ETB), 60-second countdown duration, minimum players,
                     room status, or force-start / reset a live round.
                   </p>
@@ -1739,21 +1740,21 @@ export function AdminDashboardScreen({
                       <div
                         key={room.id}
                         data-testid={`admin-room-card-${room.id}`}
-                        className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4 space-y-3"
+                        className="rounded-2xl bg-white border border-[#E7EDE8] p-4 space-y-3 shadow-xs"
                       >
                         <div className="flex items-center justify-between">
                           <div>
-                            <b className="text-sm font-extrabold text-white block">{room.nameEn}</b>
-                            <span className="text-xs text-cyan-300">{room.nameAm}</span>
+                            <b className="text-sm font-extrabold text-[#183326] block">{room.nameEn}</b>
+                            <span className="text-xs text-[#08743A]">{room.nameAm}</span>
                           </div>
-                          <span className="px-2 py-0.5 rounded-md bg-[#14223b] border border-slate-700 text-slate-300 text-[10px] font-extrabold uppercase">
+                          <span className="px-2 py-0.5 rounded-md bg-[#E6F6EB] border border-[#159447]/30 text-[#08743A] text-[10px] font-extrabold uppercase">
                             {room.status}
                           </span>
                         </div>
 
                         <div className="grid grid-cols-2 gap-2 text-xs">
                           <label className="space-y-1">
-                            <span className="text-[11px] font-bold text-slate-400">
+                            <span className="text-[11px] font-bold text-[#68776D]">
                               Card Price (ETB)
                             </span>
                             <input
@@ -1769,12 +1770,12 @@ export function AdminDashboardScreen({
                                   },
                                 }))
                               }
-                              className="w-full px-2.5 py-1.5 rounded-xl bg-[#091221] border border-slate-700 font-mono text-white"
+                              className="w-full px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] font-mono text-[#183326]"
                             />
                           </label>
 
                           <label className="space-y-1">
-                            <span className="text-[11px] font-bold text-slate-400">
+                            <span className="text-[11px] font-bold text-[#68776D]">
                               Countdown (sec)
                             </span>
                             <input
@@ -1790,12 +1791,12 @@ export function AdminDashboardScreen({
                                   },
                                 }))
                               }
-                              className="w-full px-2.5 py-1.5 rounded-xl bg-[#091221] border border-slate-700 font-mono text-white"
+                              className="w-full px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] font-mono text-[#183326]"
                             />
                           </label>
 
                           <label className="space-y-1">
-                            <span className="text-[11px] font-bold text-slate-400">
+                            <span className="text-[11px] font-bold text-[#68776D]">
                               Min Players
                             </span>
                             <input
@@ -1810,12 +1811,12 @@ export function AdminDashboardScreen({
                                   },
                                 }))
                               }
-                              className="w-full px-2.5 py-1.5 rounded-xl bg-[#091221] border border-slate-700 font-mono text-white"
+                              className="w-full px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] font-mono text-[#183326]"
                             />
                           </label>
 
                           <label className="space-y-1">
-                            <span className="text-[11px] font-bold text-slate-400">Status</span>
+                            <span className="text-[11px] font-bold text-[#68776D]">Status</span>
                             <select
                               value={draft.status}
                               onChange={(e) =>
@@ -1827,7 +1828,7 @@ export function AdminDashboardScreen({
                                   },
                                 }))
                               }
-                              className="w-full px-2.5 py-1.5 rounded-xl bg-[#091221] border border-slate-700 font-bold text-white"
+                              className="w-full px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] font-bold text-[#183326]"
                             >
                               <option value="open">open</option>
                               <option value="starting">starting</option>
@@ -1841,23 +1842,23 @@ export function AdminDashboardScreen({
                           type="button"
                           data-testid={`admin-room-save-${room.id}`}
                           onClick={() => handleSaveRoom(room.id)}
-                          className="w-full py-2 rounded-xl bg-[#22d3ee] text-[#04101d] text-xs font-extrabold hover:brightness-110"
+                          className="w-full py-2 rounded-xl bg-[#159447] text-white text-xs font-extrabold hover:bg-[#08743A]"
                         >
                           Save Room Config
                         </button>
 
-                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-800">
+                        <div className="grid grid-cols-2 gap-2 pt-2 border-t border-[#E7EDE8]">
                           <button
                             type="button"
                             onClick={() => handleRoomRoundAction(room.id, 'force_start')}
-                            className="py-1.5 px-2 rounded-xl bg-[#facc15]/20 border border-[#facc15]/40 text-[#fde047] text-[11px] font-extrabold flex items-center justify-center gap-1 hover:bg-[#facc15]/30"
+                            className="py-1.5 px-2 rounded-xl bg-[#FEF5DC] border border-[#F5BD42] text-[#9A6B0B] text-[11px] font-extrabold flex items-center justify-center gap-1 hover:bg-[#F5BD42]/40"
                           >
                             <Play size={12} /> Force Start
                           </button>
                           <button
                             type="button"
                             onClick={() => handleRoomRoundAction(room.id, 'reset')}
-                            className="py-1.5 px-2 rounded-xl bg-[#14223b] border border-slate-700 text-slate-200 text-[11px] font-extrabold flex items-center justify-center gap-1 hover:border-cyan-400"
+                            className="py-1.5 px-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[#183326] text-[11px] font-extrabold flex items-center justify-center gap-1 hover:border-[#159447]"
                           >
                             <RotateCcw size={12} /> Reset Round
                           </button>
@@ -1872,11 +1873,11 @@ export function AdminDashboardScreen({
             {/* SECTION 6: REFERRAL MANAGEMENT */}
             {activeTab === 'referrals' && (
               <section data-testid="admin-referrals-section" className="space-y-4">
-                <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4">
-                  <h2 className="font-['Outfit'] text-lg font-extrabold text-white">
+                <div className="rounded-2xl bg-white border border-[#E7EDE8] p-4 shadow-xs">
+                  <h2 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
                     Referral Program & Bonus Tracking
                   </h2>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-[#68776D]">
                     Inspect inviter-to-invitee referral links, verification status, and Demo ETB
                     bonuses.
                   </p>
@@ -1886,14 +1887,14 @@ export function AdminDashboardScreen({
                   {referrals.map((ref) => (
                     <div
                       key={ref.id}
-                      className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4 flex flex-wrap items-center justify-between gap-3"
+                      className="rounded-2xl bg-white border border-[#E7EDE8] p-4 flex flex-wrap items-center justify-between gap-3 shadow-xs"
                     >
                       <div>
-                        <b className="text-xs font-extrabold text-white">
+                        <b className="text-xs font-extrabold text-[#183326]">
                           {ref.inviterName} (TG #{ref.inviterTelegramId}) invited {ref.inviteeName} (
                           {ref.inviteeHandle})
                         </b>
-                        <span className="block text-[11px] text-slate-400">
+                        <span className="block text-[11px] text-[#68776D]">
                           Joined: {ref.joinedAt} · Inviter Bonus: +{ref.inviterBonusEtb} ETB ·
                           Invitee Bonus: +{ref.inviteeBonusEtb} ETB
                         </span>
@@ -1901,8 +1902,8 @@ export function AdminDashboardScreen({
                       <span
                         className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold uppercase ${
                           ref.status === 'qualified'
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : 'bg-[#facc15]/20 text-[#fde047]'
+                            ? 'bg-[#E6F6EB] text-[#168A49]'
+                            : 'bg-[#FEF5DC] text-[#9A6B0B]'
                         }`}
                       >
                         {ref.status}
@@ -1918,17 +1919,17 @@ export function AdminDashboardScreen({
               <section data-testid="admin-bot-section" className="space-y-5">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {/* Welcome Message & Button Labels */}
-                  <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-5 space-y-3">
-                    <h3 className="font-['Outfit'] text-base font-extrabold text-white">
+                  <div className="rounded-2xl bg-white border border-[#E7EDE8] p-5 space-y-3 shadow-xs">
+                    <h3 className="font-['Outfit'] text-base font-extrabold text-[#183326]">
                       Telegram Bot Welcome Message & Menu Labels
                     </h3>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-[#68776D]">
                       Customize the bilingual `/start` welcome text and WebApp launch button labels
                       served by the Telegram bot.
                     </p>
 
                     <label className="block space-y-1 text-xs">
-                      <span className="font-bold text-slate-300">
+                      <span className="font-bold text-[#183326]">
                         Custom Amharic Welcome (Optional)
                       </span>
                       <textarea
@@ -1937,12 +1938,12 @@ export function AdminDashboardScreen({
                         value={botWelcomeAmDraft}
                         onChange={(e) => setBotWelcomeAmDraft(e.target.value)}
                         placeholder="Leave blank for default Amharic greeting..."
-                        className="w-full px-3 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white"
+                        className="w-full px-3 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs text-[#183326]"
                       />
                     </label>
 
                     <label className="block space-y-1 text-xs">
-                      <span className="font-bold text-slate-300">
+                      <span className="font-bold text-[#183326]">
                         Custom English Welcome (Optional)
                       </span>
                       <textarea
@@ -1951,27 +1952,27 @@ export function AdminDashboardScreen({
                         value={botWelcomeEnDraft}
                         onChange={(e) => setBotWelcomeEnDraft(e.target.value)}
                         placeholder="Leave blank for default English greeting..."
-                        className="w-full px-3 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white"
+                        className="w-full px-3 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs text-[#183326]"
                       />
                     </label>
 
                     <div className="grid grid-cols-2 gap-2 text-xs">
                       <label className="space-y-1">
-                        <span className="font-bold text-slate-300">Play Button (AM)</span>
+                        <span className="font-bold text-[#183326]">Play Button (AM)</span>
                         <input
                           type="text"
                           value={botPlayLabelAmDraft}
                           onChange={(e) => setBotPlayLabelAmDraft(e.target.value)}
-                          className="w-full px-2.5 py-1.5 rounded-xl bg-[#091221] border border-slate-700 text-white"
+                          className="w-full px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[#183326]"
                         />
                       </label>
                       <label className="space-y-1">
-                        <span className="font-bold text-slate-300">Play Button (EN)</span>
+                        <span className="font-bold text-[#183326]">Play Button (EN)</span>
                         <input
                           type="text"
                           value={botPlayLabelEnDraft}
                           onChange={(e) => setBotPlayLabelEnDraft(e.target.value)}
-                          className="w-full px-2.5 py-1.5 rounded-xl bg-[#091221] border border-slate-700 text-white"
+                          className="w-full px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[#183326]"
                         />
                       </label>
                     </div>
@@ -1980,18 +1981,18 @@ export function AdminDashboardScreen({
                       type="button"
                       data-testid="admin-bot-save-btn"
                       onClick={handleSaveBotConfig}
-                      className="px-4 py-2 rounded-xl bg-[#22d3ee] text-[#04101d] text-xs font-extrabold"
+                      className="px-4 py-2 rounded-xl bg-[#159447] text-white text-xs font-extrabold"
                     >
                       Save Bot Configuration
                     </button>
                   </div>
 
                   {/* Broadcast Announcement */}
-                  <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-5 space-y-3">
-                    <h3 className="font-['Outfit'] text-base font-extrabold text-white">
+                  <div className="rounded-2xl bg-white border border-[#E7EDE8] p-5 space-y-3 shadow-xs">
+                    <h3 className="font-['Outfit'] text-base font-extrabold text-[#183326]">
                       Broadcast Bot Announcement
                     </h3>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-[#68776D]">
                       Send a bilingual announcement to registered Telegram players who have
                       notifications enabled.
                     </p>
@@ -2002,14 +2003,14 @@ export function AdminDashboardScreen({
                         value={announceTitleAm}
                         onChange={(e) => setAnnounceTitleAm(e.target.value)}
                         placeholder="Title (Amharic)"
-                        className="px-2.5 py-1.5 rounded-xl bg-[#091221] border border-slate-700 text-white"
+                        className="px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[#183326]"
                       />
                       <input
                         type="text"
                         value={announceTitleEn}
                         onChange={(e) => setAnnounceTitleEn(e.target.value)}
                         placeholder="Title (English)"
-                        className="px-2.5 py-1.5 rounded-xl bg-[#091221] border border-slate-700 text-white"
+                        className="px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[#183326]"
                       />
                     </div>
 
@@ -2019,7 +2020,7 @@ export function AdminDashboardScreen({
                       value={announceBodyEn}
                       onChange={(e) => setAnnounceBodyEn(e.target.value)}
                       placeholder="Announcement message (English)..."
-                      className="w-full px-3 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white"
+                      className="w-full px-3 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs text-[#183326]"
                     />
 
                     <textarea
@@ -2028,7 +2029,7 @@ export function AdminDashboardScreen({
                       value={announceBodyAm}
                       onChange={(e) => setAnnounceBodyAm(e.target.value)}
                       placeholder="የማስታወቂያ መልዕክት (አማርኛ)..."
-                      className="w-full px-3 py-2 rounded-xl bg-[#091221] border border-slate-700 text-xs text-white"
+                      className="w-full px-3 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs text-[#183326]"
                     />
 
                     <div className="flex items-center justify-between gap-2">
@@ -2039,7 +2040,7 @@ export function AdminDashboardScreen({
                             e.target.value as 'all_players' | 'verified_players'
                           )
                         }
-                        className="px-3 py-1.5 rounded-xl bg-[#091221] border border-slate-700 text-xs font-bold text-white"
+                        className="px-3 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-bold text-[#183326]"
                       >
                         <option value="all_players">All Opted-In Players</option>
                         <option value="verified_players">Verified Phone Players Only</option>
@@ -2049,7 +2050,7 @@ export function AdminDashboardScreen({
                         type="button"
                         data-testid="admin-bot-announce-btn"
                         onClick={handleSendAnnouncement}
-                        className="px-4 py-2 rounded-xl bg-[#facc15] text-[#1e1402] text-xs font-extrabold flex items-center gap-1.5"
+                        className="px-4 py-2 rounded-xl bg-[#F5BD42] text-[#183326] text-xs font-extrabold flex items-center gap-1.5"
                       >
                         <Send size={13} /> Broadcast Now
                       </button>
@@ -2062,12 +2063,12 @@ export function AdminDashboardScreen({
             {/* SECTION 8: NOTIFICATIONS MANAGEMENT */}
             {activeTab === 'notifications' && (
               <section data-testid="admin-notifications-section" className="space-y-4">
-                <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="rounded-2xl bg-white border border-[#E7EDE8] p-4 flex flex-wrap items-center justify-between gap-3 shadow-xs">
                   <div>
-                    <h2 className="font-['Outfit'] text-lg font-extrabold text-white">
+                    <h2 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
                       Bot Notification Outbox & Support Dispatch
                     </h2>
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-[#68776D]">
                       Real-time delivery log for game starts, called numbers, winners, referral
                       rewards, and support responses.
                     </p>
@@ -2077,7 +2078,7 @@ export function AdminDashboardScreen({
                     type="button"
                     data-testid="admin-send-support-notif-btn"
                     onClick={handleSendTestSupportNotification}
-                    className="px-4 py-2 rounded-xl bg-[#22d3ee] text-[#04101d] text-xs font-extrabold flex items-center gap-1.5"
+                    className="px-4 py-2 rounded-xl bg-[#159447] text-white text-xs font-extrabold flex items-center gap-1.5"
                   >
                     <Send size={13} /> Dispatch Support Response
                   </button>
@@ -2087,23 +2088,23 @@ export function AdminDashboardScreen({
                   {notifications.map((n) => (
                     <div
                       key={n.id}
-                      className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-3.5 flex items-center justify-between gap-3 text-xs"
+                      className="rounded-2xl bg-white border border-[#E7EDE8] p-3.5 flex items-center justify-between gap-3 text-xs shadow-xs"
                     >
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-mono text-[10px] font-bold">
+                          <span className="px-2 py-0.5 rounded bg-[#E6F6EB] text-[#08743A] font-mono text-[10px] font-bold">
                             {n.event}
                           </span>
-                          <b className="text-white">{n.title}</b>
-                          <span className="text-slate-400">→ TG #{n.telegramUserId}</span>
+                          <b className="text-[#183326]">{n.title}</b>
+                          <span className="text-[#68776D]">→ TG #{n.telegramUserId}</span>
                         </div>
-                        <p className="text-slate-300 mt-1 whitespace-pre-line">{n.messageText}</p>
+                        <p className="text-[#68776D] mt-1 whitespace-pre-line">{n.messageText}</p>
                       </div>
                       <span
                         className={`px-2 py-0.5 rounded text-[10px] font-extrabold shrink-0 ${
                           n.delivered
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : 'bg-amber-500/20 text-amber-300'
+                            ? 'bg-[#E6F6EB] text-[#168A49]'
+                            : 'bg-[#FEF5DC] text-[#9A6B0B]'
                         }`}
                       >
                         {n.delivered ? 'Delivered' : `Skipped (${n.skippedReason})`}
@@ -2117,20 +2118,20 @@ export function AdminDashboardScreen({
             {/* SECTION 9: ADMIN SETTINGS & IMMUTABLE SHA-256 AUDIT LOG */}
             {activeTab === 'settings' && settingsData && (
               <section data-testid="admin-settings-section" className="space-y-4">
-                <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-5 space-y-3">
+                <div className="rounded-2xl bg-white border border-[#E7EDE8] p-5 space-y-3 shadow-xs">
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div>
-                      <h2 className="font-['Outfit'] text-lg font-extrabold text-white">
+                      <h2 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
                         Security Policies & Immutable SHA-256 Audit Trail
                       </h2>
-                      <p className="text-xs text-slate-400">
+                      <p className="text-xs text-[#68776D]">
                         Admin roles are strictly controlled by server-side allowlists. Every admin
                         action is cryptographically hash-chained.
                       </p>
                     </div>
                     <div
                       data-testid="admin-audit-integrity-badge"
-                      className="px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-extrabold flex items-center gap-1.5"
+                      className="px-3 py-1.5 rounded-xl bg-[#E6F6EB] border border-[#159447]/40 text-[#08743A] text-xs font-extrabold flex items-center gap-1.5"
                     >
                       <FileCheck2 size={15} />
                       SHA-256 Chain Valid ({settingsData.auditChainIntegrity.totalEntries} entries)
@@ -2138,27 +2139,27 @@ export function AdminDashboardScreen({
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                    <div className="p-3 rounded-xl bg-[#091221] border border-slate-800">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                    <div className="p-3 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]">
+                      <span className="text-[10px] font-bold text-[#68776D] uppercase block">
                         Authorized Admin Telegram IDs
                       </span>
-                      <b className="font-mono text-white">
+                      <b className="font-mono text-[#183326]">
                         {settingsData.authorizedAdminTelegramIds.join(', ')}
                       </b>
                     </div>
-                    <div className="p-3 rounded-xl bg-[#091221] border border-slate-800">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                    <div className="p-3 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]">
+                      <span className="text-[10px] font-bold text-[#68776D] uppercase block">
                         Authorized Owner Emails
                       </span>
-                      <b className="font-mono text-cyan-300">
+                      <b className="font-mono text-[#08743A]">
                         {settingsData.authorizedAdminEmails.join(', ')}
                       </b>
                     </div>
-                    <div className="p-3 rounded-xl bg-[#091221] border border-slate-800">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                    <div className="p-3 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]">
+                      <span className="text-[10px] font-bold text-[#68776D] uppercase block">
                         Player Access Isolation
                       </span>
-                      <b className="text-emerald-400">
+                      <b className="text-[#168A49]">
                         Enforced (HTTP 403 for all non-owner accounts)
                       </b>
                     </div>
@@ -2166,8 +2167,8 @@ export function AdminDashboardScreen({
                 </div>
 
                 {/* Audit Trail List */}
-                <div className="rounded-2xl bg-[#0f1a2e] border border-slate-800 p-4 space-y-2.5">
-                  <h3 className="font-['Outfit'] text-sm font-extrabold text-white">
+                <div className="rounded-2xl bg-white border border-[#E7EDE8] p-4 space-y-2.5 shadow-xs">
+                  <h3 className="font-['Outfit'] text-sm font-extrabold text-[#183326]">
                     Immutable Admin Audit Log
                   </h3>
                   <div className="space-y-2">
@@ -2175,27 +2176,27 @@ export function AdminDashboardScreen({
                       <div
                         key={entry.id}
                         data-testid={`admin-audit-entry-${entry.sequence}`}
-                        className="p-3 rounded-xl bg-[#091221] border border-slate-800 text-xs space-y-1"
+                        className="p-3 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs space-y-1"
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
-                            <span className="px-2 py-0.5 rounded bg-[#14223b] border border-cyan-500/30 text-cyan-300 font-mono text-[10px] font-extrabold">
+                            <span className="px-2 py-0.5 rounded bg-[#E6F6EB] border border-[#159447]/30 text-[#08743A] font-mono text-[10px] font-extrabold">
                               #{entry.sequence} · {entry.action}
                             </span>
-                            <b className="text-white">{entry.summary}</b>
+                            <b className="text-[#183326]">{entry.summary}</b>
                           </div>
-                          <span className="text-[11px] text-slate-400">
+                          <span className="text-[11px] text-[#68776D]">
                             By {entry.adminName} · {entry.timestamp}
                           </span>
                         </div>
                         {(entry.previousValue || entry.newValue || entry.notes) && (
-                          <div className="text-[11px] text-slate-400 font-mono">
+                          <div className="text-[11px] text-[#68776D] font-mono">
                             {entry.previousValue ? `Prev: ${entry.previousValue} → ` : ''}
                             {entry.newValue ? `New: ${entry.newValue}` : ''}
                             {entry.notes ? ` · Note: ${entry.notes}` : ''}
                           </div>
                         )}
-                        <div className="text-[10px] font-mono text-slate-500 truncate">
+                        <div className="text-[10px] font-mono text-[#68776D] truncate">
                           SHA-256: {entry.entryHash} (prev: {entry.prevHash.slice(0, 16)}...)
                         </div>
                       </div>

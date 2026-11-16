@@ -2,9 +2,10 @@ import { motion } from 'motion/react';
 import { getLetterForNumber } from '../game/rules';
 import { BingoLetter } from '../types/bingo';
 
-interface BingoBall3DProps {
+export interface BingoBall3DProps {
   number: number;
   size?: 'sm' | 'md' | 'lg' | 'xl';
+  animate?: boolean;
   animateEntry?: boolean;
   reducedMotion?: boolean;
   isRecentHighlight?: boolean;
@@ -15,44 +16,46 @@ const BALL_STYLES: Record<
   { gradient: string; textColor: string; ringColor: string; glow: string }
 > = {
   B: {
-    gradient: 'radial-gradient(circle at 30% 22%, #ffffff, #67e8f9 30%, #0891b2 70%, #083344)',
-    textColor: '#042f40',
-    ringColor: '#cffafe',
-    glow: '0 0 26px rgba(34, 211, 238, 0.45)',
+    gradient: 'radial-gradient(circle at 30% 24%, #ffffff, #6ee7b7 26%, #159447 68%, #08743A)',
+    textColor: '#ffffff',
+    ringColor: '#A7F3D0',
+    glow: '0 8px 22px rgba(21, 148, 71, 0.34)',
   },
   I: {
-    gradient: 'radial-gradient(circle at 30% 22%, #ffffff, #fef08a 30%, #f59e0b 68%, #78350f)',
-    textColor: '#451a03',
-    ringColor: '#fef9c3',
-    glow: '0 0 28px rgba(250, 204, 21, 0.48)',
+    gradient: 'radial-gradient(circle at 30% 24%, #ffffff, #fde68a 28%, #F5BD42 68%, #D99B20)',
+    textColor: '#183326',
+    ringColor: '#FDE68A',
+    glow: '0 8px 22px rgba(245, 189, 66, 0.38)',
   },
   N: {
-    gradient: 'radial-gradient(circle at 30% 22%, #ffffff, #5eead4 30%, #0d9488 70%, #042f2e)',
-    textColor: '#042f2e',
-    ringColor: '#ccfbf1',
-    glow: '0 0 26px rgba(20, 184, 166, 0.45)',
+    gradient: 'radial-gradient(circle at 30% 24%, #ffffff, #fdba74 26%, #f97316 68%, #c2410c)',
+    textColor: '#ffffff',
+    ringColor: '#FED7AA',
+    glow: '0 8px 22px rgba(249, 115, 22, 0.32)',
   },
   G: {
-    gradient: 'radial-gradient(circle at 30% 22%, #ffffff, #93c5fd 30%, #2563eb 70%, #172554)',
-    textColor: '#0f172a',
-    ringColor: '#dbeafe',
-    glow: '0 0 26px rgba(59, 130, 246, 0.45)',
+    gradient: 'radial-gradient(circle at 30% 24%, #ffffff, #93c5fd 26%, #2563eb 68%, #1d4ed8)',
+    textColor: '#ffffff',
+    ringColor: '#BFDBFE',
+    glow: '0 8px 22px rgba(37, 99, 235, 0.32)',
   },
   O: {
-    gradient: 'radial-gradient(circle at 30% 22%, #ffffff, #e9d5ff 30%, #9333ea 70%, #3b0764)',
-    textColor: '#2e1065',
-    ringColor: '#f3e8ff',
-    glow: '0 0 26px rgba(168, 85, 247, 0.45)',
+    gradient: 'radial-gradient(circle at 30% 24%, #ffffff, #fda4af 26%, #e11d48 68%, #9f1239)',
+    textColor: '#ffffff',
+    ringColor: '#FECDD3',
+    glow: '0 8px 22px rgba(225, 29, 72, 0.32)',
   },
 };
 
 export function BingoBall3D({
   number,
   size = 'lg',
+  animate,
   animateEntry = true,
   reducedMotion = false,
   isRecentHighlight = false,
 }: BingoBall3DProps) {
+  const shouldAnimate = animate !== undefined ? animate : animateEntry && !reducedMotion;
   const letter = getLetterForNumber(number);
   const style = BALL_STYLES[letter];
 
@@ -67,37 +70,37 @@ export function BingoBall3D({
     <motion.div
       key={number}
       initial={
-        animateEntry && !reducedMotion
-          ? { scale: 0.94, opacity: 0.65 }
+        shouldAnimate
+          ? { scale: 0.92, opacity: 0.7 }
           : { opacity: 1 }
       }
       animate={{ scale: 1, opacity: 1 }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
+      transition={{ duration: 0.2, ease: 'easeOut' }}
       style={{
         background: style.gradient,
         color: style.textColor,
         borderColor: style.ringColor,
-        boxShadow: `inset -8px -10px 16px rgba(7, 13, 25, 0.45), ${
+        boxShadow: `inset -6px -8px 14px rgba(24, 51, 38, 0.22), ${
           size === 'lg' || size === 'xl' || isRecentHighlight
             ? style.glow
-            : '0 6px 14px rgba(2, 6, 23, 0.45)'
+            : '0 4px 10px rgba(24, 51, 38, 0.14)'
         }`,
       }}
       className={`relative shrink-0 rounded-full flex flex-col items-center justify-center font-extrabold select-none ${dimensions} ${
-        isRecentHighlight ? 'ring-2 ring-[#22d3ee] ring-offset-2 ring-offset-[#070d19]' : ''
+        isRecentHighlight ? 'ring-2 ring-[#159447] ring-offset-2 ring-offset-[#FFF9ED]' : ''
       }`}
       aria-label={`Bingo ball ${letter} ${number}`}
     >
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute top-1.5 left-2.5 w-1/3 h-1/4 rounded-full bg-white/60 blur-[1px] -rotate-12"
+        className="pointer-events-none absolute top-1.5 left-2.5 w-1/3 h-1/4 rounded-full bg-white/70 blur-[1px] -rotate-12"
       />
       {(size === 'lg' || size === 'xl') && (
-        <small className="text-xs font-extrabold tracking-widest uppercase leading-none opacity-85 mb-0.5">
+        <small className="text-xs font-extrabold tracking-widest uppercase leading-none opacity-90 mb-0.5 drop-shadow-xs">
           {letter}
         </small>
       )}
-      <span className="leading-none tabular-nums font-['Outfit']">
+      <span className="leading-none tabular-nums font-['Outfit'] drop-shadow-xs">
         {size === 'sm' ? `${letter}${number}` : number}
       </span>
     </motion.div>
