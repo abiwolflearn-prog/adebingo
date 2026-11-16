@@ -427,16 +427,16 @@ export function WinnerModal({
             />
           )}
 
-          {/* Layer 4: Bright ADEYBINGO Winner Celebration Card */}
+          {/* Layer 4: Bright ADEYBINGO Winner Celebration Card (Ultra-Compact) */}
           <motion.div
             initial={{ scale: 0.78, y: 28, opacity: 0 }}
             animate={{ scale: 1, y: 0, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
             transition={{ type: 'spring', stiffness: 250, damping: 18 }}
-            className="relative z-30 w-full max-w-md rounded-3xl bg-gradient-to-b from-[#FFF9ED] via-white to-[#E6F6EB]/55 border-2 border-[#F5BD42] p-6 shadow-[0_24px_60px_rgba(24,51,38,0.35)] text-[#183326] max-h-[90vh] overflow-y-auto"
+            className="relative z-30 w-full max-w-sm rounded-2xl bg-gradient-to-b from-[#FFF9ED] via-white to-[#E6F6EB]/55 border-2 border-[#F5BD42] p-4 shadow-[0_18px_48px_rgba(24,51,38,0.32)] text-[#183326] max-h-[88vh] overflow-y-auto"
           >
             {/* Staggered Animated B-I-N-G-O Celebration Ribbon */}
-            <div className="flex items-center justify-center gap-1.5 mb-3">
+            <div className="flex items-center justify-center gap-1 mb-2">
               {BINGO_LETTERS.map((item, idx) => (
                 <motion.span
                   key={item.letter}
@@ -448,7 +448,7 @@ export function WinnerModal({
                     repeat: Infinity,
                     repeatDelay: 0.6,
                   }}
-                  className={`w-7 h-7 rounded-lg bg-gradient-to-br ${item.bg} ${item.text} font-['Outfit'] text-sm font-black flex items-center justify-center shadow-sm`}
+                  className={`w-6 h-6 rounded-md bg-gradient-to-br ${item.bg} ${item.text} font-['Outfit'] text-xs font-black flex items-center justify-center shadow-2xs`}
                 >
                   {item.letter}
                 </motion.span>
@@ -459,41 +459,41 @@ export function WinnerModal({
             <div
               onClick={() => spawnExplosion(0.5, 0.35, 95, 'explosion')}
               title={lang === 'am' ? 'ለተጨማሪ ርችት ይንኩ' : 'Tap for extra firework burst'}
-              className="relative mx-auto w-20 h-20 flex items-center justify-center mb-3 cursor-pointer select-none"
+              className="relative mx-auto w-14 h-14 flex items-center justify-center mb-2 cursor-pointer select-none"
             >
               <motion.span
                 aria-hidden="true"
                 animate={{ scale: [1, 1.35, 1], opacity: [0.6, 0, 0.6] }}
                 transition={{ duration: 1.8, repeat: Infinity, ease: 'easeOut' }}
-                className="absolute inset-0 rounded-2xl border-2 border-[#F5BD42]"
+                className="absolute inset-0 rounded-xl border-2 border-[#F5BD42]"
               />
               <motion.span
                 aria-hidden="true"
                 animate={{ rotate: 360 }}
                 transition={{ duration: 12, repeat: Infinity, ease: 'linear' }}
-                className="absolute -inset-1.5 rounded-3xl border border-dashed border-[#159447]/60"
+                className="absolute -inset-1 rounded-2xl border border-dashed border-[#159447]/60"
               />
               <motion.div
                 animate={{ rotate: [-5, 5, -5], scale: [1, 1.07, 1] }}
                 transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
-                className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-[#F5BD42] to-[#D99B20] flex items-center justify-center text-[#183326] shadow-[0_10px_28px_rgba(245,189,66,0.45)]"
+                className="relative w-12 h-12 rounded-xl bg-gradient-to-br from-[#F5BD42] to-[#D99B20] flex items-center justify-center text-[#183326] shadow-[0_6px_18px_rgba(245,189,66,0.4)]"
               >
-                <Trophy size={34} />
+                <Trophy size={24} />
               </motion.div>
             </div>
 
             <div className="text-center">
-              <p className="text-xs font-extrabold tracking-widest uppercase text-[#159447] flex items-center justify-center gap-1">
-                <Sparkles size={14} className="animate-spin text-[#D99B20]" />
+              <p className="text-[10.5px] font-extrabold tracking-widest uppercase text-[#159447] flex items-center justify-center gap-1">
+                <Sparkles size={12} className="animate-spin text-[#D99B20]" />
                 {lang === 'am' ? 'እንኳን ደስ አለዎት! BINGO!' : 'CONGRATULATIONS! BINGO!'}
-                <Crown size={14} className="text-[#D99B20]" />
+                <Crown size={12} className="text-[#D99B20]" />
               </p>
               <motion.h2
                 id="winner-modal-title"
                 initial={{ scale: 0.9 }}
                 animate={{ scale: [1, 1.03, 1] }}
                 transition={{ duration: 1.8, repeat: Infinity }}
-                className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold text-[#183326] mt-1"
+                className="font-['Outfit'] text-xl sm:text-2xl font-extrabold text-[#183326] mt-0.5"
               >
                 {isShared
                   ? lang === 'am'
@@ -503,7 +503,7 @@ export function WinnerModal({
                   ? 'ዙሩን አሸንፈዋል!'
                   : 'Round Winner Confirmed!'}
               </motion.h2>
-              <p className="text-xs text-[#08743A] font-extrabold mt-1">
+              <p className="text-[11px] text-[#08743A] font-extrabold mt-0.5">
                 {lang === 'am'
                   ? `ካርድ #${winningCard.id} · ${winResult.patternLabelAm}`
                   : `Card #${winningCard.id} · ${winResult.patternLabelEn}`}
@@ -511,12 +511,12 @@ export function WinnerModal({
             </div>
 
             {/* Stats Summary Strip */}
-            <div className="grid grid-cols-3 gap-2 my-4 bg-white p-3 rounded-2xl border border-[#E7EDE8] text-center shadow-xs">
+            <div className="grid grid-cols-3 gap-1.5 my-2.5 bg-white p-2 rounded-xl border border-[#E7EDE8] text-center shadow-2xs">
               <motion.div
                 animate={{ scale: [1, 1.04, 1] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
               >
-                <small className="block text-[10px] font-bold text-[#68776D] uppercase">
+                <small className="block text-[9.5px] font-bold text-[#68776D] uppercase">
                   {isShared
                     ? lang === 'am'
                       ? 'የእርስዎ ድርሻ'
@@ -525,20 +525,20 @@ export function WinnerModal({
                     ? 'የሽልማት ሂሳብ'
                     : 'PRIZE'}
                 </small>
-                <b className="font-['Outfit'] text-lg font-extrabold text-[#D99B20] tabular-nums">
+                <b className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#D99B20] tabular-nums">
                   +{prizeDemoEtb.toFixed(2)} ETB
                 </b>
               </motion.div>
               <div>
-                <small className="block text-[10px] font-bold text-[#68776D] uppercase">
+                <small className="block text-[9.5px] font-bold text-[#68776D] uppercase">
                   {lang === 'am' ? 'የተጠሩ ቁጥሮች' : 'CALLS'}
                 </small>
-                <b className="font-['Outfit'] text-lg font-extrabold text-[#159447] tabular-nums">
+                <b className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#159447] tabular-nums">
                   {calledNumbers.length}/75
                 </b>
               </div>
               <div>
-                <small className="block text-[10px] font-bold text-[#68776D] uppercase">
+                <small className="block text-[9.5px] font-bold text-[#68776D] uppercase">
                   {isShared
                     ? lang === 'am'
                       ? 'ጠቅላላ ሽልማት'
@@ -547,7 +547,7 @@ export function WinnerModal({
                     ? 'አሸናፊ ካርድ'
                     : 'CARD ID'}
                 </small>
-                <b className="font-['Outfit'] text-lg font-extrabold text-[#183326] tabular-nums">
+                <b className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#183326] tabular-nums">
                   {isShared ? `${totalPool.toFixed(0)} ETB` : `#${winningCard.id}`}
                 </b>
               </div>
@@ -555,21 +555,21 @@ export function WinnerModal({
 
             {/* Simultaneous Winners Distribution Breakdown */}
             {winners.length > 0 && (
-              <div className="mb-3 rounded-2xl bg-white border border-[#E7EDE8] p-3 space-y-2">
-                <div className="flex items-center justify-between text-[11px] font-extrabold text-[#159447]">
-                  <span className="flex items-center gap-1.5">
-                    <Users size={13} />
+              <div className="mb-2.5 rounded-xl bg-white border border-[#E7EDE8] p-2.5 space-y-1.5">
+                <div className="flex items-center justify-between text-[10.5px] font-extrabold text-[#159447]">
+                  <span className="flex items-center gap-1">
+                    <Users size={12} />
                     {lang === 'am' ? 'የሽልማት ክፍፍል' : 'Payout Distribution'}
                   </span>
                   <span className="text-[#68776D]">
                     {winners.length} {lang === 'am' ? 'አሸናፊ' : 'winner(s)'}
                   </span>
                 </div>
-                <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                <div className="space-y-1 max-h-24 overflow-y-auto">
                   {winners.map((w) => (
                     <div
                       key={`${w.uid}-${w.cardId}`}
-                      className="flex items-center justify-between text-xs px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]"
+                      className="flex items-center justify-between text-[11px] px-2 py-1 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8]"
                     >
                       <span className="truncate text-[#183326] font-bold">
                         {w.displayName} · {lang === 'am' ? 'ካርድ' : 'Card'} #{w.cardId}
@@ -588,7 +588,7 @@ export function WinnerModal({
               initial={{ scale: 0.94, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               transition={{ delay: 0.12 }}
-              className="my-2.5 max-w-[240px] mx-auto rounded-2xl ring-2 ring-[#F5BD42] shadow-[0_8px_22px_rgba(245,189,66,0.25)]"
+              className="my-2 max-w-[190px] mx-auto rounded-xl ring-2 ring-[#F5BD42] shadow-[0_5px_14px_rgba(245,189,66,0.2)]"
             >
               <BingoCardView
                 card={winningCard}
@@ -599,8 +599,8 @@ export function WinnerModal({
               />
             </motion.div>
 
-            <div className="flex items-center gap-2 text-[11px] text-[#08743A] bg-[#E6F6EB] border border-[#159447]/30 px-3 py-2.5 rounded-xl mb-4 font-semibold">
-              <CheckCircle2 size={16} className="text-[#159447] shrink-0" />
+            <div className="flex items-center gap-1.5 text-[10.5px] text-[#08743A] bg-[#E6F6EB] border border-[#159447]/30 px-2.5 py-2 rounded-lg mb-3 font-semibold leading-snug">
+              <CheckCircle2 size={14} className="text-[#159447] shrink-0" />
               <span>
                 {lang === 'am'
                   ? 'ቁጥር መጥራት ቆሟል! ሽልማቱ ወደ አሸናፊዎች ሂሳብ ተጨምሯል። አዲስ ዙር ወዲያውኑ ይጀምራል።'
@@ -608,11 +608,11 @@ export function WinnerModal({
               </span>
             </div>
 
-            <div className="flex gap-2.5">
+            <div className="flex gap-2">
               <button
                 type="button"
                 onClick={onClose}
-                className="flex-1 py-3 px-4 rounded-xl border border-[#E7EDE8] bg-white text-[#183326] text-xs font-extrabold hover:bg-[#E6F6EB] transition-colors"
+                className="flex-1 py-2 px-3 rounded-lg border border-[#E7EDE8] bg-white text-[#183326] text-xs font-extrabold hover:bg-[#E6F6EB] transition-colors min-h-[36px]"
               >
                 {lang === 'am' ? 'ካርዱን እይ' : 'Inspect Board'}
               </button>
@@ -620,9 +620,9 @@ export function WinnerModal({
                 type="button"
                 data-start="true"
                 onClick={onPlayAgain}
-                className="flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-[0_6px_20px_rgba(21,148,71,0.3)] hover:brightness-105 transition-all"
+                className="flex-1 py-2 px-3 rounded-lg bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-xs font-extrabold flex items-center justify-center gap-1 shadow-[0_4px_12px_rgba(21,148,71,0.25)] hover:brightness-105 transition-all min-h-[36px]"
               >
-                <RotateCcw size={15} />
+                <RotateCcw size={13} />
                 {lang === 'am' ? 'አዲስ ዙር ጀምር' : 'Next Round'}
               </button>
             </div>

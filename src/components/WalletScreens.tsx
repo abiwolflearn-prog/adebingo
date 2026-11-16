@@ -126,24 +126,24 @@ export function WalletScreens({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       {/* Page Heading */}
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-white border border-[#E7EDE8] rounded-2xl p-4 sm:p-5 shadow-[0_6px_20px_rgba(24,51,38,0.06)]">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-[#E7EDE8] rounded-xl p-2.5 sm:p-3.5 shadow-[0_3px_10px_rgba(24,51,38,0.05)]">
         <div>
-          <span className="text-[10px] font-extrabold tracking-widest uppercase text-[#159447]">
+          <span className="text-[9.5px] font-extrabold tracking-widest uppercase text-[#159447]">
             ADEYBINGO · DEMO WALLET
           </span>
-          <h1 className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold text-[#183326] mt-0.5">
+          <h1 className="font-['Outfit'] text-lg sm:text-xl font-extrabold text-[#183326] leading-tight">
             {copy.walletHeading}
           </h1>
-          <p className="text-xs text-[#68776D] mt-0.5">{copy.walletSubheading}</p>
+          <p className="text-[11px] text-[#68776D] mt-0.5">{copy.walletSubheading}</p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <SecondaryButton
             size="sm"
             onClick={() => onNavigate('referral')}
-            icon={<Gift size={14} className="text-[#D99B20]" />}
+            icon={<Gift size={13} className="text-[#D99B20]" />}
             className="!bg-[#FEF5DC]/75 !border-[#F5BD42] !text-[#183326]"
           >
             {lang === 'am' ? 'ጓደኛ ይጋብዙ (+20 ብር)' : 'Invite Friends (+20 ETB)'}
@@ -157,41 +157,42 @@ export function WalletScreens({
       </div>
 
       {/* Clean 2-Column Balance Cards: Available Balance | Winnings Balance */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+      <div className="grid grid-cols-2 lg:grid-cols-12 gap-2 sm:gap-2.5 items-stretch">
         {/* Card 1: Clean White Balance Card with Emerald Highlights */}
-        <section className="lg:col-span-6 rounded-2xl bg-white border border-[#E7EDE8] p-5 flex flex-col justify-between shadow-[0_8px_24px_rgba(24,51,38,0.06)]">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <span className="text-[11px] font-extrabold uppercase tracking-wider text-[#159447] block">
+        <section className="col-span-1 lg:col-span-6 rounded-xl bg-white border border-[#E7EDE8] p-2.5 sm:p-3.5 flex flex-col justify-between shadow-[0_3px_10px_rgba(24,51,38,0.05)]">
+          <div className="flex items-start justify-between gap-1.5">
+            <div className="min-w-0">
+              <span className="text-[9.5px] sm:text-[10.5px] font-extrabold uppercase tracking-wider text-[#159447] block truncate">
                 {copy.availableBalanceTitle}
               </span>
               <b
                 data-testid="wallet-demo-balance"
-                className="font-['Outfit'] text-3xl sm:text-4xl font-extrabold text-[#183326] tabular-nums block mt-2"
+                className="font-['Outfit'] text-lg sm:text-2xl font-extrabold text-[#183326] tabular-nums block mt-0.5"
               >
                 {demoBalance.toFixed(2)}{' '}
-                <span className="text-lg font-bold text-[#159447]">ETB</span>
+                <span className="text-xs sm:text-sm font-bold text-[#159447]">ETB</span>
               </b>
-              <p className="text-xs text-[#68776D] mt-1 font-medium">
+              <p className="text-[10px] sm:text-[11px] text-[#68776D] mt-0.5 font-medium leading-tight">
                 {lang === 'am'
                   ? 'ለካርድ ግዢ እና ለቀጥታ ጨዋታ ዝግጁ የሆነ ቀሪ ሂሳብ'
                   : 'Ready for Bingo card reservations and live rounds'}
               </p>
             </div>
-            <span className="w-12 h-12 rounded-2xl bg-[#E6F6EB] border border-[#159447]/25 flex items-center justify-center text-[#159447] shrink-0 shadow-2xs">
-              <Wallet size={22} />
+            <span className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-[#E6F6EB] border border-[#159447]/25 flex items-center justify-center text-[#159447] shrink-0 shadow-2xs">
+              <Wallet size={16} />
             </span>
           </div>
 
-          <div className="pt-5">
+          <div className="pt-2.5">
             <PrimaryButton
               variant="emerald"
+              size="sm"
               fullWidth
               onClick={() => {
                 setActiveActionPanel((prev) => (prev === 'deposit' ? 'none' : 'deposit'));
                 if (mode !== 'wallet') onNavigate('wallet');
               }}
-              icon={<ArrowDownLeft size={16} />}
+              icon={<ArrowDownLeft size={14} />}
             >
               {copy.depositBtn}
             </PrimaryButton>
@@ -199,39 +200,40 @@ export function WalletScreens({
         </section>
 
         {/* Card 2: Warm Gold Accented Winnings & Rewards Card */}
-        <section className="lg:col-span-6 rounded-2xl bg-gradient-to-br from-[#FEF5DC] via-[#FFF9ED] to-white border-2 border-[#F5BD42]/70 p-5 flex flex-col justify-between shadow-[0_8px_24px_rgba(217,155,32,0.12)]">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <span className="text-[11px] font-extrabold uppercase tracking-wider text-[#9A6B0B] block">
+        <section className="col-span-1 lg:col-span-6 rounded-xl bg-gradient-to-br from-[#FEF5DC] via-[#FFF9ED] to-white border border-[#F5BD42]/70 p-2.5 sm:p-3.5 flex flex-col justify-between shadow-[0_3px_10px_rgba(217,155,32,0.1)]">
+          <div className="flex items-start justify-between gap-1.5">
+            <div className="min-w-0">
+              <span className="text-[9.5px] sm:text-[10.5px] font-extrabold uppercase tracking-wider text-[#9A6B0B] block truncate">
                 {copy.winningsBalanceTitle}
               </span>
               <b
                 data-testid="wallet-winnings-balance"
-                className="font-['Outfit'] text-3xl sm:text-4xl font-extrabold text-[#183326] tabular-nums block mt-2"
+                className="font-['Outfit'] text-lg sm:text-2xl font-extrabold text-[#183326] tabular-nums block mt-0.5"
               >
                 {winningsBalance.toFixed(2)}{' '}
-                <span className="text-lg font-bold text-[#D99B20]">ETB</span>
+                <span className="text-xs sm:text-sm font-bold text-[#D99B20]">ETB</span>
               </b>
-              <p className="text-xs text-[#68776D] mt-1 font-medium">
+              <p className="text-[10px] sm:text-[11px] text-[#68776D] mt-0.5 font-medium leading-tight">
                 {lang === 'am'
                   ? 'ከተረጋገጡ የቢንጎ ድሎች የተገኘ ጠቅላላ ሽልማት'
                   : 'Verified cumulative Bingo round winnings & rewards'}
               </p>
             </div>
-            <span className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#F5BD42] to-[#D99B20] flex items-center justify-center text-[#183326] shrink-0 shadow-[0_4px_12px_rgba(245,189,66,0.35)]">
-              <Trophy size={22} />
+            <span className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-gradient-to-br from-[#F5BD42] to-[#D99B20] flex items-center justify-center text-[#183326] shrink-0 shadow-[0_3px_8px_rgba(245,189,66,0.3)]">
+              <Trophy size={16} />
             </span>
           </div>
 
-          <div className="pt-5">
+          <div className="pt-2.5">
             <PrimaryButton
               variant="gold"
+              size="sm"
               fullWidth
               onClick={() => {
                 setActiveActionPanel((prev) => (prev === 'withdraw' ? 'none' : 'withdraw'));
                 if (mode !== 'wallet') onNavigate('wallet');
               }}
-              icon={<ArrowUpRight size={16} />}
+              icon={<ArrowUpRight size={14} />}
             >
               {copy.withdrawBtn}
             </PrimaryButton>
@@ -240,9 +242,9 @@ export function WalletScreens({
       </div>
 
       {/* Sandbox Notice Banner */}
-      <div className="rounded-2xl bg-[#FFF9ED] border border-[#F5BD42]/60 px-4 py-3 flex items-center gap-3 text-xs text-[#183326]">
-        <ShieldAlert size={18} className="text-[#D99B20] shrink-0" />
-        <span className="font-medium">
+      <div className="rounded-xl bg-[#FFF9ED] border border-[#F5BD42]/60 px-3 py-2 flex items-center gap-2 text-[11px] text-[#183326]">
+        <ShieldAlert size={14} className="text-[#D99B20] shrink-0" />
+        <span className="font-medium leading-tight">
           {lang === 'am'
             ? 'ማሳሰቢያ፦ ይህ የሙከራ (Demo Sandbox) ቦርሳ ነው። እውነተኛ የገንዘብ ክፍያ አይጠየቅም።'
             : 'Sandbox Notice: All wallet deposits, withdrawals, and prizes operate in Demo Sandbox mode — no real-money payments are charged.'}
@@ -253,14 +255,14 @@ export function WalletScreens({
       {showDepositForm && (
         <form
           onSubmit={handleDepositSubmit}
-          className="rounded-2xl bg-white border-2 border-[#159447]/40 p-5 space-y-4 shadow-[0_10px_28px_rgba(21,148,71,0.1)]"
+          className="rounded-xl bg-white border-2 border-[#159447]/40 p-3 space-y-2.5 shadow-[0_4px_14px_rgba(21,148,71,0.08)]"
         >
           <div className="flex items-center justify-between">
             <div>
-              <span className="text-[10px] font-extrabold uppercase text-[#159447]">
+              <span className="text-[9.5px] font-extrabold uppercase text-[#159447]">
                 {lang === 'am' ? 'የሙከራ ተቀማጭ ጥያቄ' : 'DEMO DEPOSIT REQUEST'}
               </span>
-              <h3 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
+              <h3 className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#183326]">
                 {lang === 'am' ? 'የሙከራ ሂሳብ ማስገቢያ' : 'Submit Demo Deposit Request'}
               </h3>
             </div>
@@ -270,22 +272,22 @@ export function WalletScreens({
                 setActiveActionPanel('none');
                 onNavigate('wallet');
               }}
-              className="w-8 h-8 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-extrabold text-[#68776D] hover:text-[#183326]"
+              className="w-7 h-7 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-extrabold text-[#68776D] hover:text-[#183326]"
             >
               ✕
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
-              <label className="block text-xs font-bold text-[#183326] mb-1.5">
+              <label className="block text-[11px] font-bold text-[#183326] mb-1">
                 {lang === 'am' ? 'የክፍያ ዘዴ (Demo)' : 'Sandbox Method'}
               </label>
               <select
                 value={depositProvider}
                 onChange={(e) => setDepositProvider(e.target.value)}
                 aria-label="Sandbox Payment Method"
-                className="w-full px-3 py-2.5 rounded-xl border border-[#E7EDE8] bg-[#FFF9ED] text-xs font-bold text-[#183326] focus:outline-none focus:border-[#159447]"
+                className="w-full px-2.5 py-1.5 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-xs font-bold text-[#183326] min-h-[34px] focus:outline-none focus:border-[#159447]"
               >
                 {DEMO_PROVIDERS.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -296,7 +298,7 @@ export function WalletScreens({
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-[#183326] mb-1.5">
+              <label className="block text-[11px] font-bold text-[#183326] mb-1">
                 {lang === 'am' ? 'መጠን (ETB)' : 'Amount (ETB)'}
               </label>
               <input
@@ -304,18 +306,18 @@ export function WalletScreens({
                 value={depositAmount}
                 onChange={(e) => setDepositAmount(e.target.value)}
                 aria-label="Demo deposit amount in ETB"
-                className="w-full px-3 py-2.5 rounded-xl border border-[#E7EDE8] bg-[#FFF9ED] text-sm font-bold text-[#183326] tabular-nums focus:outline-none focus:border-[#159447]"
+                className="w-full px-2.5 py-1.5 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-xs font-bold text-[#183326] tabular-nums min-h-[34px] focus:outline-none focus:border-[#159447]"
               />
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5">
             {[50, 100, 200, 500].map((amt) => (
               <button
                 key={amt}
                 type="button"
                 onClick={() => setDepositAmount(String(amt))}
-                className={`px-3.5 py-2 rounded-xl text-xs font-extrabold tabular-nums border transition-colors ${
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold tabular-nums border transition-colors min-h-[32px] ${
                   depositAmount === String(amt)
                     ? 'bg-[#159447] border-[#08743A] text-white'
                     : 'bg-[#FFF9ED] border-[#E7EDE8] text-[#183326] hover:bg-[#E6F6EB]'
@@ -326,9 +328,9 @@ export function WalletScreens({
             ))}
           </div>
 
-          {depositError && <p className="text-xs font-bold text-[#D94B4B]">{depositError}</p>}
+          {depositError && <p className="text-[11px] font-bold text-[#D94B4B]">{depositError}</p>}
 
-          <PrimaryButton type="submit" variant="emerald" fullWidth disabled={depositBusy}>
+          <PrimaryButton type="submit" variant="emerald" size="sm" fullWidth disabled={depositBusy}>
             {depositBusy
               ? '...'
               : lang === 'am'
@@ -341,14 +343,14 @@ export function WalletScreens({
       {showWithdrawForm && (
         <form
           onSubmit={handleWithdrawSubmit}
-          className="rounded-2xl bg-white border-2 border-[#F5BD42] p-5 space-y-4 shadow-[0_10px_28px_rgba(217,155,32,0.12)]"
+          className="rounded-xl bg-white border-2 border-[#F5BD42] p-3 space-y-2.5 shadow-[0_4px_14px_rgba(217,155,32,0.1)]"
         >
           <div className="flex items-center justify-between">
             <div>
-              <span className="text-[10px] font-extrabold uppercase text-[#9A6B0B]">
+              <span className="text-[9.5px] font-extrabold uppercase text-[#9A6B0B]">
                 {lang === 'am' ? 'የሙከራ ወጪ ጥያቄ' : 'DEMO WITHDRAWAL REQUEST'}
               </span>
-              <h3 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
+              <h3 className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#183326]">
                 {lang === 'am' ? 'የሙከራ ገንዘብ ማውጫ' : 'Submit Demo Withdrawal Request'}
               </h3>
             </div>
@@ -358,22 +360,22 @@ export function WalletScreens({
                 setActiveActionPanel('none');
                 onNavigate('wallet');
               }}
-              className="w-8 h-8 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-extrabold text-[#68776D] hover:text-[#183326]"
+              className="w-7 h-7 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-extrabold text-[#68776D] hover:text-[#183326]"
             >
               ✕
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
-              <label className="block text-xs font-bold text-[#183326] mb-1.5">
+              <label className="block text-[11px] font-bold text-[#183326] mb-1">
                 {lang === 'am' ? 'መቀበያ ዘዴ (Demo)' : 'Payout Method (Demo)'}
               </label>
               <select
                 value={withdrawProvider}
                 onChange={(e) => setWithdrawProvider(e.target.value)}
                 aria-label="Destination Method"
-                className="w-full px-3 py-2.5 rounded-xl border border-[#E7EDE8] bg-[#FFF9ED] text-xs font-bold text-[#183326] focus:outline-none focus:border-[#D99B20]"
+                className="w-full px-2.5 py-1.5 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-xs font-bold text-[#183326] min-h-[34px] focus:outline-none focus:border-[#D99B20]"
               >
                 {DEMO_PROVIDERS.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -384,7 +386,7 @@ export function WalletScreens({
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-[#183326] mb-1.5">
+              <label className="block text-[11px] font-bold text-[#183326] mb-1">
                 {lang === 'am' ? 'የወጪ መጠን (ቢያንስ 20 ETB)' : 'Withdrawal Amount (Min 20 ETB)'}
               </label>
               <input
@@ -392,14 +394,14 @@ export function WalletScreens({
                 value={withdrawAmount}
                 onChange={(e) => setWithdrawAmount(e.target.value)}
                 aria-label="Demo withdrawal amount in ETB"
-                className="w-full px-3 py-2.5 rounded-xl border border-[#E7EDE8] bg-[#FFF9ED] text-sm font-bold text-[#183326] tabular-nums focus:outline-none focus:border-[#D99B20]"
+                className="w-full px-2.5 py-1.5 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-xs font-bold text-[#183326] tabular-nums min-h-[34px] focus:outline-none focus:border-[#D99B20]"
               />
             </div>
           </div>
 
-          {withdrawError && <p className="text-xs font-bold text-[#D94B4B]">{withdrawError}</p>}
+          {withdrawError && <p className="text-[11px] font-bold text-[#D94B4B]">{withdrawError}</p>}
 
-          <PrimaryButton type="submit" variant="gold" fullWidth disabled={withdrawBusy}>
+          <PrimaryButton type="submit" variant="gold" size="sm" fullWidth disabled={withdrawBusy}>
             {withdrawBusy
               ? '...'
               : lang === 'am'
@@ -411,15 +413,15 @@ export function WalletScreens({
 
       {/* Pending / Recent Deposit & Payout Requests */}
       {(depositRequests.length > 0 || payoutRequests.length > 0) && (
-        <section className="rounded-2xl bg-white border border-[#E7EDE8] p-4 space-y-2.5 shadow-[0_6px_20px_rgba(24,51,38,0.06)]">
-          <h3 className="text-xs font-extrabold uppercase tracking-wider text-[#159447]">
+        <section className="rounded-xl bg-white border border-[#E7EDE8] p-3 space-y-2 shadow-[0_3px_10px_rgba(24,51,38,0.05)]">
+          <h3 className="text-[11px] font-extrabold uppercase tracking-wider text-[#159447]">
             {copy.recentRequestsTitle}
           </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {depositRequests.slice(0, 3).map((d) => (
               <div
                 key={d.depositId}
-                className="flex items-center justify-between p-3 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs"
+                className="flex items-center justify-between p-2.5 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-xs"
               >
                 <div>
                   <b className="text-[#183326] block">
@@ -427,7 +429,7 @@ export function WalletScreens({
                   </b>
                   <span className="font-mono text-[10px] text-[#68776D]">{d.referenceCode}</span>
                 </div>
-                <span className="px-2.5 py-0.5 rounded-md bg-[#E6F6EB] text-[#08743A] font-extrabold text-[10px]">
+                <span className="px-2 py-0.5 rounded bg-[#E6F6EB] text-[#08743A] font-extrabold text-[10px]">
                   {d.status}
                 </span>
               </div>
@@ -435,7 +437,7 @@ export function WalletScreens({
             {payoutRequests.slice(0, 3).map((w) => (
               <div
                 key={w.requestId}
-                className="flex items-center justify-between p-3 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs"
+                className="flex items-center justify-between p-2.5 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-xs"
               >
                 <div>
                   <b className="text-[#9A6B0B] block">
@@ -443,7 +445,7 @@ export function WalletScreens({
                   </b>
                   <span className="font-mono text-[10px] text-[#68776D]">{w.requestId}</span>
                 </div>
-                <span className="px-2.5 py-0.5 rounded-md bg-[#FEF5DC] text-[#9A6B0B] border border-[#F5BD42] font-extrabold text-[10px]">
+                <span className="px-2 py-0.5 rounded bg-[#FEF5DC] text-[#9A6B0B] border border-[#F5BD42] font-extrabold text-[10px]">
                   {w.status}
                 </span>
               </div>
@@ -453,19 +455,19 @@ export function WalletScreens({
       )}
 
       {/* Recent Transaction History with Empty State */}
-      <section className="rounded-2xl bg-white border border-[#E7EDE8] p-5 space-y-4 shadow-[0_8px_24px_rgba(24,51,38,0.06)]">
+      <section className="rounded-xl bg-white border border-[#E7EDE8] p-3 sm:p-3.5 space-y-2.5 shadow-[0_3px_10px_rgba(24,51,38,0.05)]">
         <div className="flex items-center justify-between">
           <div>
-            <span className="text-[10px] font-extrabold uppercase text-[#159447] flex items-center gap-1.5">
-              <Receipt size={13} />
+            <span className="text-[9.5px] font-extrabold uppercase text-[#159447] flex items-center gap-1">
+              <Receipt size={12} />
               {lang === 'am' ? 'የግብይት መዝገብ' : 'TRANSACTION LEDGER'}
             </span>
-            <h3 className="font-['Outfit'] text-xl font-extrabold text-[#183326] mt-0.5">
+            <h3 className="font-['Outfit'] text-base sm:text-lg font-extrabold text-[#183326]">
               {copy.recentTransactionsTitle}
             </h3>
           </div>
 
-          <span className="text-xs font-extrabold text-[#08743A] bg-[#E6F6EB] px-2.5 py-1 rounded-lg tabular-nums">
+          <span className="text-[11px] font-extrabold text-[#08743A] bg-[#E6F6EB] px-2 py-0.5 rounded-md tabular-nums">
             {transactions.length} {lang === 'am' ? 'መዝገቦች' : 'entries'}
           </span>
         </div>
@@ -473,7 +475,7 @@ export function WalletScreens({
         {transactions.length === 0 ? (
           <EmptyState
             testId="wallet-empty-transactions"
-            icon={<Receipt size={24} />}
+            icon={<Receipt size={20} />}
             title={copy.emptyTransactionsTitle}
             description={copy.emptyTransactionsDesc}
           />
@@ -484,11 +486,11 @@ export function WalletScreens({
               return (
                 <div
                   key={tx.id}
-                  className="py-3.5 flex items-center justify-between gap-3"
+                  className="py-2 flex items-center justify-between gap-2"
                 >
-                  <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
                     <span
-                      className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
+                      className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border ${
                         tx.type === 'bingo_win'
                           ? 'bg-[#FEF5DC] border-[#F5BD42] text-[#D99B20]'
                           : isPositive
@@ -496,13 +498,13 @@ export function WalletScreens({
                           : 'bg-[#FFF9ED] border-[#E7EDE8] text-[#68776D]'
                       }`}
                     >
-                      {isPositive ? <ArrowDownLeft size={17} /> : <ArrowUpRight size={17} />}
+                      {isPositive ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
                     </span>
                     <div className="min-w-0">
-                      <b className="block text-xs sm:text-sm font-extrabold text-[#183326] truncate">
+                      <b className="block text-xs font-extrabold text-[#183326] truncate">
                         {lang === 'am' ? tx.labelAm : tx.labelEn}
                       </b>
-                      <div className="flex items-center gap-2 text-[11px] text-[#68776D] mt-0.5">
+                      <div className="flex items-center gap-1.5 text-[10px] text-[#68776D]">
                         <span className="truncate">{tx.timestamp}</span>
                         <span aria-hidden="true">·</span>
                         <span className="font-mono">{tx.reference}</span>
@@ -512,7 +514,7 @@ export function WalletScreens({
 
                   <div className="text-right shrink-0">
                     <b
-                      className={`font-['Outfit'] text-sm font-extrabold tabular-nums block ${
+                      className={`font-['Outfit'] text-xs sm:text-sm font-extrabold tabular-nums block ${
                         tx.type === 'bingo_win'
                           ? 'text-[#D99B20]'
                           : isPositive
@@ -524,9 +526,9 @@ export function WalletScreens({
                     </b>
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold text-[#68776D]">
                       {tx.status === 'demo_completed' ? (
-                        <CheckCircle2 size={11} className="text-[#168A49]" />
+                        <CheckCircle2 size={10} className="text-[#168A49]" />
                       ) : (
-                        <Clock size={11} className="text-[#D99B20]" />
+                        <Clock size={10} className="text-[#D99B20]" />
                       )}
                       {lang === 'am' ? 'የተረጋገጠ' : 'Verified'}
                     </span>

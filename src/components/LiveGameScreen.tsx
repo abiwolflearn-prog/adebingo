@@ -124,11 +124,11 @@ export function LiveGameScreen({
       : 'Pick Cards (60s Window)';
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2.5">
       {/* Top Room Status & Prize Bar */}
-      <section className="rounded-2xl bg-white border border-[#E7EDE8] px-4 py-3.5 space-y-2.5 shadow-[0_6px_20px_rgba(24,51,38,0.06)]">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0 flex flex-wrap items-center gap-2">
+      <section className="rounded-xl bg-white border border-[#E7EDE8] px-3 py-2 space-y-1.5 shadow-[0_3px_10px_rgba(24,51,38,0.05)]">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0 flex flex-wrap items-center gap-1.5">
             <GameStatusBadge
               status={
                 activeRoom.status === 'live'
@@ -140,17 +140,17 @@ export function LiveGameScreen({
               label={statusText}
               pulse={activeRoom.status === 'live' || activeRoom.status === 'countdown'}
             />
-            <span className="text-xs font-extrabold text-[#183326] truncate">
+            <span className="text-[11px] font-extrabold text-[#183326] truncate">
               {lang === 'am' ? activeRoom.nameAm : activeRoom.nameEn}
             </span>
-            <span className="text-xs font-bold text-[#68776D] tabular-nums">
+            <span className="text-[11px] font-bold text-[#68776D] tabular-nums">
               · {cardPrice} ETB/{lang === 'am' ? 'ካርድ' : 'card'}
             </span>
           </div>
 
-          <div className="flex items-center gap-2.5 sm:gap-3 text-xs">
-            <div className="flex items-center gap-1.5 bg-[#FEF5DC] border border-[#F5BD42] px-3 py-1.5 rounded-xl">
-              <Trophy size={14} className="text-[#D99B20]" />
+          <div className="flex items-center gap-1.5 sm:gap-2 text-[11px]">
+            <div className="flex items-center gap-1 bg-[#FEF5DC] border border-[#F5BD42] px-2 py-1 rounded-lg">
+              <Trophy size={12} className="text-[#D99B20]" />
               <span className="text-[#9A6B0B] font-bold hidden sm:inline">
                 {copy.prizePoolLabel}:
               </span>
@@ -163,7 +163,7 @@ export function LiveGameScreen({
             </div>
 
             <div
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border ${
+              className={`flex items-center gap-1 px-2 py-1 rounded-lg border ${
                 activeRoom.status === 'live'
                   ? 'bg-[#E6F6EB] border-[#159447]/40 text-[#08743A]'
                   : activeRoom.status === 'completed'
@@ -174,7 +174,7 @@ export function LiveGameScreen({
               }`}
             >
               <Clock
-                size={15}
+                size={13}
                 className={
                   activeRoom.status === 'live'
                     ? 'text-[#159447]'
@@ -185,7 +185,7 @@ export function LiveGameScreen({
               />
               <b
                 data-testid="live-countdown"
-                className="font-mono text-sm sm:text-base font-extrabold tabular-nums"
+                className="font-mono text-xs sm:text-sm font-extrabold tabular-nums"
               >
                 {activeRoom.status === 'countdown'
                   ? `00:${String(Math.max(0, countdown)).padStart(2, '0')}`
@@ -195,8 +195,8 @@ export function LiveGameScreen({
               </b>
             </div>
 
-            <div className="flex items-center gap-1.5 bg-[#FFF9ED] border border-[#E7EDE8] px-2.5 py-1.5 rounded-xl">
-              <Users size={14} className="text-[#159447]" />
+            <div className="flex items-center gap-1 bg-[#FFF9ED] border border-[#E7EDE8] px-2 py-1 rounded-lg">
+              <Users size={12} className="text-[#159447]" />
               <b className="font-['Outfit'] font-extrabold text-[#183326] tabular-nums">
                 {activeRoom.activePlayers}
               </b>
@@ -205,7 +205,7 @@ export function LiveGameScreen({
         </div>
 
         {activeRoom.status === 'countdown' && (
-          <div className="w-full h-2 rounded-full bg-[#FFF9ED] border border-[#E7EDE8] overflow-hidden">
+          <div className="w-full h-1.5 rounded-full bg-[#FFF9ED] border border-[#E7EDE8] overflow-hidden">
             <div
               className={`h-full transition-all duration-500 ${
                 countdown <= 10
@@ -219,40 +219,40 @@ export function LiveGameScreen({
       </section>
 
       {/* Main Play Table: Ball Caller + Player Card(s) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 items-start">
         {/* Left 5 Columns: Clean Ball Stage & Call Action */}
-        <section className="lg:col-span-5 rounded-2xl bg-white border border-[#E7EDE8] p-4 space-y-4 shadow-[0_8px_24px_rgba(24,51,38,0.06)]">
+        <section className="lg:col-span-5 rounded-xl bg-white border border-[#E7EDE8] p-2.5 sm:p-3 space-y-2.5 shadow-[0_3px_10px_rgba(24,51,38,0.05)]">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-extrabold text-[#159447] uppercase tracking-wider">
+            <span className="text-[11px] font-extrabold text-[#159447] uppercase tracking-wider">
               {copy.liveCallerTitle}
             </span>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1">
               <button
                 type="button"
                 onClick={onToggleVoice}
                 aria-label={voiceEnabled ? 'Mute Amharic voice' : 'Enable Amharic voice'}
                 data-testid="voice-toggle"
-                className={`px-2.5 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1 transition-colors min-h-[38px] border ${
+                className={`px-2 py-1 rounded-lg text-[11px] font-extrabold flex items-center gap-1 transition-colors min-h-[32px] border ${
                   voiceEnabled
                     ? 'bg-[#E6F6EB] border-[#159447]/40 text-[#08743A]'
                     : 'bg-[#FFF9ED] border-[#E7EDE8] text-[#68776D]'
                 }`}
               >
-                {voiceEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+                {voiceEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}
                 {lang === 'am' ? 'ድምፅ' : 'Voice'}
               </button>
 
               <button
                 type="button"
                 onClick={onToggleAutoCaller}
-                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1 transition-colors min-h-[38px] border ${
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold flex items-center gap-1 transition-colors min-h-[32px] border ${
                   autoCallerActive
                     ? 'bg-[#159447] border-[#08743A] text-white shadow-xs'
                     : 'bg-[#FFF9ED] border-[#E7EDE8] text-[#183326]'
                 }`}
               >
-                {autoCallerActive ? <Pause size={13} /> : <Play size={13} />}
+                {autoCallerActive ? <Pause size={12} /> : <Play size={12} />}
                 {autoCallerActive
                   ? lang === 'am'
                     ? 'አቁም'
@@ -266,7 +266,7 @@ export function LiveGameScreen({
                 <button
                   type="button"
                   onClick={() => onChangeCallerInterval(callerIntervalSec === 3 ? 5 : 3)}
-                  className="px-2.5 py-1.5 rounded-xl bg-[#FEF5DC] border border-[#F5BD42] text-[11px] font-mono font-extrabold text-[#183326] min-h-[38px]"
+                  className="px-2 py-1 rounded-lg bg-[#FEF5DC] border border-[#F5BD42] text-[10px] font-mono font-extrabold text-[#183326] min-h-[32px]"
                 >
                   {callerIntervalSec}s
                 </button>
@@ -274,9 +274,9 @@ export function LiveGameScreen({
             </div>
           </div>
 
-          {/* 3D Ball Stage (Fixed height — zero layout jump when numbers are called) */}
-          <div className="h-[118px] sm:h-[128px] px-3.5 sm:px-4 rounded-2xl bg-gradient-to-br from-[#FFF9ED] via-white to-[#E6F6EB]/65 border border-[#E7EDE8] flex items-center justify-center gap-4 sm:gap-5 overflow-hidden shadow-inner">
-            <div className="w-24 h-24 shrink-0 flex items-center justify-center">
+          {/* 3D Ball Stage (Fixed ultra-compact height — zero layout jump when numbers are called) */}
+          <div className="h-[80px] sm:h-[88px] px-3 rounded-xl bg-gradient-to-br from-[#FFF9ED] via-white to-[#E6F6EB]/65 border border-[#E7EDE8] flex items-center justify-center gap-3 overflow-hidden shadow-inner">
+            <div className="w-16 h-16 shrink-0 flex items-center justify-center">
               {latestBall ? (
                 <BingoBall3D
                   number={latestBall}
@@ -286,20 +286,20 @@ export function LiveGameScreen({
                   isRecentHighlight
                 />
               ) : (
-                <div className="w-24 h-24 shrink-0 rounded-full border-2 border-dashed border-[#159447]/40 bg-white flex items-center justify-center text-[#159447] font-['Outfit'] text-2xl font-extrabold shadow-xs">
+                <div className="w-16 h-16 shrink-0 rounded-full border-2 border-dashed border-[#159447]/40 bg-white flex items-center justify-center text-[#159447] font-['Outfit'] text-lg font-extrabold shadow-xs">
                   --
                 </div>
               )}
             </div>
 
             <div className="min-w-0 flex-1 max-w-[220px]">
-              <span className="text-[11px] font-bold text-[#68776D] block truncate uppercase tracking-wider">
+              <span className="text-[10px] font-bold text-[#68776D] block truncate uppercase tracking-wider">
                 {copy.numberCalledLabel}
               </span>
-              <div className="flex items-center gap-2 min-h-[38px]">
+              <div className="flex items-center gap-1.5 min-h-[28px]">
                 <b
                   data-testid="live-latest-ball"
-                  className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold text-[#183326] tabular-nums block leading-none truncate"
+                  className="font-['Outfit'] text-xl sm:text-2xl font-extrabold text-[#183326] tabular-nums block leading-none truncate"
                 >
                   {latestBall ? formatBallCall(latestBall) : '--'}
                 </b>
@@ -308,13 +308,13 @@ export function LiveGameScreen({
                     type="button"
                     onClick={() => onSpeakBall(latestBall)}
                     aria-label={lang === 'am' ? 'ቁጥሩን በአማርኛ ድገም' : 'Speak called number'}
-                    className="p-2 rounded-xl bg-[#E6F6EB] border border-[#159447]/30 text-[#08743A] hover:bg-[#159447] hover:text-white transition-colors shrink-0"
+                    className="p-1.5 rounded-lg bg-[#E6F6EB] border border-[#159447]/30 text-[#08743A] hover:bg-[#159447] hover:text-white transition-colors shrink-0"
                   >
-                    <Volume2 size={14} />
+                    <Volume2 size={12} />
                   </button>
                 )}
               </div>
-              <p className="text-xs text-[#159447] font-extrabold mt-0.5 tabular-nums truncate">
+              <p className="text-[11px] text-[#159447] font-extrabold mt-0.5 tabular-nums truncate">
                 {latestBall
                   ? `${getBingoVoiceCallScript(latestBall, lang).displayPhrase} · ${calledNumbers.length}/75`
                   : copy.waitingFirstBall}
@@ -323,15 +323,15 @@ export function LiveGameScreen({
           </div>
 
           {/* Recent Calls + 1-75 Board Toggle */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs">
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-[11px]">
               <span className="font-bold text-[#68776D]">{copy.recentCallsLabel}</span>
               <button
                 type="button"
                 onClick={() => setShowMasterBoard((v) => !v)}
                 className="text-[#159447] font-extrabold hover:underline flex items-center gap-1"
               >
-                <Grid size={13} />
+                <Grid size={12} />
                 {showMasterBoard
                   ? lang === 'am'
                     ? '1–75 ደብቅ'
@@ -342,17 +342,17 @@ export function LiveGameScreen({
               </button>
             </div>
 
-            <div className="h-[34px] flex items-center overflow-x-auto no-scrollbar">
+            <div className="h-[28px] flex items-center overflow-x-auto no-scrollbar">
               {recentBalls.length === 0 ? (
-                <p className="text-xs text-[#68776D]">
+                <p className="text-[11px] text-[#68776D]">
                   {lang === 'am' ? 'እስካሁን የተጠራ ቁጥር የለም።' : 'No numbers called yet.'}
                 </p>
               ) : (
-                <div className="flex gap-1.5 items-center flex-nowrap">
+                <div className="flex gap-1 items-center flex-nowrap">
                   {recentBalls.map((n, idx) => (
                     <span
                       key={n}
-                      className={`px-2.5 py-1 rounded-xl font-['Outfit'] text-xs font-extrabold tabular-nums shrink-0 border ${
+                      className={`px-2 py-0.5 rounded-lg font-['Outfit'] text-[11px] font-extrabold tabular-nums shrink-0 border ${
                         idx === 0
                           ? 'bg-[#F5BD42] border-[#D99B20] text-[#183326] shadow-2xs'
                           : 'bg-[#E6F6EB] border-[#159447]/30 text-[#08743A]'
@@ -367,12 +367,12 @@ export function LiveGameScreen({
           </div>
 
           {showMasterBoard && (
-            <div className="bg-[#FFF9ED] border border-[#E7EDE8] rounded-2xl p-2.5 sm:p-3 overflow-x-auto no-scrollbar">
-              <div className="space-y-1.5 min-w-[390px] sm:min-w-0">
+            <div className="bg-[#FFF9ED] border border-[#E7EDE8] rounded-xl p-2 overflow-x-auto no-scrollbar">
+              <div className="space-y-1 min-w-[330px] sm:min-w-0">
                 {BINGO_COLUMNS.map((col, idx) => (
-                  <div key={col.letter} className="flex items-center gap-1.5">
+                  <div key={col.letter} className="flex items-center gap-1">
                     <b
-                      className={`w-6 h-6 rounded-lg text-xs font-extrabold flex items-center justify-center shrink-0 ${
+                      className={`w-5 h-5 rounded-md text-[10px] font-extrabold flex items-center justify-center shrink-0 ${
                         idx === 2
                           ? 'bg-[#F5BD42] text-[#183326]'
                           : 'bg-[#159447] text-white'
@@ -380,13 +380,13 @@ export function LiveGameScreen({
                     >
                       {col.letter}
                     </b>
-                    <div className="grid grid-cols-15 gap-1 flex-1">
+                    <div className="grid grid-cols-15 gap-0.5 flex-1">
                       {Array.from({ length: 15 }, (_, i) => col.min + i).map((num) => {
                         const isCalled = calledNumbers.includes(num);
                         return (
                           <span
                             key={num}
-                            className={`h-6 rounded-md text-[10px] font-mono font-bold flex items-center justify-center tabular-nums border ${
+                            className={`h-5 rounded text-[9px] font-mono font-bold flex items-center justify-center tabular-nums border ${
                               num === latestBall
                                 ? 'bg-[#F5BD42] border-[#D99B20] text-[#183326] font-extrabold'
                                 : isCalled
@@ -407,7 +407,7 @@ export function LiveGameScreen({
 
           {/* Automatic Calling Status + Quiet Reset */}
           <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#E7EDE8]">
-            <span className="text-[11px] font-bold text-[#68776D]">
+            <span className="text-[10.5px] font-bold text-[#68776D]">
               {lang === 'am' ? 'ቁጥሮች በራስ-ሰር ይጠራሉ' : 'Numbers call automatically'}
             </span>
 
@@ -416,41 +416,41 @@ export function LiveGameScreen({
               onClick={onResetRound}
               aria-label={copy.resetDemoBtn}
               title={copy.resetDemoBtn}
-              className="p-2.5 rounded-xl border border-[#E7EDE8] bg-[#FFF9ED] text-[#68776D] hover:text-[#159447] hover:bg-[#E6F6EB] min-h-[40px] min-w-[40px] flex items-center justify-center transition-colors"
+              className="p-1.5 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[#68776D] hover:text-[#159447] hover:bg-[#E6F6EB] min-h-[32px] min-w-[32px] flex items-center justify-center transition-colors"
             >
-              <RotateCcw size={15} />
+              <RotateCcw size={13} />
             </button>
           </div>
         </section>
 
         {/* Right 7 Columns: Progressive Card Picker + Player Cards & BINGO CTA */}
-        <section className="lg:col-span-7 rounded-2xl bg-white border border-[#E7EDE8] p-3.5 sm:p-4 space-y-3.5 sm:space-y-4 shadow-[0_8px_24px_rgba(24,51,38,0.06)]">
+        <section className="lg:col-span-7 rounded-xl bg-white border border-[#E7EDE8] p-2.5 sm:p-3 space-y-2.5 shadow-[0_3px_10px_rgba(24,51,38,0.05)]">
           {/* Card Controls Header (Mobile-First) */}
-          <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
             <button
               type="button"
               onClick={() => setCardPickerOpen((o) => !o)}
-              className="px-3.5 py-2 rounded-xl bg-[#E6F6EB] border border-[#159447]/35 text-xs font-extrabold text-[#08743A] flex items-center gap-1.5 min-h-[42px]"
+              className="px-2.5 py-1.5 rounded-lg bg-[#E6F6EB] border border-[#159447]/35 text-[11px] font-extrabold text-[#08743A] flex items-center gap-1 min-h-[34px]"
             >
               <span>
                 {lang === 'am'
                   ? `ካርዶች (${selectedCardIds.length}/4)`
                   : `Cards (${selectedCardIds.length}/4)`}
               </span>
-              {cardPickerOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              {cardPickerOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
             </button>
 
-            <div className="flex items-center gap-2 flex-1 sm:flex-initial justify-end">
+            <div className="flex items-center gap-1.5 flex-1 sm:flex-initial justify-end">
               <button
                 type="button"
                 onClick={onToggleAutoMark}
-                className={`px-3 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 border min-h-[42px] whitespace-nowrap transition-colors ${
+                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-extrabold flex items-center gap-1 border min-h-[34px] whitespace-nowrap transition-colors ${
                   autoMark
                     ? 'bg-[#E6F6EB] border-[#159447]/40 text-[#08743A]'
                     : 'bg-[#FFF9ED] border-[#E7EDE8] text-[#68776D]'
                 }`}
               >
-                {autoMark ? <CheckSquare size={14} className="text-[#159447]" /> : <Square size={14} />}
+                {autoMark ? <CheckSquare size={13} className="text-[#159447]" /> : <Square size={13} />}
                 {lang === 'am' ? 'አውቶ ምልክት' : 'Auto-Mark'}
               </button>
 
@@ -458,9 +458,9 @@ export function LiveGameScreen({
                 type="button"
                 onClick={onClaimBingo}
                 disabled={playerCards.length === 0}
-                className="flex-1 sm:flex-initial px-5 py-2 rounded-xl bg-gradient-to-r from-[#F5BD42] to-[#D99B20] text-[#183326] border border-[#D99B20] text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-[0_6px_18px_rgba(245,189,66,0.35)] hover:brightness-105 active:scale-95 transition-all disabled:opacity-45 min-h-[42px] whitespace-nowrap"
+                className="flex-1 sm:flex-initial px-4 py-1.5 rounded-lg bg-gradient-to-r from-[#F5BD42] to-[#D99B20] text-[#183326] border border-[#D99B20] text-xs font-extrabold flex items-center justify-center gap-1 shadow-[0_3px_10px_rgba(245,189,66,0.3)] hover:brightness-105 active:scale-95 transition-all disabled:opacity-45 min-h-[34px] whitespace-nowrap"
               >
-                <Award size={15} />
+                <Award size={13} />
                 BINGO!
               </button>
             </div>
@@ -468,16 +468,16 @@ export function LiveGameScreen({
 
           {/* Collapsible All-Cards Picker (1–600, Warm Cream + Rounded White & Emerald Tiles) */}
           {!isCardsLocked && (cardPickerOpen || playerCards.length === 0) && (
-            <div className="rounded-2xl bg-[#FFF9ED] border border-[#E7EDE8] p-3 sm:p-3.5 space-y-2.5 sm:space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+            <div className="rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] p-2 sm:p-2.5 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-[11px]">
                 <span className="font-extrabold text-[#159447]">
                   {lang === 'am'
                     ? `ሁሉም ካርዶች 1–600 · እስከ 4 ይምረጡ (${cardPrice} ETB)`
                     : `Select Bingo Cards 1–600 · Pick up to 4 (${cardPrice} ETB)`}
                 </span>
-                <div className="relative w-full sm:w-48">
+                <div className="relative w-full sm:w-44">
                   <Search
-                    size={13}
+                    size={12}
                     className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#68776D]"
                   />
                   <input
@@ -486,12 +486,12 @@ export function LiveGameScreen({
                     onChange={(e) => setCardSearch(e.target.value)}
                     placeholder={lang === 'am' ? 'ቁጥር ፈልግ...' : 'Search card...'}
                     aria-label="Search card number"
-                    className="w-full pl-7 pr-2.5 py-2 rounded-xl bg-white border border-[#E7EDE8] text-xs font-bold text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447] min-h-[38px]"
+                    className="w-full pl-7 pr-2 py-1.5 rounded-lg bg-white border border-[#E7EDE8] text-xs font-bold text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447] min-h-[32px]"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-6 sm:grid-cols-10 gap-1.5 max-h-[240px] sm:max-h-[260px] overflow-y-auto overscroll-contain p-0.5">
+              <div className="grid grid-cols-6 sm:grid-cols-10 gap-1.5 max-h-[195px] sm:max-h-[220px] overflow-y-auto overscroll-contain p-0.5">
                 {visibleCardIds.map((cid) => {
                   const isSelected = selectedCardIds.includes(cid);
                   const isTaken = activeRoom.takenCardIds.includes(cid);
@@ -513,7 +513,7 @@ export function LiveGameScreen({
           )}
 
           {isCardsLocked && cardPickerOpen && (
-            <div className="rounded-xl bg-[#FEF5DC] border border-[#F5BD42] px-3.5 py-2.5 text-xs font-bold text-[#183326]">
+            <div className="rounded-lg bg-[#FEF5DC] border border-[#F5BD42] px-2.5 py-2 text-[11px] font-bold text-[#183326]">
               {activeRoom.status === 'completed'
                 ? lang === 'am'
                   ? 'ዙሩ ተጠናቋል — አዲስ የ60 ሰከንድ ካርድ መምረጫ በቅርቡ ይከፈታል።'
@@ -526,8 +526,8 @@ export function LiveGameScreen({
 
           {/* Active Player Cards Grid */}
           {playerCards.length === 0 ? (
-            <div className="py-8 sm:py-10 px-4 text-center rounded-2xl bg-[#FFF9ED] border border-dashed border-[#159447]/35 space-y-3">
-              <p className="text-xs sm:text-sm font-extrabold text-[#183326]">
+            <div className="py-5 px-3 text-center rounded-xl bg-[#FFF9ED] border border-dashed border-[#159447]/35 space-y-2">
+              <p className="text-xs font-extrabold text-[#183326]">
                 {isCardsLocked
                   ? lang === 'am'
                     ? 'ካርድ ስላልመረጡ በዚህ ዙር መጫወት አይችሉም። ይህ ዙር ሲያልቅ አዲስ ካርድ ይምረጡ።'
@@ -536,18 +536,18 @@ export function LiveGameScreen({
                   ? 'ለመጀመር ከላይ አንድ ነጭ የካርድ ቁጥር ይምረጡ (10 ብር)።'
                   : 'Tap any white card number above to join this Bingo round (10 ETB).'}
               </p>
-              <p className="text-[11px] font-semibold text-[#68776D]">
+              <p className="text-[10.5px] font-semibold text-[#68776D]">
                 {lang === 'am'
                   ? 'ሲቀላቀሉ 15 ብር ቦነስ ያገኛሉ · ጓደኛ ሲጋብዙ +20 ብር ቦነስ ያገኛሉ!'
                   : '15 Birr Welcome Join Bonus · +20 Birr Bonus per Invited Friend!'}
               </p>
               {!isCardsLocked && (
-                <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                <div className="flex flex-wrap items-center justify-center gap-1.5 pt-0.5">
                   <PrimaryButton
                     variant="emerald"
                     size="sm"
                     onClick={onAddQuickCard}
-                    icon={<Plus size={14} />}
+                    icon={<Plus size={13} />}
                   >
                     {lang === 'am' ? 'ፈጣን ካርድ ምረጥ (10 ብር)' : 'Quick Pick a Card (10 ETB)'}
                   </PrimaryButton>
@@ -556,10 +556,10 @@ export function LiveGameScreen({
             </div>
           ) : (
             <div
-              className={`grid gap-2.5 mx-auto w-full ${
+              className={`grid gap-2 mx-auto w-full ${
                 playerCards.length === 1
-                  ? 'grid-cols-1 max-w-[215px]'
-                  : 'grid-cols-2 max-w-[400px]'
+                  ? 'grid-cols-1 max-w-[195px]'
+                  : 'grid-cols-2 max-w-[360px]'
               }`}
             >
               {playerCards.map((card) => (
@@ -578,14 +578,14 @@ export function LiveGameScreen({
           )}
 
           {/* Compact Legend */}
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-[#E7EDE8] text-[11px] font-semibold text-[#68776D]">
-            <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-1.5 pt-2 border-t border-[#E7EDE8] text-[10.5px] font-semibold text-[#68776D]">
+            <div className="flex items-center gap-2.5">
               <span className="inline-flex items-center gap-1 text-[#08743A]">
-                <b className="inline-block w-2.5 h-2.5 rounded-full bg-[#159447]" />
+                <b className="inline-block w-2 h-2 rounded-full bg-[#159447]" />
                 {lang === 'am' ? 'ምልክት የተደረገ' : 'Marked'}
               </span>
               <span className="inline-flex items-center gap-1 text-[#9A6B0B]">
-                <b className="inline-block w-2.5 h-2.5 rounded-full bg-[#F5BD42]" />
+                <b className="inline-block w-2 h-2 rounded-full bg-[#F5BD42]" />
                 {lang === 'am' ? '★ ነፃ / አሸናፊ' : '★ Free / Win'}
               </span>
             </div>

@@ -19,31 +19,31 @@ const BALL_STYLES: Record<
     gradient: 'radial-gradient(circle at 30% 24%, #ffffff, #6ee7b7 26%, #159447 68%, #08743A)',
     textColor: '#ffffff',
     ringColor: '#A7F3D0',
-    glow: '0 8px 22px rgba(21, 148, 71, 0.34)',
+    glow: '0 5px 14px rgba(21, 148, 71, 0.3)',
   },
   I: {
     gradient: 'radial-gradient(circle at 30% 24%, #ffffff, #fde68a 28%, #F5BD42 68%, #D99B20)',
     textColor: '#183326',
     ringColor: '#FDE68A',
-    glow: '0 8px 22px rgba(245, 189, 66, 0.38)',
+    glow: '0 5px 14px rgba(245, 189, 66, 0.34)',
   },
   N: {
     gradient: 'radial-gradient(circle at 30% 24%, #ffffff, #fdba74 26%, #f97316 68%, #c2410c)',
     textColor: '#ffffff',
     ringColor: '#FED7AA',
-    glow: '0 8px 22px rgba(249, 115, 22, 0.32)',
+    glow: '0 5px 14px rgba(249, 115, 22, 0.28)',
   },
   G: {
     gradient: 'radial-gradient(circle at 30% 24%, #ffffff, #93c5fd 26%, #2563eb 68%, #1d4ed8)',
     textColor: '#ffffff',
     ringColor: '#BFDBFE',
-    glow: '0 8px 22px rgba(37, 99, 235, 0.32)',
+    glow: '0 5px 14px rgba(37, 99, 235, 0.28)',
   },
   O: {
     gradient: 'radial-gradient(circle at 30% 24%, #ffffff, #fda4af 26%, #e11d48 68%, #9f1239)',
     textColor: '#ffffff',
     ringColor: '#FECDD3',
-    glow: '0 8px 22px rgba(225, 29, 72, 0.32)',
+    glow: '0 5px 14px rgba(225, 29, 72, 0.28)',
   },
 };
 
@@ -60,10 +60,10 @@ export function BingoBall3D({
   const style = BALL_STYLES[letter];
 
   const dimensions = {
-    sm: 'w-9 h-9 text-xs border-2',
-    md: 'w-12 h-12 text-sm border-[3px]',
-    lg: 'w-24 h-24 text-3xl border-[5px]',
-    xl: 'w-28 h-28 text-4xl border-[6px]',
+    sm: 'w-7 h-7 text-[10px] border-[1.5px]',
+    md: 'w-9 h-9 text-xs border-2',
+    lg: 'w-16 h-16 text-xl border-[3.5px]',
+    xl: 'w-20 h-20 text-2xl border-4',
   }[size];
 
   return (
@@ -80,23 +80,23 @@ export function BingoBall3D({
         background: style.gradient,
         color: style.textColor,
         borderColor: style.ringColor,
-        boxShadow: `inset -6px -8px 14px rgba(24, 51, 38, 0.22), ${
+        boxShadow: `inset -4px -5px 10px rgba(24, 51, 38, 0.2), ${
           size === 'lg' || size === 'xl' || isRecentHighlight
             ? style.glow
-            : '0 4px 10px rgba(24, 51, 38, 0.14)'
+            : '0 2px 6px rgba(24, 51, 38, 0.12)'
         }`,
       }}
       className={`relative shrink-0 rounded-full flex flex-col items-center justify-center font-extrabold select-none ${dimensions} ${
-        isRecentHighlight ? 'ring-2 ring-[#159447] ring-offset-2 ring-offset-[#FFF9ED]' : ''
+        isRecentHighlight ? 'ring-2 ring-[#159447] ring-offset-1 ring-offset-[#FFF9ED]' : ''
       }`}
       aria-label={`Bingo ball ${letter} ${number}`}
     >
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute top-1.5 left-2.5 w-1/3 h-1/4 rounded-full bg-white/70 blur-[1px] -rotate-12"
+        className="pointer-events-none absolute top-1 left-2 w-1/3 h-1/4 rounded-full bg-white/70 blur-[0.5px] -rotate-12"
       />
       {(size === 'lg' || size === 'xl') && (
-        <small className="text-xs font-extrabold tracking-widest uppercase leading-none opacity-90 mb-0.5 drop-shadow-xs">
+        <small className="text-[10px] font-extrabold tracking-widest uppercase leading-none opacity-90 drop-shadow-xs">
           {letter}
         </small>
       )}

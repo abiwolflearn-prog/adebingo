@@ -1674,20 +1674,20 @@ export default function App() {
       />
 
       {/* Main View Switcher */}
-      <main className="mt-3 sm:mt-4">
+      <main className="mt-2 sm:mt-2.5">
         {screen === 'home' && (
-          <div className="space-y-4">
+          <div className="space-y-2.5">
             {/* 1. Hero Dashboard Card: Friendly ADEYBINGO Branding, 3D Bingo Balls, Room Status & Play CTA */}
-            <section className="rounded-3xl bg-white border border-[#E7EDE8] p-4 sm:p-6 shadow-[0_10px_28px_rgba(24,51,38,0.06)] space-y-4 relative overflow-hidden">
+            <section className="rounded-2xl bg-white border border-[#E7EDE8] p-2.5 sm:p-3.5 shadow-[0_4px_16px_rgba(24,51,38,0.05)] space-y-2.5 relative overflow-hidden">
               {/* Subtle warm decorative glow */}
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute -top-20 -right-20 w-56 h-56 rounded-full bg-gradient-to-br from-[#E6F6EB] via-[#FEF5DC]/60 to-transparent blur-2xl"
+                className="pointer-events-none absolute -top-16 -right-16 w-44 h-44 rounded-full bg-gradient-to-br from-[#E6F6EB] via-[#FEF5DC]/60 to-transparent blur-2xl"
               />
 
-              <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                <div className="space-y-2 min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
+              <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
+                <div className="space-y-1.5 min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <GameStatusBadge
                       status={
                         activeRoom.status === 'live'
@@ -1711,37 +1711,37 @@ export default function App() {
                               : `${activeRoom.nameEn} · Open for Cards`
                       }
                     />
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#FEF5DC] border border-[#F5BD42]/60 text-[11px] font-extrabold text-[#9A6B0B]">
-                      <Sparkles size={12} className="text-[#D99B20]" />
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#FEF5DC] border border-[#F5BD42]/60 text-[10px] font-extrabold text-[#9A6B0B]">
+                      <Sparkles size={10} className="text-[#D99B20]" />
                       {cardPrice} ETB / {lang === 'am' ? 'ካርድ' : 'Card'}
                     </span>
                     {referredByCode && (
-                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#E6F6EB] border border-[#159447]/30 text-[11px] font-extrabold text-[#08743A]">
-                        <Gift size={12} className="text-[#159447]" />
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#E6F6EB] border border-[#159447]/30 text-[10px] font-extrabold text-[#08743A]">
+                        <Gift size={10} className="text-[#159447]" />
                         {lang === 'am' ? `ተጋባዥ (${referredByCode})` : `Invited (${referredByCode})`}
                       </span>
                     )}
                   </div>
 
-                  <h1 className="font-['Outfit'] text-2xl sm:text-3xl font-extrabold text-[#183326] tracking-tight leading-tight">
+                  <h1 className="font-['Outfit'] text-base sm:text-xl font-extrabold text-[#183326] tracking-tight leading-tight">
                     {lang === 'am'
                       ? 'ADEYBINGO — የቀጥታ ቢንጎ ይጫወቱ!'
                       : 'ADEYBINGO — Play Live Bingo!'}
                   </h1>
-                  <p className="text-xs sm:text-sm text-[#68776D] max-w-xl leading-relaxed">
+                  <p className="text-[11px] sm:text-xs text-[#68776D] max-w-xl leading-snug">
                     {lang === 'am'
                       ? 'ከ1–600 የሚወዷቸውን ካርዶች ይምረጡ፣ ባለ 3D ኳሶችን ይከታተሉ እና ወዲያውኑ ሽልማት ያሸንፉ።'
                       : 'Pick your lucky cards from 1–600, follow the colorful 3D Bingo balls, and win instant rewards.'}
                   </p>
 
-                  {/* Colorful 3D Bingo Ball Artwork Showcase */}
-                  <div className="pt-1 flex flex-wrap items-center gap-2 sm:gap-2.5">
+                  {/* Colorful 3D Bingo Ball Artwork Showcase (Ultra-Compact) */}
+                  <div className="pt-0.5 flex flex-wrap items-center gap-1.5">
                     <BingoBall number={7} size="sm" animate={!reducedMotion} />
                     <BingoBall number={22} size="sm" animate={!reducedMotion} />
                     <BingoBall number={38} size="sm" animate={!reducedMotion} />
                     <BingoBall number={54} size="sm" animate={!reducedMotion} />
                     <BingoBall number={71} size="sm" animate={!reducedMotion} />
-                    <span className="text-[11px] font-bold text-[#68776D] ml-1">
+                    <span className="text-[10.5px] font-bold text-[#68776D] ml-0.5">
                       {activeRoom.activePlayers} {lang === 'am' ? 'ተጫዋቾች በክፍሉ ውስጥ' : 'players in room'} ·{' '}
                       {DEFAULT_GAME_RULES.maxCardsPerRoom - activeRoom.takenCardIds.length}{' '}
                       {lang === 'am' ? 'ነፃ ካርዶች' : 'cards available'}
@@ -1749,10 +1749,10 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Prominent Round Timer Card */}
+                {/* Compact Round Timer Card */}
                 <div
                   data-testid="home-timer"
-                  className={`rounded-2xl border-2 px-4 py-3 sm:px-5 sm:py-4 min-w-[150px] sm:min-w-[185px] shrink-0 space-y-2 ${
+                  className={`rounded-xl border px-3 py-2 sm:px-3.5 sm:py-2.5 min-w-[135px] sm:min-w-[160px] shrink-0 space-y-1 ${
                     activeRoom.status === 'live'
                       ? 'bg-[#E6F6EB] border-[#159447]'
                       : activeRoom.status === 'completed'
@@ -1762,10 +1762,10 @@ export default function App() {
                           : 'bg-[#FFF9ED] border-[#159447]/30'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-[#08743A]">
-                    <span className="flex items-center gap-1.5">
+                  <div className="flex items-center justify-between gap-1 text-[10px] font-extrabold uppercase tracking-wider text-[#08743A]">
+                    <span className="flex items-center gap-1">
                       <Clock
-                        size={14}
+                        size={12}
                         className={
                           isCardsLocked
                             ? 'text-[#D94B4B]'
@@ -1786,54 +1786,56 @@ export default function App() {
                             ? 'የካርድ ሰዓት'
                             : 'CARD TIMER'}
                     </span>
+                    <span className="text-[9.5px] font-semibold text-[#68776D]">
+                      {activeRoom.status === 'live'
+                        ? lang === 'am'
+                          ? 'ካርዶች ተቆልፈዋል'
+                          : 'Cards Locked'
+                        : lang === 'am'
+                          ? 'ከ 00:00 በፊት'
+                          : 'Before 00:00'}
+                    </span>
                   </div>
-                  <div
-                    className={`font-mono text-2xl sm:text-3xl font-extrabold tabular-nums leading-none ${
-                      activeRoom.status === 'live'
-                        ? 'text-[#08743A]'
-                        : isUrgentCountdown
-                          ? 'text-[#D99B20]'
-                          : 'text-[#183326]'
-                    }`}
-                  >
-                    {activeRoom.status === 'countdown'
-                      ? countdownLabel
-                      : activeRoom.status === 'live'
-                        ? `${calls.length}/75`
-                        : '00:05'}
-                  </div>
-                  <div className="w-full h-2 rounded-full bg-white border border-[#E7EDE8] overflow-hidden">
+                  <div className="flex items-center justify-between gap-2">
                     <div
-                      className={`h-full transition-all duration-500 ${
+                      className={`font-mono text-lg sm:text-xl font-extrabold tabular-nums leading-none ${
                         activeRoom.status === 'live'
-                          ? 'bg-[#159447] w-full animate-pulse'
-                          : activeRoom.status === 'completed'
-                            ? 'bg-[#F5BD42] w-1/3'
-                            : isUrgentCountdown
-                              ? 'bg-[#D99B20]'
-                              : 'bg-gradient-to-r from-[#159447] to-[#F5BD42]'
+                          ? 'text-[#08743A]'
+                          : isUrgentCountdown
+                            ? 'text-[#D99B20]'
+                            : 'text-[#183326]'
                       }`}
-                      style={
-                        activeRoom.status === 'countdown'
-                          ? { width: `${timerPercent}%` }
-                          : undefined
-                      }
-                    />
+                    >
+                      {activeRoom.status === 'countdown'
+                        ? countdownLabel
+                        : activeRoom.status === 'live'
+                          ? `${calls.length}/75`
+                          : '00:05'}
+                    </div>
+                    <div className="flex-1 max-w-[90px] h-1.5 rounded-full bg-white border border-[#E7EDE8] overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 ${
+                          activeRoom.status === 'live'
+                            ? 'bg-[#159447] w-full animate-pulse'
+                            : activeRoom.status === 'completed'
+                              ? 'bg-[#F5BD42] w-1/3'
+                              : isUrgentCountdown
+                                ? 'bg-[#D99B20]'
+                                : 'bg-gradient-to-r from-[#159447] to-[#F5BD42]'
+                        }`}
+                        style={
+                          activeRoom.status === 'countdown'
+                            ? { width: `${timerPercent}%` }
+                            : undefined
+                        }
+                      />
+                    </div>
                   </div>
-                  <p className="text-[11px] font-bold text-[#68776D]">
-                    {activeRoom.status === 'live'
-                      ? lang === 'am'
-                        ? 'ካርዶች ተቆልፈዋል'
-                        : 'Cards Locked for Round'
-                      : lang === 'am'
-                        ? 'ከመጀመሩ በፊት ካርድ ይምረጡ'
-                        : 'Select cards before 00:00'}
-                  </p>
                 </div>
               </div>
 
-              {/* Balance & Rewards Summary Strip */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+              {/* Balance & Rewards Summary Strip (2-col on mobile, 3-col on desktop) */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-0.5">
                 <BalanceCard
                   variant="emerald"
                   label={lang === 'am' ? 'የመጫወቻ ቀሪ ሂሳብ' : 'Playable Balance'}
@@ -1845,7 +1847,7 @@ export default function App() {
                       ? `የተመረጡ ካርዶች፦ ${selectedCardIds.length}/4`
                       : `Selected Cards: ${selectedCardIds.length}/4`
                   }
-                  icon={<Wallet className="w-3.5 h-3.5" />}
+                  icon={<Wallet className="w-3 h-3" />}
                 />
 
                 <BalanceCard
@@ -1859,24 +1861,24 @@ export default function App() {
                       ? 'ጓደኛ ሲጋብዙ ወዲያውኑ +20 ብር ያግኙ'
                       : 'Earn +20 ETB per invited friend'
                   }
-                  icon={<Trophy className="w-3.5 h-3.5 text-[#D99B20]" />}
+                  icon={<Trophy className="w-3 h-3 text-[#D99B20]" />}
                 />
 
-                <div className="rounded-2xl bg-[#FFF9ED] border border-[#E7EDE8] p-4 flex flex-col justify-between gap-2">
+                <div className="col-span-2 sm:col-span-1 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] p-2.5 flex flex-col justify-between gap-1.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-extrabold uppercase tracking-wider text-[#68776D] flex items-center gap-1.5">
-                      <Users size={14} className="text-[#159447]" />
+                    <span className="text-[10.5px] font-extrabold uppercase tracking-wider text-[#68776D] flex items-center gap-1">
+                      <Users size={12} className="text-[#159447]" />
                       {lang === 'am' ? 'ፈጣን መዳረሻ' : 'Quick Actions'}
                     </span>
-                    <span className="text-[11px] font-extrabold text-[#159447]">
+                    <span className="text-[10px] font-extrabold text-[#159447]">
                       1–600 {lang === 'am' ? 'ካርዶች' : 'Cards'}
                     </span>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-1.5">
                     <SecondaryButton
                       size="sm"
                       onClick={() => setScreen('cards')}
-                      icon={<Grid size={14} className="text-[#159447]" />}
+                      icon={<Grid size={12} className="text-[#159447]" />}
                       className="flex-1"
                     >
                       {lang === 'am' ? 'ሙሉ ካርድ መምረጫ' : 'Full Card Picker'}
@@ -1884,7 +1886,7 @@ export default function App() {
                     <SecondaryButton
                       size="sm"
                       onClick={() => setScreen('referral')}
-                      icon={<Gift size={14} className="text-[#D99B20]" />}
+                      icon={<Gift size={12} className="text-[#D99B20]" />}
                       className="flex-1"
                     >
                       {lang === 'am' ? 'ጓደኛ ጋብዝ' : 'Invite (+20)'}
@@ -1893,16 +1895,16 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Large Emerald Green Play Bingo Button */}
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
+              {/* Compact Emerald Green Play Bingo Button */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-0.5">
                 <PrimaryButton
                   data-start="true"
                   variant="emerald"
-                  size="lg"
+                  size="md"
                   fullWidth
                   onClick={handleEnterLiveGame}
-                  icon={<Play size={20} className="fill-current" />}
-                  className="text-base sm:text-lg py-4 shadow-[0_10px_24px_rgba(21,148,71,0.3)]"
+                  icon={<Play size={15} className="fill-current" />}
+                  className="shadow-[0_6px_16px_rgba(21,148,71,0.26)]"
                 >
                   {selectedCardIds.length > 0
                     ? lang === 'am'
@@ -1920,9 +1922,9 @@ export default function App() {
                 {selectedCardIds.length === 0 && !isCardsLocked && (
                   <PrimaryButton
                     variant="gold"
-                    size="lg"
+                    size="md"
                     onClick={() => handleQuickPickCards(1)}
-                    icon={<Shuffle size={18} />}
+                    icon={<Shuffle size={14} />}
                     className="sm:w-auto shrink-0 whitespace-nowrap"
                   >
                     {lang === 'am' ? '1 ዕድለኛ ካርድ ምረጥ' : 'Quick Pick 1 Card'}
@@ -1931,22 +1933,22 @@ export default function App() {
               </div>
             </section>
 
-            {/* 2. All Cards Selector (1–600) — Bright White/Cream & Emerald/Gold Design */}
-            <section className="rounded-3xl bg-white border border-[#E7EDE8] p-4 sm:p-6 shadow-[0_8px_24px_rgba(24,51,38,0.05)] space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            {/* 2. All Cards Selector (1–600) — Ultra-Compact Bright White/Cream & Emerald/Gold Design */}
+            <section className="rounded-2xl bg-white border border-[#E7EDE8] p-2.5 sm:p-3.5 shadow-[0_4px_16px_rgba(24,51,38,0.05)] space-y-2.5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h2 className="font-['Outfit'] text-lg sm:text-xl font-extrabold text-[#08743A]">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <h2 className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#08743A]">
                       {lang === 'am'
                         ? `የቢንጎ ካርድ መምረጫ (1–600)`
                         : `Select Your Bingo Cards (1–600)`}
                     </h2>
-                    <span className="px-2.5 py-0.5 rounded-full bg-[#E6F6EB] border border-[#159447]/30 text-xs font-extrabold text-[#08743A]">
+                    <span className="px-2 py-0.5 rounded-full bg-[#E6F6EB] border border-[#159447]/30 text-[10.5px] font-extrabold text-[#08743A]">
                       {selectedCardIds.length} / {DEFAULT_GAME_RULES.maxCardsPerPlayer}{' '}
                       {lang === 'am' ? 'ተመርጧል' : 'Selected'}
                     </span>
                   </div>
-                  <p className="text-xs sm:text-sm text-[#68776D] mt-0.5">
+                  <p className="text-[11px] text-[#68776D] mt-0.5">
                     {isCardsLocked
                       ? lang === 'am'
                         ? '60 ሰከንዱ አልቋል — ይህ ዙር እስኪያልቅ ድረስ ካርድ መምረጥ አይቻልም'
@@ -1957,11 +1959,11 @@ export default function App() {
                   </p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                  <div className="relative flex-1 sm:w-48">
+                <div className="flex flex-wrap items-center gap-1.5 w-full sm:w-auto">
+                  <div className="relative flex-1 sm:w-44">
                     <Search
-                      size={15}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-[#68776D]"
+                      size={13}
+                      className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#68776D]"
                     />
                     <input
                       type="search"
@@ -1969,7 +1971,7 @@ export default function App() {
                       onChange={(e) => setHomeCardSearch(e.target.value)}
                       placeholder={lang === 'am' ? 'ካርድ ቁጥር ፈልግ (1-600)...' : 'Search card (1-600)...'}
                       aria-label="Search card number 1 to 600"
-                      className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs sm:text-sm font-bold text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447] min-h-[42px]"
+                      className="w-full pl-7 pr-2.5 py-1.5 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-[11px] font-bold text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447] min-h-[34px]"
                     />
                   </div>
 
@@ -1982,8 +1984,8 @@ export default function App() {
                           ? handleQuickPickCards(1)
                           : handleAddQuickCard()
                       }
-                      icon={<Shuffle size={14} className="text-[#159447]" />}
-                      className="shrink-0 min-h-[42px]"
+                      icon={<Shuffle size={12} className="text-[#159447]" />}
+                      className="shrink-0"
                     >
                       {selectedCardIds.length === 0
                         ? lang === 'am'
@@ -1998,22 +2000,22 @@ export default function App() {
               </div>
 
               {/* Legend Strip */}
-              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-2xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-bold text-[#68776D]">
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-3.5 h-3.5 rounded-md bg-white border border-[#E7EDE8] inline-block" />
+              <div className="flex flex-wrap items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[10.5px] font-bold text-[#68776D]">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <span className="inline-flex items-center gap-1">
+                    <span className="w-2.5 h-2.5 rounded-xs bg-white border border-[#E7EDE8] inline-block" />
                     {lang === 'am' ? 'ክፍት' : 'Available'}
                   </span>
-                  <span className="inline-flex items-center gap-1.5 text-[#08743A]">
-                    <span className="w-3.5 h-3.5 rounded-md bg-[#159447] inline-block" />
+                  <span className="inline-flex items-center gap-1 text-[#08743A]">
+                    <span className="w-2.5 h-2.5 rounded-xs bg-[#159447] inline-block" />
                     {lang === 'am' ? 'የእርስዎ ምርጫ' : 'Your Selection'}
                   </span>
-                  <span className="inline-flex items-center gap-1.5 text-[#9A6B0B]">
-                    <span className="w-3.5 h-3.5 rounded-md bg-[#FEF5DC] border border-[#F5BD42] inline-block" />
+                  <span className="inline-flex items-center gap-1 text-[#9A6B0B]">
+                    <span className="w-2.5 h-2.5 rounded-xs bg-[#FEF5DC] border border-[#F5BD42] inline-block" />
                     {lang === 'am' ? 'ወርቃማ ዕድል' : 'Lucky Gold'}
                   </span>
-                  <span className="inline-flex items-center gap-1.5 text-[#D94B4B]">
-                    <span className="w-3.5 h-3.5 rounded-md bg-[#FFF4F4] border border-[#D94B4B]/40 inline-block" />
+                  <span className="inline-flex items-center gap-1 text-[#D94B4B]">
+                    <span className="w-2.5 h-2.5 rounded-xs bg-[#FFF4F4] border border-[#D94B4B]/40 inline-block" />
                     {lang === 'am' ? 'የተያዘ' : 'Reserved'}
                   </span>
                 </div>
@@ -2023,7 +2025,7 @@ export default function App() {
               </div>
 
               {isCardsLocked && (
-                <div className="rounded-2xl bg-[#FFF5F5] border border-[#D94B4B]/35 px-3.5 py-2.5 text-xs font-bold text-[#D94B4B] flex items-center justify-between gap-2">
+                <div className="rounded-xl bg-[#FFF5F5] border border-[#D94B4B]/35 px-3 py-2 text-[11px] font-bold text-[#D94B4B] flex items-center justify-between gap-2">
                   <span>
                     {activeRoom.status === 'completed'
                       ? lang === 'am'
@@ -2036,9 +2038,9 @@ export default function App() {
                 </div>
               )}
 
-              {/* Warm Cream Container with Rounded White/Emerald/Gold Number Tiles */}
-              <div className="rounded-2xl bg-[#FFF9ED] border border-[#E7EDE8] p-2.5 sm:p-3">
-                <div className="grid grid-cols-5 sm:grid-cols-8 md:grid-cols-10 lg:grid-cols-12 gap-2 max-h-[300px] sm:max-h-[380px] overflow-y-auto overscroll-contain pr-1">
+              {/* Warm Cream Container with Compact Rounded White/Emerald/Gold Number Tiles (6 cols mobile / 10-12 desktop) */}
+              <div className="rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] p-2">
+                <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-12 gap-1.5 max-h-[230px] sm:max-h-[290px] overflow-y-auto overscroll-contain pr-0.5">
                   {(homeCardSearch.trim()
                     ? ALL_CARD_NUMBERS.filter((id) => String(id).includes(homeCardSearch.trim()))
                     : ALL_CARD_NUMBERS
@@ -2055,7 +2057,7 @@ export default function App() {
                         isSpecialGold={isSpecialGold}
                         disabled={isCardsLocked}
                         onSelect={handleToggleCardId}
-                        size="md"
+                        size="sm"
                       />
                     );
                   })}
@@ -2064,18 +2066,18 @@ export default function App() {
 
               {/* Selected Cards Preview & Confirmation Strip */}
               {selectedCardIds.length > 0 && (
-                <div className="space-y-3 pt-3 border-t border-[#E7EDE8]">
-                  <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-2xl bg-[#E6F6EB] border border-[#159447]/30 text-xs">
+                <div className="space-y-2 pt-2 border-t border-[#E7EDE8]">
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-2 rounded-xl bg-[#E6F6EB] border border-[#159447]/30 text-[11px]">
                     <span className="text-[#183326] font-bold">
                       {lang === 'am' ? 'የተመረጡ ካርዶች፦' : 'Your Selected Cards:'}{' '}
-                      <b className="text-[#08743A] font-mono text-sm">
+                      <b className="text-[#08743A] font-mono text-xs">
                         #{selectedCardIds.join(', #')}
                       </b>{' '}
                       <span className="text-[#68776D]">
                         ({(selectedCardIds.length * cardPrice).toFixed(2)} ETB)
                       </span>
                     </span>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
                       {!isCardsLocked && (
                         <button
                           type="button"
@@ -2089,7 +2091,7 @@ export default function App() {
                         size="sm"
                         variant="emerald"
                         onClick={handleEnterLiveGame}
-                        icon={<Play size={14} className="fill-current" />}
+                        icon={<Play size={12} className="fill-current" />}
                       >
                         {lang === 'am' ? 'ወደ ጨዋታ ቀጥል' : 'Confirm & Play'}
                       </PrimaryButton>
@@ -2098,10 +2100,10 @@ export default function App() {
 
                   {/* Live 5x5 Previews of Selected Cards */}
                   <div
-                    className={`grid gap-3 ${
+                    className={`grid gap-2 ${
                       playerCards.length === 1
-                        ? 'grid-cols-1 max-w-[230px]'
-                        : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
+                        ? 'grid-cols-1 max-w-[190px]'
+                        : 'grid-cols-2 sm:grid-cols-2 lg:grid-cols-4'
                     }`}
                   >
                     {playerCards.map((card) => (

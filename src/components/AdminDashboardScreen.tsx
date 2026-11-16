@@ -800,35 +800,35 @@ export function AdminDashboardScreen({
   return (
     <div
       data-testid="admin-dashboard"
-      className="min-h-screen bg-[#FFF9ED] text-[#183326] pb-16"
+      className="min-h-screen bg-[#FFF9ED] text-[#183326] pb-12"
     >
-      {/* Top Admin Authority Bar (Unified ADEYBINGO Emerald, Gold & Clean White Theme) */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-[#E7EDE8] px-4 py-3 shadow-xs">
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
+      {/* Top Admin Authority Bar (Unified ADEYBINGO Emerald, Gold & Clean White Theme — Ultra-Compact) */}
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-[#E7EDE8] px-3 py-2 shadow-2xs">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleExitAdmin}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#E6F6EB] border border-[#159447]/30 text-xs font-extrabold text-[#08743A] hover:border-[#159447] transition-colors"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#E6F6EB] border border-[#159447]/30 text-[11px] font-extrabold text-[#08743A] hover:border-[#159447] transition-colors min-h-[32px]"
             >
-              <ArrowLeft size={14} />
+              <ArrowLeft size={13} />
               {lang === 'am' ? 'ወደ ጨዋታ ተመለስ' : 'Back to Player App'}
             </button>
 
-            <div className="flex items-center gap-2">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#159447] to-[#08743A] text-white flex items-center justify-center font-black shadow-sm">
-                <Shield size={18} />
+            <div className="flex items-center gap-1.5">
+              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-[#159447] to-[#08743A] text-white flex items-center justify-center font-black shadow-2xs">
+                <Shield size={15} />
               </div>
               <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="font-['Outfit'] text-base sm:text-lg font-extrabold text-[#183326]">
+                <div className="flex items-center gap-1.5">
+                  <h1 className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#183326] leading-tight">
                     ADEYBINGO Owner Admin Center
                   </h1>
-                  <span className="px-2 py-0.5 rounded-md bg-[#FEF5DC] border border-[#F5BD42] text-[#9A6B0B] text-[10px] font-extrabold uppercase">
+                  <span className="px-1.5 py-0.5 rounded bg-[#FEF5DC] border border-[#F5BD42] text-[#9A6B0B] text-[9.5px] font-extrabold uppercase">
                     Owner Only
                   </span>
                 </div>
-                <p className="text-[11px] text-[#68776D]">
+                <p className="text-[10px] text-[#68776D] leading-tight">
                   Payouts & Withdrawals · Payment Reference Verification · Protected by Server Allowlist
                 </p>
               </div>
@@ -836,10 +836,10 @@ export function AdminDashboardScreen({
           </div>
 
           {/* Authenticated Owner Badge & Refresh */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             {actor && authStatus === 'authorized' && (
-              <div className="px-3 py-1.5 rounded-xl bg-[#E6F6EB] border border-[#159447]/30 text-xs flex items-center gap-2">
-                <CheckCircle2 size={14} className="text-[#159447]" />
+              <div className="px-2.5 py-1 rounded-lg bg-[#E6F6EB] border border-[#159447]/30 text-[11px] flex items-center gap-1.5">
+                <CheckCircle2 size={13} className="text-[#159447]" />
                 <span className="font-bold text-[#183326]">{actor.displayName}</span>
                 {actor.email && (
                   <span className="font-mono text-[10px] text-[#08743A]">({actor.email})</span>
@@ -851,10 +851,10 @@ export function AdminDashboardScreen({
               <button
                 type="button"
                 onClick={() => fetchAllAdminData(sessionToken, userSearchQuery, payoutFilter)}
-                className="p-2 rounded-xl bg-white border border-[#E7EDE8] text-[#159447] hover:border-[#159447]"
+                className="p-1.5 rounded-lg bg-white border border-[#E7EDE8] text-[#159447] hover:border-[#159447]"
                 title="Refresh Server State"
               >
-                <RefreshCw size={15} />
+                <RefreshCw size={14} />
               </button>
             )}
           </div>
@@ -863,16 +863,16 @@ export function AdminDashboardScreen({
 
       {/* Toast Notification */}
       {bannerToast && (
-        <div className="max-w-7xl mx-auto px-4 mt-3">
-          <div className="px-4 py-2.5 rounded-xl bg-white border-2 border-[#159447] text-[#183326] text-xs font-bold flex items-center justify-between shadow-md">
-            <span className="flex items-center gap-2">
-              <CheckCircle2 size={15} className="text-[#159447]" />
+        <div className="max-w-7xl mx-auto px-3 mt-2">
+          <div className="px-3 py-2 rounded-lg bg-white border-2 border-[#159447] text-[#183326] text-[11px] font-bold flex items-center justify-between shadow-sm">
+            <span className="flex items-center gap-1.5">
+              <CheckCircle2 size={13} className="text-[#159447]" />
               {bannerToast}
             </span>
             <button
               type="button"
               onClick={() => setBannerToast(null)}
-              className="text-xs underline text-[#68776D]"
+              className="text-[11px] underline text-[#68776D]"
             >
               Dismiss
             </button>
@@ -880,50 +880,50 @@ export function AdminDashboardScreen({
         </div>
       )}
 
-      <main className="max-w-7xl mx-auto px-4 pt-5">
+      <main className="max-w-7xl mx-auto px-3 pt-3">
         {/* HTTP 403 / 401 Server Guard Screen for Non-Admin Identities */}
         {authStatus === 'forbidden' && (
           <div
             data-testid="admin-access-denied"
-            className="rounded-3xl bg-white border-2 border-[#D94B4B]/50 p-8 text-center max-w-xl mx-auto my-8 space-y-4 shadow-lg"
+            className="rounded-2xl bg-white border-2 border-[#D94B4B]/50 p-5 text-center max-w-lg mx-auto my-4 space-y-3 shadow-md"
           >
-            <div className="w-14 h-14 rounded-2xl bg-[#FFF5F5] text-[#D94B4B] flex items-center justify-center mx-auto border border-[#D94B4B]/30">
-              <Lock size={28} />
+            <div className="w-11 h-11 rounded-xl bg-[#FFF5F5] text-[#D94B4B] flex items-center justify-center mx-auto border border-[#D94B4B]/30">
+              <Lock size={22} />
             </div>
-            <span className="inline-block px-3 py-1 rounded-md bg-[#FFF5F5] text-[#D94B4B] text-[11px] font-extrabold uppercase">
+            <span className="inline-block px-2.5 py-0.5 rounded bg-[#FFF5F5] text-[#D94B4B] text-[10px] font-extrabold uppercase">
               HTTP 403 FORBIDDEN — OWNER ACCESS ONLY
             </span>
-            <h2 className="font-['Outfit'] text-2xl font-extrabold text-[#183326]">
+            <h2 className="font-['Outfit'] text-xl font-extrabold text-[#183326]">
               Administrator Access Restricted
             </h2>
-            <p className="text-xs text-[#68776D] leading-relaxed">{authMessage}</p>
-            <div className="p-3 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-left text-[11px] space-y-1 font-mono text-[#183326]">
+            <p className="text-xs text-[#68776D] leading-snug">{authMessage}</p>
+            <div className="p-2.5 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-left text-[10.5px] space-y-0.5 font-mono text-[#183326]">
               <div>Actor UID: {actor?.uid || 'unknown'}</div>
               <div>Email: {actor?.email || 'none'}</div>
               <div>Server Verified Role: {actor?.role || 'player'}</div>
               <div>Policy: Normal players cannot access Admin Management.</div>
             </div>
-            <div className="flex flex-wrap justify-center gap-3 pt-2">
+            <div className="flex flex-wrap justify-center gap-2 pt-1">
               <button
                 type="button"
                 onClick={handleGoogleOwnerSignIn}
                 disabled={googleSigningIn}
-                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-xs font-extrabold flex items-center gap-1.5"
+                className="px-3.5 py-2 rounded-lg bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-xs font-extrabold flex items-center gap-1"
               >
-                <LogIn size={14} />
+                <LogIn size={13} />
                 Sign in with Owner Google Account
               </button>
               <button
                 type="button"
                 onClick={() => setAuthStatus('unauthenticated')}
-                className="px-4 py-2.5 rounded-xl bg-white border border-[#E7EDE8] text-[#183326] text-xs font-extrabold"
+                className="px-3.5 py-2 rounded-lg bg-white border border-[#E7EDE8] text-[#183326] text-xs font-extrabold"
               >
                 Provide Another Credential
               </button>
               <button
                 type="button"
                 onClick={handleExitAdmin}
-                className="px-4 py-2.5 rounded-xl border border-[#E7EDE8] text-[#68776D] text-xs font-bold"
+                className="px-3.5 py-2 rounded-lg border border-[#E7EDE8] text-[#68776D] text-xs font-bold"
               >
                 Return to Lobby
               </button>
@@ -934,52 +934,52 @@ export function AdminDashboardScreen({
         {authStatus === 'unauthenticated' && (
           <div
             data-testid="admin-auth-gate"
-            className="rounded-3xl bg-white border border-[#E7EDE8] p-8 max-w-xl mx-auto my-8 space-y-5 shadow-lg"
+            className="rounded-2xl bg-white border border-[#E7EDE8] p-4 sm:p-5 max-w-lg mx-auto my-4 space-y-3 shadow-md"
           >
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-[#FEF5DC] border border-[#F5BD42] text-[#D99B20] flex items-center justify-center shrink-0">
-                <Lock size={24} />
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-xl bg-[#FEF5DC] border border-[#F5BD42] text-[#D99B20] flex items-center justify-center shrink-0">
+                <Lock size={20} />
               </div>
               <div>
-                <span className="inline-block px-2.5 py-0.5 rounded-md bg-[#E6F6EB] text-[#08743A] text-[10px] font-extrabold uppercase">
+                <span className="inline-block px-2 py-0.5 rounded bg-[#E6F6EB] text-[#08743A] text-[9.5px] font-extrabold uppercase">
                   OWNER AUTHENTICATION GATE
                 </span>
-                <h2 className="font-['Outfit'] text-xl font-extrabold text-[#183326] mt-0.5">
+                <h2 className="font-['Outfit'] text-lg font-extrabold text-[#183326]">
                   Owner-Only Admin Management
                 </h2>
               </div>
             </div>
 
-            <p className="text-xs text-[#68776D] leading-relaxed">
+            <p className="text-[11px] text-[#68776D] leading-snug">
               This panel is strictly locked to the game owner. Players cannot view or access Payouts,
               Withdrawals, or Payment Verification. Sign in with your authorized Google account or
               exchange a verified Telegram/Firebase token.
             </p>
 
             {/* One-Click Owner Access & Google Sign-In */}
-            <div className="p-4 rounded-2xl bg-[#FFF9ED] border border-[#159447]/30 space-y-2.5">
-              <div className="text-xs font-extrabold text-[#08743A] flex items-center gap-1.5">
-                <Shield size={14} className="text-[#159447]" />
+            <div className="p-3 rounded-xl bg-[#FFF9ED] border border-[#159447]/30 space-y-2">
+              <div className="text-[11px] font-extrabold text-[#08743A] flex items-center gap-1">
+                <Shield size={13} className="text-[#159447]" />
                 Owner Quick Unlock (abiwolfcode@gmail.com)
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <button
                   type="button"
                   data-testid="owner-quick-unlock-btn"
                   onClick={handleOwnerQuickUnlock}
                   disabled={googleSigningIn}
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#F5BD42] to-[#D99B20] text-[#183326] text-xs font-extrabold flex items-center justify-center gap-2 shadow-sm hover:brightness-105 disabled:opacity-50"
+                  className="w-full py-2 px-3 rounded-lg bg-gradient-to-r from-[#F5BD42] to-[#D99B20] text-[#183326] text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-2xs hover:brightness-105 disabled:opacity-50 min-h-[36px]"
                 >
-                  <Shield size={15} />
+                  <Shield size={13} />
                   {googleSigningIn ? 'Unlocking...' : 'Open Owner Dashboard Now'}
                 </button>
                 <button
                   type="button"
                   onClick={handleGoogleOwnerSignIn}
                   disabled={googleSigningIn}
-                  className="w-full py-3 px-4 rounded-xl bg-white border border-[#159447]/40 text-[#08743A] text-xs font-extrabold flex items-center justify-center gap-2 hover:border-[#159447] disabled:opacity-50"
+                  className="w-full py-2 px-3 rounded-lg bg-white border border-[#159447]/40 text-[#08743A] text-xs font-extrabold flex items-center justify-center gap-1.5 hover:border-[#159447] disabled:opacity-50 min-h-[36px]"
                 >
-                  <LogIn size={15} />
+                  <LogIn size={13} />
                   Sign In with Google Popup
                 </button>
               </div>
@@ -988,39 +988,39 @@ export function AdminDashboardScreen({
             {authMessage && (
               <div
                 data-testid="admin-auth-error"
-                className="p-3 rounded-xl bg-[#FFF5F5] border border-[#D94B4B]/40 text-xs text-[#D94B4B] font-semibold"
+                className="p-2.5 rounded-lg bg-[#FFF5F5] border border-[#D94B4B]/40 text-xs text-[#D94B4B] font-semibold"
               >
                 {authMessage}
               </div>
             )}
 
-            <div className="space-y-2 pt-2 border-t border-[#E7EDE8]">
-              <label className="block text-[11px] font-extrabold text-[#183326]">
+            <div className="space-y-1.5 pt-1.5 border-t border-[#E7EDE8]">
+              <label className="block text-[10.5px] font-extrabold text-[#183326]">
                 Or Paste Telegram WebApp initData / Firebase ID Token / Session Token
               </label>
               <textarea
                 data-testid="admin-token-input"
-                rows={3}
+                rows={2}
                 value={rawTokenInput}
                 onChange={(e) => setRawTokenInput(e.target.value)}
                 placeholder="Paste signed Telegram initData (user=...&hash=...) or Bearer token..."
-                className="w-full px-3 py-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-mono text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447]"
+                className="w-full px-2.5 py-1.5 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-mono text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447]"
               />
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 data-testid="admin-authenticate-btn"
                 onClick={() => authenticateWithCredential(rawTokenInput)}
-                className="px-5 py-2.5 rounded-xl bg-[#159447] text-white text-xs font-extrabold hover:bg-[#08743A] transition-all"
+                className="px-4 py-2 rounded-lg bg-[#159447] text-white text-xs font-extrabold hover:bg-[#08743A] transition-all min-h-[34px]"
               >
                 Verify & Authenticate Session
               </button>
               <button
                 type="button"
                 onClick={handleExitAdmin}
-                className="px-4 py-2.5 rounded-xl border border-[#E7EDE8] bg-white text-[#183326] text-xs font-bold"
+                className="px-3.5 py-2 rounded-lg border border-[#E7EDE8] bg-white text-[#183326] text-xs font-bold min-h-[34px]"
               >
                 Back to Game Lobby
               </button>
@@ -1029,11 +1029,11 @@ export function AdminDashboardScreen({
         )}
 
         {authStatus === 'authorized' && (
-          <div className="space-y-5">
+          <div className="space-y-3">
             {/* 9-Section Navigation Strip (Mobile-First Touch Scroll) */}
             <nav
               aria-label="Admin sections"
-              className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-2 border-b border-[#E7EDE8]"
+              className="flex items-center gap-1 overflow-x-auto no-scrollbar pb-1.5 border-b border-[#E7EDE8]"
             >
               {navItems.map((item) => {
                 const Icon = item.icon;
@@ -1044,13 +1044,13 @@ export function AdminDashboardScreen({
                     type="button"
                     data-testid={`admin-tab-${item.id}`}
                     onClick={() => setActiveTab(item.id)}
-                    className={`px-3.5 py-2 min-h-[40px] rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5 transition-all shrink-0 ${
+                    className={`px-2.5 py-1.5 min-h-[34px] rounded-lg text-[11px] font-extrabold whitespace-nowrap flex items-center gap-1 transition-all shrink-0 ${
                       active
-                        ? 'bg-[#159447] text-white shadow-[0_4px_12px_rgba(21,148,71,0.28)]'
+                        ? 'bg-[#159447] text-white shadow-[0_3px_8px_rgba(21,148,71,0.22)]'
                         : 'bg-white border border-[#E7EDE8] text-[#68776D] hover:border-[#159447]/50 hover:text-[#183326]'
                     }`}
                   >
-                    <Icon size={14} />
+                    <Icon size={13} />
                     {lang === 'am' ? item.labelAm : item.labelEn}
                   </button>
                 );
@@ -1059,128 +1059,128 @@ export function AdminDashboardScreen({
 
             {/* SECTION 1: OVERVIEW */}
             {activeTab === 'overview' && overview && (
-              <section data-testid="admin-overview-section" className="space-y-4 sm:space-y-5">
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  <div className="p-4 rounded-2xl bg-white border border-[#E7EDE8] shadow-xs">
-                    <span className="text-[11px] font-bold text-[#68776D] uppercase">
+              <section data-testid="admin-overview-section" className="space-y-3">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                  <div className="p-3 rounded-xl bg-white border border-[#E7EDE8] shadow-2xs">
+                    <span className="text-[10px] font-bold text-[#68776D] uppercase">
                       Total Players
                     </span>
-                    <b className="block font-['Outfit'] text-2xl font-extrabold text-[#183326] mt-1">
+                    <b className="block font-['Outfit'] text-xl font-extrabold text-[#183326] mt-0.5">
                       {overview.totalUsers}
                     </b>
-                    <span className="text-[11px] text-[#159447] font-semibold">
+                    <span className="text-[10.5px] text-[#159447] font-semibold">
                       {overview.activeUsers} active · {overview.suspendedUsers} suspended
                     </span>
                   </div>
 
                   <div
                     onClick={() => setActiveTab('payouts')}
-                    className="p-4 rounded-2xl bg-white border border-[#F5BD42] cursor-pointer hover:border-[#D99B20] transition-colors shadow-xs"
+                    className="p-3 rounded-xl bg-white border border-[#F5BD42] cursor-pointer hover:border-[#D99B20] transition-colors shadow-2xs"
                   >
-                    <span className="text-[11px] font-bold text-[#9A6B0B] uppercase">
+                    <span className="text-[10px] font-bold text-[#9A6B0B] uppercase">
                       Player Withdrawals / Payouts
                     </span>
-                    <b className="block font-['Outfit'] text-2xl font-extrabold text-[#D99B20] mt-1">
+                    <b className="block font-['Outfit'] text-xl font-extrabold text-[#D99B20] mt-0.5">
                       {overview.payoutCounts.Pending + overview.payoutCounts['Under Review']} Pending
                     </b>
-                    <span className="text-[11px] text-[#68776D]">
+                    <span className="text-[10.5px] text-[#68776D]">
                       {overview.payoutCounts.Completed} completed · {overview.payoutCounts.total} total
                     </span>
                   </div>
 
                   <div
                     onClick={() => setActiveTab('deposits')}
-                    className="p-4 rounded-2xl bg-white border border-[#159447]/40 cursor-pointer hover:border-[#159447] transition-colors shadow-xs"
+                    className="p-3 rounded-xl bg-white border border-[#159447]/40 cursor-pointer hover:border-[#159447] transition-colors shadow-2xs"
                   >
-                    <span className="text-[11px] font-bold text-[#08743A] uppercase">
+                    <span className="text-[10px] font-bold text-[#08743A] uppercase">
                       Payment Verifications
                     </span>
-                    <b className="block font-['Outfit'] text-2xl font-extrabold text-[#159447] mt-1">
+                    <b className="block font-['Outfit'] text-xl font-extrabold text-[#159447] mt-0.5">
                       {overview.depositCounts.Pending} Awaiting Verify
                     </b>
-                    <span className="text-[11px] text-[#68776D]">
+                    <span className="text-[10.5px] text-[#68776D]">
                       {overview.depositCounts.Approved} verified & credited
                     </span>
                   </div>
 
-                  <div className="p-4 rounded-2xl bg-white border border-[#E7EDE8] shadow-xs">
-                    <span className="text-[11px] font-bold text-[#68776D] uppercase">
+                  <div className="p-3 rounded-xl bg-white border border-[#E7EDE8] shadow-2xs">
+                    <span className="text-[10px] font-bold text-[#68776D] uppercase">
                       SHA-256 Audit Chain
                     </span>
-                    <b className="block font-['Outfit'] text-2xl font-extrabold text-[#168A49] mt-1">
+                    <b className="block font-['Outfit'] text-xl font-extrabold text-[#168A49] mt-0.5">
                       {overview.auditIntegrity.valid ? 'Verified' : 'Tampered'}
                     </b>
-                    <span className="text-[11px] text-[#68776D]">
+                    <span className="text-[10.5px] text-[#68776D]">
                       {overview.auditTrailEntries} immutable log entries
                     </span>
                   </div>
                 </div>
 
                 {/* Quick Owner Action Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="rounded-2xl bg-white border border-[#E7EDE8] p-5 space-y-2 shadow-xs">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                  <div className="rounded-xl bg-white border border-[#E7EDE8] p-3.5 space-y-1.5 shadow-2xs">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-['Outfit'] text-base font-extrabold text-[#183326]">
+                      <h3 className="font-['Outfit'] text-sm font-extrabold text-[#183326]">
                         Payment Verification Queue
                       </h3>
-                      <ArrowDownCircle size={18} className="text-[#159447]" />
+                      <ArrowDownCircle size={16} className="text-[#159447]" />
                     </div>
-                    <p className="text-xs text-[#68776D]">
+                    <p className="text-[11px] text-[#68776D]">
                       Inspect Telebirr, CBE Birr, and Chapa reference codes and credit verified
                       player balances in one click.
                     </p>
                     <button
                       type="button"
                       onClick={() => setActiveTab('deposits')}
-                      className="px-4 py-2 rounded-xl bg-[#159447] text-white text-xs font-extrabold"
+                      className="px-3 py-1.5 rounded-lg bg-[#159447] text-white text-xs font-extrabold min-h-[32px]"
                     >
                       Open Payment Verification ({overview.depositCounts.Pending})
                     </button>
                   </div>
 
-                  <div className="rounded-2xl bg-white border border-[#E7EDE8] p-5 space-y-2 shadow-xs">
+                  <div className="rounded-xl bg-white border border-[#E7EDE8] p-3.5 space-y-1.5 shadow-2xs">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-['Outfit'] text-base font-extrabold text-[#183326]">
+                      <h3 className="font-['Outfit'] text-sm font-extrabold text-[#183326]">
                         Players Payout & Withdrawals
                       </h3>
-                      <Wallet size={18} className="text-[#D99B20]" />
+                      <Wallet size={16} className="text-[#D99B20]" />
                     </div>
-                    <p className="text-xs text-[#68776D]">
+                    <p className="text-[11px] text-[#68776D]">
                       Review player withdrawal requests, verify destination numbers, mark payouts
                       Completed, or Reject & auto-refund.
                     </p>
                     <button
                       type="button"
                       onClick={() => setActiveTab('payouts')}
-                      className="px-4 py-2 rounded-xl bg-[#F5BD42] text-[#183326] text-xs font-extrabold"
+                      className="px-3 py-1.5 rounded-lg bg-[#F5BD42] text-[#183326] text-xs font-extrabold min-h-[32px]"
                     >
                       Manage Withdrawals ({overview.payoutCounts.Pending})
                     </button>
                   </div>
 
-                  <div className="rounded-2xl bg-white border border-[#E7EDE8] p-5 space-y-2 shadow-xs">
+                  <div className="rounded-xl bg-white border border-[#E7EDE8] p-3.5 space-y-1.5 shadow-2xs">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-['Outfit'] text-base font-extrabold text-[#183326]">
+                      <h3 className="font-['Outfit'] text-sm font-extrabold text-[#183326]">
                         Player Wallets & Round Control
                       </h3>
-                      <Users size={18} className="text-[#159447]" />
+                      <Users size={16} className="text-[#159447]" />
                     </div>
-                    <p className="text-xs text-[#68776D]">
+                    <p className="text-[11px] text-[#68776D]">
                       Directly credit/debit player balances, inspect transaction ledgers, or force
                       start/reset live Bingo rounds.
                     </p>
-                    <div className="flex gap-2">
+                    <div className="flex gap-1.5">
                       <button
                         type="button"
                         onClick={() => setActiveTab('users')}
-                        className="px-3.5 py-2 rounded-xl bg-[#E6F6EB] border border-[#159447]/30 text-[#08743A] text-xs font-extrabold"
+                        className="px-3 py-1.5 rounded-lg bg-[#E6F6EB] border border-[#159447]/30 text-[#08743A] text-xs font-extrabold min-h-[32px]"
                       >
                         Manage Players
                       </button>
                       <button
                         type="button"
                         onClick={() => setActiveTab('rooms')}
-                        className="px-3.5 py-2 rounded-xl bg-[#FEF5DC] border border-[#F5BD42] text-[#9A6B0B] text-xs font-extrabold"
+                        className="px-3 py-1.5 rounded-lg bg-[#FEF5DC] border border-[#F5BD42] text-[#9A6B0B] text-xs font-extrabold min-h-[32px]"
                       >
                         Live Rooms
                       </button>

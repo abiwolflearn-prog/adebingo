@@ -165,15 +165,22 @@ export function isDisallowedMiniAppPreviewUrl(candidate?: string | null): boolea
   if (!trimmed || trimmed === 'MY_APP_URL' || !trimmed.startsWith('https://')) {
     return true;
   }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return true;
+  }
+  const host = parsed.hostname.toLowerCase();
   const lower = trimmed.toLowerCase();
   const isNonCanonicalVercelUrl =
-    lower.includes('.vercel.app') &&
-    !lower.startsWith('https://adebingo-3nta.vercel.app');
+    (host.endsWith('.vercel.app') || host === 'vercel.app') &&
+    parsed.origin.toLowerCase() !== 'https://adebingo-3nta.vercel.app';
   return (
     lower.includes('ais-dev-') ||
     lower.includes('ais-pre-') ||
-    lower.includes('.run.app') ||
-    lower.includes('accounts.google.com') ||
+    host.endsWith('.run.app') ||
+    host.includes('accounts.google.com') ||
     isNonCanonicalVercelUrl
   );
 }

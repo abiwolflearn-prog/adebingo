@@ -139,11 +139,19 @@ function enforceUnifiedThemeAndClearStaleCaches() {
   }
   try {
     if ('serviceWorker' in navigator && navigator.serviceWorker?.getRegistrations) {
+      const currentOrigin = window.location.origin;
       void navigator.serviceWorker
         .getRegistrations()
         .then((registrations) => {
           for (const reg of registrations) {
-            void reg.unregister();
+            const scope = reg.scope || '';
+            const scriptUrl =
+              reg.active?.scriptURL || reg.waiting?.scriptURL || reg.installing?.scriptURL || '';
+            const isSameOrigin = scope.startsWith(currentOrigin);
+            const isFirebaseOrAuthWorker = /firebase|__\/auth/i.test(scriptUrl);
+            if (isSameOrigin && !isFirebaseOrAuthWorker) {
+              void reg.unregister();
+            }
           }
         })
         .catch(() => {});
