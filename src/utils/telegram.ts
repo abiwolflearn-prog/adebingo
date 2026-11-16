@@ -120,7 +120,41 @@ export function syncTelegramBackButton(visible: boolean, onBack: () => void): ()
   };
 }
 
+function enforceUnifiedThemeAndClearStaleCaches() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  try {
+    document.documentElement.style.colorScheme = 'light';
+    document.documentElement.setAttribute('data-theme', 'adeybingo-emerald-gold');
+  } catch {
+    // Ignore DOM attribute errors
+  }
+  try {
+    const staleThemeKeys = ['theme', 'adey_theme', 'color-scheme', 'darkMode', 'adeybingo_theme'];
+    for (const key of staleThemeKeys) {
+      window.localStorage?.removeItem(key);
+      window.sessionStorage?.removeItem(key);
+    }
+  } catch {
+    // Ignore storage access errors in restricted WebViews
+  }
+  try {
+    if ('serviceWorker' in navigator && navigator.serviceWorker?.getRegistrations) {
+      void navigator.serviceWorker
+        .getRegistrations()
+        .then((registrations) => {
+          for (const reg of registrations) {
+            void reg.unregister();
+          }
+        })
+        .catch(() => {});
+    }
+  } catch {
+    // Ignore service worker cleanup errors
+  }
+}
+
 export function initTelegramMiniApp(): TelegramUserProfile {
+  enforceUnifiedThemeAndClearStaleCaches();
   const startParam = getTelegramStartParam();
   if (typeof window !== 'undefined') {
     const tg = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp;
@@ -148,6 +182,29 @@ export function initTelegramMiniApp(): TelegramUserProfile {
           startParam: startParam || undefined,
         };
       }
+    }
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const customId = Number(params.get('tgId'));
+      if (Number.isInteger(customId) && customId > 0) {
+        const first = params.get('firstName')?.trim() || 'Meron';
+        const last = params.get('lastName')?.trim() || 'Tadesse';
+        const rawUser = params.get('username')?.trim() || 'meron_et';
+        const initials = `${first[0] || 'M'}${last[0] || 'T'}`.toUpperCase();
+        return {
+          id: customId,
+          firstName: first,
+          lastName: last,
+          username: rawUser.startsWith('@') ? rawUser : `@${rawUser}`,
+          languageCode: 'am',
+          isTelegramWebApp: false,
+          initials,
+          startParam: startParam || undefined,
+        };
+      }
+    } catch {
+      // Fall back to default demo profile below
     }
   }
 

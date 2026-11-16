@@ -166,18 +166,23 @@ export function isDisallowedMiniAppPreviewUrl(candidate?: string | null): boolea
     return true;
   }
   const lower = trimmed.toLowerCase();
+  const isNonCanonicalVercelUrl =
+    lower.includes('.vercel.app') &&
+    !lower.startsWith('https://adebingo-3nta.vercel.app');
   return (
     lower.includes('ais-dev-') ||
     lower.includes('ais-pre-') ||
     lower.includes('.run.app') ||
-    lower.includes('accounts.google.com')
+    lower.includes('accounts.google.com') ||
+    isNonCanonicalVercelUrl
   );
 }
 
 /**
  * Guarantees that any Mini App URL used in Telegram WebApp buttons or menu buttons
- * never points to a Google AI Studio preview URL (ais-dev-*, ais-pre-*, *.run.app),
- * falling back to https://adebingo-3nta.vercel.app/.
+ * never points to a Google AI Studio preview URL (ais-dev-*, ais-pre-*, *.run.app)
+ * or an older non-canonical Vercel preview deployment, always normalizing to
+ * https://adebingo-3nta.vercel.app/.
  */
 export function sanitizeProductionMiniAppUrl(candidate?: string | null): string {
   if (isDisallowedMiniAppPreviewUrl(candidate)) {

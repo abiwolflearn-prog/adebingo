@@ -510,11 +510,14 @@ test('Milestone 5: Deposit, Withdraw, Referral deep-link, Leaderboard, and persi
 test('Security Fix: Google AI Studio preview URLs (ais-pre-*, ais-dev-*, *.run.app) are rejected and replaced with https://adebingo-3nta.vercel.app/', () => {
   const leakedPreviewUrl = 'https://ais-pre-evydgg3zevudzz52jzdy5u-529287111346.europe-west1.run.app';
   const leakedDevUrl = 'https://ais-dev-evydgg3zevudzz52jzdy5u-529287111346.europe-west1.run.app';
+  const staleVercelPreviewUrl = 'https://adebingo-git-old-branch-preview.vercel.app';
 
   assert.equal(sanitizeProductionMiniAppUrl(leakedPreviewUrl), DEFAULT_DEPLOYED_MINI_APP_URL);
   assert.equal(sanitizeProductionMiniAppUrl(leakedDevUrl), DEFAULT_DEPLOYED_MINI_APP_URL);
+  assert.equal(sanitizeProductionMiniAppUrl(staleVercelPreviewUrl), DEFAULT_DEPLOYED_MINI_APP_URL);
   assert.equal(sanitizeProductionMiniAppUrl('https://accounts.google.com/v3/signin'), DEFAULT_DEPLOYED_MINI_APP_URL);
   assert.equal(sanitizeProductionMiniAppUrl('https://adebingo-3nta.vercel.app/'), 'https://adebingo-3nta.vercel.app/');
+  assert.equal(sanitizeProductionMiniAppUrl('https://adebingo-3nta.vercel.app'), 'https://adebingo-3nta.vercel.app/');
 
   const botWithLeakedUrl = new AdeyBingoTelegramBotEngine(leakedPreviewUrl);
 

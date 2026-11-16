@@ -79,7 +79,6 @@ import { AdminDashboardScreen } from './components/AdminDashboardScreen';
 import {
   AppHeader,
   BalanceCard,
-  RewardCard,
   BingoBall,
   BingoNumberTile,
   PrimaryButton,
@@ -2122,24 +2121,6 @@ export default function App() {
                 </div>
               )}
             </section>
-
-            {/* 3. Referral & Rewards Banner Card */}
-            <RewardCard
-              title={
-                lang === 'am'
-                  ? 'ጓደኞችዎን ይጋብዙ — ለእያንዳንዱ ጓደኛ +20 ብር ያግኙ!'
-                  : 'Invite Friends & Earn +20 ETB Instant Bonus!'
-              }
-              badge={lang === 'am' ? 'የጓደኛ ሽልማት' : 'Referral Rewards'}
-              rewardHighlight="+20 ETB / Friend"
-              description={
-                lang === 'am'
-                  ? `የእርስዎ መጋበዣ ኮድ ${referralCode} ነው። ጓደኞችዎ በሊንክዎ ሲገቡ ተመሳሳይ ውብ የADEYBINGO ገጽታ ያገኛሉ እንዲሁም ሁለታችሁም ቦነስ ታገኛላችሁ!`
-                  : `Your personal invite code is ${referralCode}. Every invited friend gets the exact same bright ADEYBINGO experience plus welcome & referral bonuses!`
-              }
-              actionLabel={lang === 'am' ? 'ጓደኛ ጋብዝ (+20 ብር)' : 'Invite Friends (+20 ETB)'}
-              onAction={() => setScreen('referral')}
-            />
           </div>
         )}
 
@@ -2280,12 +2261,6 @@ export default function App() {
 
       {/* Standardized Global Bottom Navigation */}
       <BottomNavigation screen={screen} lang={lang} onNavigate={setScreen} />
-
-      <footer className="adey-footer">
-        <div className="flex flex-wrap items-center justify-center gap-3">
-          <span>© 2026 ADEYBINGO · FIREBASE PROJECT: gen-lang-client-0559010770 · DEMO SANDBOX</span>
-        </div>
-      </footer>
     </div>
   );
 }
