@@ -28,7 +28,8 @@ import {
 } from 'lucide-react';
 import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged } from 'firebase/auth';
 import { auth } from '../lib/firebase';
-import { Language } from '../types/bingo';
+import { subscribeToRoomState } from '../services/firestoreService';
+import { GameLifecycleStage, Language } from '../types/bingo';
 
 export type AdminSectionId =
   | 'overview'
@@ -83,6 +84,37 @@ interface OverviewMetrics {
   };
   auditTrailEntries: number;
   auditIntegrity: { valid: boolean; totalEntries: number };
+  financialDashboard?: {
+    roomId: string;
+    gameId: string;
+    lifecycleStage: GameLifecycleStage;
+    maxPlayersCapacity: number;
+    confirmedPlayersCount: number;
+    availableSpaces: number;
+    totalCardsSold: number;
+    entryPriceEtb: number;
+    verifiedPaidEntriesCount: number;
+    verifiedTotalRevenueEtb: number;
+    adeySharePercent: number;
+    adeyShareEtb: number;
+    winnersPrizePoolPercent: number;
+    winnersPrizePoolEtb: number;
+    pendingPaymentsCount: number;
+    pendingPaymentsEtb: number;
+    rejectedPaymentsCount: number;
+    rejectedPaymentsEtb: number;
+    refundedPaymentsCount: number;
+    refundedPaymentsEtb: number;
+    currentDrawnNumber: number | null;
+    calledNumbersCount: number;
+    liveActivityFeed: {
+      id: string;
+      type: string;
+      summary: string;
+      amountEtb?: number;
+      timestamp: string;
+    }[];
+  };
 }
 
 interface AdminUserRecord {
@@ -334,6 +366,7 @@ export function AdminDashboardScreen({
   const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [settingsData, setSettingsData] = useState<AdminSettingsState | null>(null);
   const [bannerToast, setBannerToast] = useState<string | null>(null);
+  const [syncState, setSyncState] = useState<'LIVE' | 'RECONNECTING' | 'OFFLINE'>('LIVE');
 
   const showToast = (msg: string) => {
     setBannerToast(msg);
@@ -530,17 +563,57 @@ export function AdminDashboardScreen({
         }
         if (notifJson.ok) setNotifications(notifJson.outbox);
         if (setJson.ok) setSettingsData(setJson.settings);
+        setSyncState('LIVE');
       } catch {
-        // Ignore transient network errors
+        setSyncState(
+          typeof navigator !== 'undefined' && navigator.onLine === false ? 'OFFLINE' : 'RECONNECTING'
+        );
       }
     },
     []
   );
 
   useEffect(() => {
-    if (authStatus === 'authorized' && sessionToken) {
-      fetchAllAdminData(sessionToken, userSearchQuery, payoutFilter);
-    }
+    const onOnline = () => setSyncState('RECONNECTING');
+    const onOffline = () => setSyncState('OFFLINE');
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (authStatus !== 'authorized' || !sessionToken) return;
+
+    void fetchAllAdminData(sessionToken, userSearchQuery, payoutFilter);
+    const interval = window.setInterval(() => {
+      void fetchAllAdminData(sessionToken, userSearchQuery, payoutFilter);
+    }, 2500);
+
+    const unsubRoom = subscribeToRoomState(
+      'adey-main',
+      () => {},
+      () => {
+        void fetchAllAdminData(sessionToken, userSearchQuery, payoutFilter);
+      },
+      () => {
+        void fetchAllAdminData(sessionToken, userSearchQuery, payoutFilter);
+      },
+      (connState) => {
+        if (connState === 'online') {
+          setSyncState('LIVE');
+        } else if (connState === 'offline') {
+          setSyncState('OFFLINE');
+        }
+      }
+    );
+
+    return () => {
+      window.clearInterval(interval);
+      unsubRoom();
+    };
   }, [authStatus, sessionToken, userSearchQuery, payoutFilter, fetchAllAdminData]);
 
   // Handlers for Admin Mutations
@@ -835,8 +908,32 @@ export function AdminDashboardScreen({
             </div>
           </div>
 
-          {/* Authenticated Owner Badge & Refresh */}
+          {/* Authenticated Owner Badge, Real-Time Sync Status & Refresh */}
           <div className="flex items-center gap-1.5">
+            {authStatus === 'authorized' && (
+              <span
+                data-testid="admin-connection-indicator"
+                className={`px-2 py-1 rounded-lg border text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 ${
+                  syncState === 'LIVE'
+                    ? 'bg-[#E6F6EB] border-[#159447]/40 text-[#08743A]'
+                    : syncState === 'RECONNECTING'
+                    ? 'bg-[#FEF5DC] border-[#F5BD42] text-[#9A6B0B]'
+                    : 'bg-[#FFF5F5] border-[#D94B4B]/50 text-[#D94B4B]'
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    syncState === 'LIVE'
+                      ? 'bg-[#159447] animate-pulse'
+                      : syncState === 'RECONNECTING'
+                      ? 'bg-[#D99B20] animate-ping'
+                      : 'bg-[#D94B4B]'
+                  }`}
+                />
+                {syncState}
+              </span>
+            )}
+
             {actor && authStatus === 'authorized' && (
               <div className="px-2.5 py-1 rounded-lg bg-[#E6F6EB] border border-[#159447]/30 text-[11px] flex items-center gap-1.5">
                 <CheckCircle2 size={13} className="text-[#159447]" />
@@ -1057,9 +1154,240 @@ export function AdminDashboardScreen({
               })}
             </nav>
 
-            {/* SECTION 1: OVERVIEW */}
+            {/* SECTION 1: OVERVIEW & LIVE FINANCIAL DASHBOARD */}
             {activeTab === 'overview' && overview && (
               <section data-testid="admin-overview-section" className="space-y-3">
+                {/* LIVE FINANCIAL & MULTIPLAYER SYNCHRONIZATION DASHBOARD */}
+                {overview.financialDashboard && (
+                  <div
+                    data-testid="admin-financial-dashboard"
+                    className="rounded-2xl bg-white border-2 border-[#159447]/35 p-3 sm:p-4 space-y-3 shadow-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#E7EDE8]">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-2 py-0.5 rounded-md border text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1.5 ${
+                            syncState === 'LIVE'
+                              ? 'bg-[#E6F6EB] border-[#159447]/40 text-[#08743A]'
+                              : syncState === 'RECONNECTING'
+                              ? 'bg-[#FEF5DC] border-[#F5BD42] text-[#9A6B0B]'
+                              : 'bg-[#FFF5F5] border-[#D94B4B]/50 text-[#D94B4B]'
+                          }`}
+                        >
+                          <span
+                            className={`w-2 h-2 rounded-full ${
+                              syncState === 'LIVE'
+                                ? 'bg-[#159447] animate-pulse'
+                                : syncState === 'RECONNECTING'
+                                ? 'bg-[#D99B20] animate-ping'
+                                : 'bg-[#D94B4B]'
+                            }`}
+                          />
+                          {syncState}
+                        </span>
+                        <h2 className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#183326]">
+                          Live Multiplayer Financial Dashboard
+                        </h2>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-mono">
+                        <span className="px-2 py-0.5 rounded bg-[#FFF9ED] border border-[#E7EDE8] text-[#183326] font-bold">
+                          Game: {overview.financialDashboard.gameId}
+                        </span>
+                        <span
+                          data-testid="admin-game-lifecycle"
+                          className="px-2 py-0.5 rounded bg-[#FEF5DC] border border-[#F5BD42] text-[#9A6B0B] font-extrabold uppercase"
+                        >
+                          {overview.financialDashboard.lifecycleStage}
+                        </span>
+                        {overview.financialDashboard.currentDrawnNumber !== null && (
+                          <span className="px-2 py-0.5 rounded bg-[#159447] text-white font-extrabold">
+                            Ball #{overview.financialDashboard.currentDrawnNumber} (
+                            {overview.financialDashboard.calledNumbersCount}/75)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Row 1: Capacity, Spaces, Cards Sold & Revenue Split (10 ETB Entry · 20% ADEY · 80% Prize) */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                      <div className="p-2.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]">
+                        <span className="text-[9.5px] font-bold text-[#68776D] uppercase block">
+                          Confirmed Players
+                        </span>
+                        <b
+                          data-testid="admin-confirmed-players"
+                          className="font-['Outfit'] text-base sm:text-lg font-extrabold text-[#183326] tabular-nums"
+                        >
+                          {overview.financialDashboard.confirmedPlayersCount} /{' '}
+                          {overview.financialDashboard.maxPlayersCapacity}
+                        </b>
+                        <span className="block text-[9.5px] text-[#159447] font-semibold">
+                          Max 600 individual players
+                        </span>
+                      </div>
+
+                      <div className="p-2.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]">
+                        <span className="text-[9.5px] font-bold text-[#68776D] uppercase block">
+                          Available Spaces
+                        </span>
+                        <b
+                          data-testid="admin-available-spaces"
+                          className="font-['Outfit'] text-base sm:text-lg font-extrabold text-[#08743A] tabular-nums"
+                        >
+                          {overview.financialDashboard.availableSpaces}
+                        </b>
+                        <span className="block text-[9.5px] text-[#68776D]">
+                          600 − confirmed players
+                        </span>
+                      </div>
+
+                      <div className="p-2.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]">
+                        <span className="text-[9.5px] font-bold text-[#68776D] uppercase block">
+                          Total Cards Sold
+                        </span>
+                        <b
+                          data-testid="admin-total-cards-sold"
+                          className="font-['Outfit'] text-base sm:text-lg font-extrabold text-[#183326] tabular-nums"
+                        >
+                          {overview.financialDashboard.totalCardsSold}
+                        </b>
+                        <span className="block text-[9.5px] text-[#68776D]">
+                          Separate from player count
+                        </span>
+                      </div>
+
+                      <div className="p-2.5 rounded-xl bg-[#E6F6EB] border border-[#159447]/40">
+                        <span className="text-[9.5px] font-bold text-[#08743A] uppercase block">
+                          Verified Revenue
+                        </span>
+                        <b
+                          data-testid="admin-verified-revenue"
+                          className="font-['Outfit'] text-base sm:text-lg font-extrabold text-[#08743A] tabular-nums"
+                        >
+                          {overview.financialDashboard.verifiedTotalRevenueEtb.toLocaleString()} ETB
+                        </b>
+                        <span className="block text-[9.5px] text-[#08743A] font-semibold">
+                          {overview.financialDashboard.verifiedPaidEntriesCount} × 10 ETB
+                        </span>
+                      </div>
+
+                      <div className="p-2.5 rounded-xl bg-[#FFF9ED] border border-[#159447]/30">
+                        <span className="text-[9.5px] font-bold text-[#08743A] uppercase block">
+                          ADEYBINGO Share (20%)
+                        </span>
+                        <b
+                          data-testid="admin-adey-share"
+                          className="font-['Outfit'] text-base sm:text-lg font-extrabold text-[#159447] tabular-nums"
+                        >
+                          {overview.financialDashboard.adeyShareEtb.toLocaleString()} ETB
+                        </b>
+                        <span className="block text-[9.5px] text-[#68776D]">
+                          1,200 ETB at 600 players
+                        </span>
+                      </div>
+
+                      <div className="p-2.5 rounded-xl bg-[#FEF5DC] border border-[#F5BD42]">
+                        <span className="text-[9.5px] font-bold text-[#9A6B0B] uppercase block">
+                          Winners Prize Pool (80%)
+                        </span>
+                        <b
+                          data-testid="admin-winners-prize-pool"
+                          className="font-['Outfit'] text-base sm:text-lg font-extrabold text-[#183326] tabular-nums"
+                        >
+                          {overview.financialDashboard.winnersPrizePoolEtb.toLocaleString()} ETB
+                        </b>
+                        <span className="block text-[9.5px] text-[#9A6B0B] font-semibold">
+                          4,800 ETB at 600 players
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Row 2: Payment Verification Breakdown (Pending, Rejected, Refunded) & Live Activity Feed */}
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 items-start">
+                      <div className="lg:col-span-5 grid grid-cols-3 gap-2">
+                        <div className="p-2.5 rounded-xl bg-[#FFF9ED] border border-[#F5BD42]/60">
+                          <span className="text-[9.5px] font-bold text-[#9A6B0B] uppercase block">
+                            Pending Payments
+                          </span>
+                          <b
+                            data-testid="admin-pending-payments"
+                            className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#D99B20] tabular-nums"
+                          >
+                            {overview.financialDashboard.pendingPaymentsCount}
+                          </b>
+                          <span className="block text-[9.5px] font-mono text-[#68776D]">
+                            {overview.financialDashboard.pendingPaymentsEtb.toFixed(0)} ETB (excluded)
+                          </span>
+                        </div>
+
+                        <div className="p-2.5 rounded-xl bg-[#FFF5F5] border border-[#D94B4B]/35">
+                          <span className="text-[9.5px] font-bold text-[#D94B4B] uppercase block">
+                            Rejected Payments
+                          </span>
+                          <b
+                            data-testid="admin-rejected-payments"
+                            className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#D94B4B] tabular-nums"
+                          >
+                            {overview.financialDashboard.rejectedPaymentsCount}
+                          </b>
+                          <span className="block text-[9.5px] font-mono text-[#68776D]">
+                            {overview.financialDashboard.rejectedPaymentsEtb.toFixed(0)} ETB
+                          </span>
+                        </div>
+
+                        <div className="p-2.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]">
+                          <span className="text-[9.5px] font-bold text-[#68776D] uppercase block">
+                            Refunded Payments
+                          </span>
+                          <b
+                            data-testid="admin-refunded-payments"
+                            className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#183326] tabular-nums"
+                          >
+                            {overview.financialDashboard.refundedPaymentsCount}
+                          </b>
+                          <span className="block text-[9.5px] font-mono text-[#68776D]">
+                            {overview.financialDashboard.refundedPaymentsEtb.toFixed(0)} ETB
+                          </span>
+                        </div>
+                      </div>
+
+                      <div
+                        data-testid="admin-live-activity-feed"
+                        className="lg:col-span-7 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] p-2.5 space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between text-[10px] font-extrabold uppercase text-[#08743A]">
+                          <span>Live Authoritative Activity Feed</span>
+                          <span className="font-mono text-[#68776D]">
+                            {overview.financialDashboard.liveActivityFeed.length} events
+                          </span>
+                        </div>
+                        <div className="max-h-[96px] overflow-y-auto space-y-1 pr-1">
+                          {overview.financialDashboard.liveActivityFeed.length === 0 ? (
+                            <p className="text-[10.5px] text-[#68776D]">
+                              Waiting for player joins, card purchases, or payment verifications...
+                            </p>
+                          ) : (
+                            overview.financialDashboard.liveActivityFeed.map((item) => (
+                              <div
+                                key={item.id}
+                                className="flex items-center justify-between gap-2 text-[10.5px] bg-white border border-[#E7EDE8] rounded-lg px-2 py-1"
+                              >
+                                <span className="font-semibold text-[#183326] truncate">
+                                  {item.summary}
+                                </span>
+                                <span className="font-mono text-[9.5px] text-[#68776D] shrink-0">
+                                  {item.timestamp}
+                                </span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
                   <div className="p-3 rounded-xl bg-white border border-[#E7EDE8] shadow-2xs">
                     <span className="text-[10px] font-bold text-[#68776D] uppercase">

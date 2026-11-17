@@ -7,15 +7,13 @@ import {
   X,
   Trophy,
   Play,
-  Shuffle,
-  Search,
   Clock,
-  Sparkles,
   Users,
   Grid,
 } from 'lucide-react';
 import {
   DEFAULT_GAME_RULES,
+  calculateAuthoritativeGameFinancials,
   checkCardWin,
   drawNextBall,
   generateDeterministicCard,
@@ -82,7 +80,6 @@ import {
   BingoBall,
   BingoNumberTile,
   PrimaryButton,
-  SecondaryButton,
   GameStatusBadge,
   BottomNavigation,
 } from './components/DesignSystem';
@@ -98,6 +95,15 @@ function buildEmptyInitialRooms(): RoomConfig[] {
   return INITIAL_ROOMS.map((rm) => ({
     ...rm,
     activePlayers: 0,
+    maxPlayers: 600,
+    confirmedPlayersCount: 0,
+    verifiedPaidEntriesCount: 0,
+    availableSpaces: 600,
+    totalCardsSold: 0,
+    totalCollectedEtb: 0,
+    adeyShareEtb: 0,
+    winnersPrizePoolEtb: 0,
+    lifecycleStage: 'WAITING',
     takenCardIds: [],
     countdownSeconds: 60,
     status: 'countdown',
@@ -109,7 +115,6 @@ const ALL_CARD_NUMBERS = Array.from({ length: DEFAULT_GAME_RULES.maxCardsPerRoom
 export default function App() {
   const [user] = useState(() => initTelegramMiniApp());
   const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => checkIsAdminRoute());
-  const [homeCardSearch, setHomeCardSearch] = useState<string>('');
 
   useEffect(() => {
     const onPopState = () => setIsAdminRoute(checkIsAdminRoute());
@@ -265,10 +270,32 @@ export default function App() {
               localWinnerSettledRoundRef.current && rm.id === roomIdToLoad && match.status === 'live'
                 ? 'completed'
                 : match.status || 'countdown';
+            const confirmedPlayers = Number(
+              match.confirmedPlayersCount ?? match.activePlayersCount ?? 0
+            );
+            const totalCards = Number(match.totalCardsSold ?? match.reservedCardsCount ?? 0);
+            const financials = calculateAuthoritativeGameFinancials(
+              confirmedPlayers,
+              totalCards,
+              Number(match.cardPrice || rm.cardPrice || 10)
+            );
             return {
               ...rm,
               cardPrice: Number(match.cardPrice || rm.cardPrice),
-              activePlayers: Number(match.activePlayersCount ?? 0),
+              activePlayers: financials.confirmedPlayersCount,
+              maxPlayers: Number(match.maxPlayersPerRoom ?? 600),
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              verifiedPaidEntriesCount: Number(
+                match.verifiedPaidEntriesCount ?? financials.verifiedPaidEntriesCount
+              ),
+              availableSpaces: Number(match.availableSpaces ?? financials.availableSpaces),
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: Number(match.totalCollectedEtb ?? financials.totalCollectedEtb),
+              adeyShareEtb: Number(match.adeyShareEtb ?? financials.adeyShareEtb),
+              winnersPrizePoolEtb: Number(
+                match.winnersPrizePoolEtb ?? financials.winnersPrizePoolEtb
+              ),
+              lifecycleStage: match.lifecycleStage || rm.lifecycleStage || 'WAITING',
               countdownSeconds: Number(match.countdownSeconds ?? 0),
               status: nextRmStatus,
             };
@@ -393,12 +420,40 @@ export default function App() {
         if (token) {
           setSelectedCardIds(detail.myCardIds.sort((a, b) => a - b));
         }
+        const confirmedPlayers = Number(
+          detail.room.confirmedPlayersCount ?? detail.room.activePlayersCount ?? 0
+        );
+        const totalCards = Number(
+          detail.room.totalCardsSold ?? detail.takenCardIds.length ?? 0
+        );
+        const financials = calculateAuthoritativeGameFinancials(
+          confirmedPlayers,
+          totalCards,
+          Number(detail.room.cardPrice || DEFAULT_GAME_RULES.defaultCardPrice)
+        );
         setRooms((prev) =>
           prev.map((rm) =>
             rm.id === roomIdToLoad
               ? {
                   ...rm,
-                  activePlayers: Number(detail.room.activePlayersCount ?? 0),
+                  activePlayers: financials.confirmedPlayersCount,
+                  maxPlayers: Number(detail.room.maxPlayersPerRoom ?? 600),
+                  confirmedPlayersCount: financials.confirmedPlayersCount,
+                  verifiedPaidEntriesCount: Number(
+                    detail.room.verifiedPaidEntriesCount ?? financials.verifiedPaidEntriesCount
+                  ),
+                  availableSpaces: Number(
+                    detail.room.availableSpaces ?? financials.availableSpaces
+                  ),
+                  totalCardsSold: financials.totalCardsSold,
+                  totalCollectedEtb: Number(
+                    detail.room.totalCollectedEtb ?? financials.totalCollectedEtb
+                  ),
+                  adeyShareEtb: Number(detail.room.adeyShareEtb ?? financials.adeyShareEtb),
+                  winnersPrizePoolEtb: Number(
+                    detail.room.winnersPrizePoolEtb ?? financials.winnersPrizePoolEtb
+                  ),
+                  lifecycleStage: detail.room.lifecycleStage || rm.lifecycleStage || 'WAITING',
                   takenCardIds: detail.takenCardIds,
                   countdownSeconds: Number(detail.room.countdownSeconds ?? 0),
                   status: nextStatus,
@@ -562,16 +617,76 @@ export default function App() {
       },
       (players) => {
         setRoomPlayers(players);
+        const confirmedCount = players.filter(
+          (p) => Array.isArray(p.cardIds) && p.cardIds.length > 0
+        ).length;
+        const totalSold = players.reduce(
+          (sum, p) => sum + (Array.isArray(p.cardIds) ? p.cardIds.length : 0),
+          0
+        );
+        const financials = calculateAuthoritativeGameFinancials(confirmedCount, totalSold, 10);
         setRooms((prev) =>
           prev.map((rm) =>
             rm.id === activeRoomId
               ? {
                   ...rm,
-                  activePlayers: players.length,
+                  activePlayers: financials.confirmedPlayersCount,
+                  confirmedPlayersCount: financials.confirmedPlayersCount,
+                  verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+                  availableSpaces: financials.availableSpaces,
+                  totalCardsSold: financials.totalCardsSold,
+                  totalCollectedEtb: financials.totalCollectedEtb,
+                  adeyShareEtb: financials.adeyShareEtb,
+                  winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
                 }
               : rm
           )
         );
+      },
+      (roomDoc) => {
+        if (typeof roomDoc.countdownSeconds === 'number') {
+          setCountdown(roomDoc.countdownSeconds);
+        }
+        if (typeof roomDoc.cardPrice === 'number' && roomDoc.cardPrice > 0) {
+          setCardPrice(roomDoc.cardPrice);
+        }
+        const confirmedPlayers = Number(
+          roomDoc.confirmedPlayersCount ?? roomDoc.activePlayersCount ?? 0
+        );
+        const totalCards = Number(roomDoc.totalCardsSold ?? roomDoc.reservedCardsCount ?? 0);
+        const financials = calculateAuthoritativeGameFinancials(
+          confirmedPlayers,
+          totalCards,
+          Number(roomDoc.cardPrice || 10)
+        );
+        setRooms((prev) =>
+          prev.map((rm) =>
+            rm.id === activeRoomId
+              ? {
+                  ...rm,
+                  status: roomDoc.status || rm.status,
+                  lifecycleStage: roomDoc.lifecycleStage || rm.lifecycleStage,
+                  activePlayers: financials.confirmedPlayersCount,
+                  confirmedPlayersCount: financials.confirmedPlayersCount,
+                  verifiedPaidEntriesCount: Number(
+                    roomDoc.verifiedPaidEntriesCount ?? financials.verifiedPaidEntriesCount
+                  ),
+                  availableSpaces: Number(roomDoc.availableSpaces ?? financials.availableSpaces),
+                  totalCardsSold: financials.totalCardsSold,
+                  totalCollectedEtb: Number(
+                    roomDoc.totalCollectedEtb ?? financials.totalCollectedEtb
+                  ),
+                  adeyShareEtb: Number(roomDoc.adeyShareEtb ?? financials.adeyShareEtb),
+                  winnersPrizePoolEtb: Number(
+                    roomDoc.winnersPrizePoolEtb ?? financials.winnersPrizePoolEtb
+                  ),
+                }
+              : rm
+          )
+        );
+      },
+      (connState) => {
+        setFirestoreConnected(connState === 'online');
       }
     );
 
@@ -1674,20 +1789,19 @@ export default function App() {
       />
 
       {/* Main View Switcher */}
-      <main className="mt-2 sm:mt-2.5">
+      <main className="mt-1.5 sm:mt-2">
         {screen === 'home' && (
-          <div className="space-y-2.5">
-            {/* 1. Hero Dashboard Card: Friendly ADEYBINGO Branding, 3D Bingo Balls, Room Status & Play CTA */}
-            <section className="rounded-2xl bg-white border border-[#E7EDE8] p-2.5 sm:p-3.5 shadow-[0_4px_16px_rgba(24,51,38,0.05)] space-y-2.5 relative overflow-hidden">
-              {/* Subtle warm decorative glow */}
+          <div className="space-y-2">
+            {/* 1. Compact Hero Dashboard Card: 3D Bingo Balls, Room Status, Timer & Play CTA */}
+            <section className="rounded-2xl bg-white border border-[#E7EDE8] p-2 sm:p-3 shadow-[0_3px_12px_rgba(24,51,38,0.05)] space-y-2 relative overflow-hidden">
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute -top-16 -right-16 w-44 h-44 rounded-full bg-gradient-to-br from-[#E6F6EB] via-[#FEF5DC]/60 to-transparent blur-2xl"
+                className="pointer-events-none absolute -top-16 -right-16 w-40 h-40 rounded-full bg-gradient-to-br from-[#E6F6EB] via-[#FEF5DC]/60 to-transparent blur-2xl"
               />
 
-              <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
+              <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-2">
                 <div className="space-y-1.5 min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1">
                     <GameStatusBadge
                       status={
                         activeRoom.status === 'live'
@@ -1700,59 +1814,84 @@ export default function App() {
                       label={
                         activeRoom.status === 'live'
                           ? lang === 'am'
-                            ? 'ቀጥታ ጨዋታ በሂደት ላይ'
-                            : 'LIVE GAME IN PROGRESS'
+                            ? 'ቀጥታ'
+                            : 'LIVE'
                           : activeRoom.status === 'completed'
                             ? lang === 'am'
-                              ? 'ዙሩ ተጠናቋል · አዲስ ዙር ይጀምራል'
-                              : 'ROUND COMPLETED · NEXT STARTING'
+                              ? 'ተጠናቋል'
+                              : 'DONE'
                             : lang === 'am'
-                              ? `${activeRoom.nameAm} · ክፍት ነው`
-                              : `${activeRoom.nameEn} · Open for Cards`
+                              ? activeRoom.nameAm
+                              : activeRoom.nameEn
                       }
                     />
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#FEF5DC] border border-[#F5BD42]/60 text-[10px] font-extrabold text-[#9A6B0B]">
-                      <Sparkles size={10} className="text-[#D99B20]" />
-                      {cardPrice} ETB / {lang === 'am' ? 'ካርድ' : 'Card'}
-                    </span>
                     {referredByCode && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#E6F6EB] border border-[#159447]/30 text-[10px] font-extrabold text-[#08743A]">
+                      <span
+                        title={lang === 'am' ? 'የጓደኛ ግብዣ ኮድ' : 'Invited friend code'}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#E6F6EB] border border-[#159447]/30 text-[10px] font-extrabold text-[#08743A]"
+                      >
                         <Gift size={10} className="text-[#159447]" />
-                        {lang === 'am' ? `ተጋባዥ (${referredByCode})` : `Invited (${referredByCode})`}
+                        {referredByCode}
                       </span>
                     )}
                   </div>
 
-                  <h1 className="font-['Outfit'] text-base sm:text-xl font-extrabold text-[#183326] tracking-tight leading-tight">
-                    {lang === 'am'
-                      ? 'ADEYBINGO — የቀጥታ ቢንጎ ይጫወቱ!'
-                      : 'ADEYBINGO — Play Live Bingo!'}
-                  </h1>
-                  <p className="text-[11px] sm:text-xs text-[#68776D] max-w-xl leading-snug">
-                    {lang === 'am'
-                      ? 'ከ1–600 የሚወዷቸውን ካርዶች ይምረጡ፣ ባለ 3D ኳሶችን ይከታተሉ እና ወዲያውኑ ሽልማት ያሸንፉ።'
-                      : 'Pick your lucky cards from 1–600, follow the colorful 3D Bingo balls, and win instant rewards.'}
-                  </p>
+                  {/* Colorful 3D Bingo Balls + Compact Icon Stats */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    <div className="flex items-center gap-1">
+                      <BingoBall number={7} size="sm" animate={!reducedMotion} />
+                      <BingoBall number={22} size="sm" animate={!reducedMotion} />
+                      <BingoBall number={38} size="sm" animate={!reducedMotion} />
+                      <BingoBall number={54} size="sm" animate={!reducedMotion} />
+                      <BingoBall number={71} size="sm" animate={!reducedMotion} />
+                    </div>
 
-                  {/* Colorful 3D Bingo Ball Artwork Showcase (Ultra-Compact) */}
-                  <div className="pt-0.5 flex flex-wrap items-center gap-1.5">
-                    <BingoBall number={7} size="sm" animate={!reducedMotion} />
-                    <BingoBall number={22} size="sm" animate={!reducedMotion} />
-                    <BingoBall number={38} size="sm" animate={!reducedMotion} />
-                    <BingoBall number={54} size="sm" animate={!reducedMotion} />
-                    <BingoBall number={71} size="sm" animate={!reducedMotion} />
-                    <span className="text-[10.5px] font-bold text-[#68776D] ml-0.5">
-                      {activeRoom.activePlayers} {lang === 'am' ? 'ተጫዋቾች በክፍሉ ውስጥ' : 'players in room'} ·{' '}
-                      {DEFAULT_GAME_RULES.maxCardsPerRoom - activeRoom.takenCardIds.length}{' '}
-                      {lang === 'am' ? 'ነፃ ካርዶች' : 'cards available'}
-                    </span>
+                    <div className="flex items-center gap-1.5 text-[10.5px] font-extrabold text-[#183326] ml-0.5">
+                      <span
+                        data-testid="home-confirmed-players"
+                        title={lang === 'am' ? 'የተረጋገጡ ተጫዋቾች (ከ600)' : 'Confirmed players (max 600)'}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[#FFF9ED] border border-[#E7EDE8]"
+                      >
+                        <Users size={11} className="text-[#159447]" />
+                        {activeRoom.confirmedPlayersCount ?? activeRoom.activePlayers}/600
+                      </span>
+                      <span
+                        data-testid="home-available-spaces"
+                        title={lang === 'am' ? 'ክፍት የተጫዋች ቦታዎች' : 'Available player spaces'}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[#FFF9ED] border border-[#E7EDE8]"
+                      >
+                        <Grid size={11} className="text-[#D99B20]" />
+                        {activeRoom.availableSpaces ??
+                          Math.max(
+                            0,
+                            600 - (activeRoom.confirmedPlayersCount ?? activeRoom.activePlayers)
+                          )}
+                      </span>
+                      <span
+                        data-testid="home-prize-pool"
+                        title={lang === 'am' ? 'የዙር አሸናፊ ሽልማት (80%)' : 'Winners prize pool (80%)'}
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[#FEF5DC] border border-[#F5BD42]/60 text-[#183326]"
+                      >
+                        <Trophy size={11} className="text-[#D99B20]" />
+                        {activeRoom.winnersPrizePoolEtb ?? 0} ETB
+                      </span>
+                    </div>
                   </div>
                 </div>
 
                 {/* Compact Round Timer Card */}
                 <div
                   data-testid="home-timer"
-                  className={`rounded-xl border px-3 py-2 sm:px-3.5 sm:py-2.5 min-w-[135px] sm:min-w-[160px] shrink-0 space-y-1 ${
+                  title={
+                    activeRoom.status === 'live'
+                      ? lang === 'am'
+                        ? 'ቀጥታ ጨዋታ · ካርዶች ተቆልፈዋል'
+                        : 'Live round · Cards locked'
+                      : lang === 'am'
+                        ? 'ከ 00:00 በፊት ካርድ ይምረጡ'
+                        : 'Select cards before 00:00'
+                  }
+                  className={`rounded-xl border px-2.5 py-1.5 sm:px-3 sm:py-2 min-w-[130px] sm:min-w-[150px] shrink-0 space-y-1 ${
                     activeRoom.status === 'live'
                       ? 'bg-[#E6F6EB] border-[#159447]'
                       : activeRoom.status === 'completed'
@@ -1762,10 +1901,10 @@ export default function App() {
                           : 'bg-[#FFF9ED] border-[#159447]/30'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-1 text-[10px] font-extrabold uppercase tracking-wider text-[#08743A]">
+                  <div className="flex items-center justify-between gap-1 text-[9.5px] font-extrabold uppercase tracking-wider text-[#08743A]">
                     <span className="flex items-center gap-1">
                       <Clock
-                        size={12}
+                        size={11}
                         className={
                           isCardsLocked
                             ? 'text-[#D94B4B]'
@@ -1776,29 +1915,20 @@ export default function App() {
                       />
                       {activeRoom.status === 'live'
                         ? lang === 'am'
-                          ? 'ቀጥታ ጨዋታ'
-                          : 'LIVE ROUND'
+                          ? 'ቀጥታ'
+                          : 'LIVE'
                         : activeRoom.status === 'completed'
                           ? lang === 'am'
-                            ? 'ቀጣይ ዙር'
-                            : 'NEXT ROUND'
+                            ? 'ቀጣይ'
+                            : 'NEXT'
                           : lang === 'am'
-                            ? 'የካርድ ሰዓት'
-                            : 'CARD TIMER'}
-                    </span>
-                    <span className="text-[9.5px] font-semibold text-[#68776D]">
-                      {activeRoom.status === 'live'
-                        ? lang === 'am'
-                          ? 'ካርዶች ተቆልፈዋል'
-                          : 'Cards Locked'
-                        : lang === 'am'
-                          ? 'ከ 00:00 በፊት'
-                          : 'Before 00:00'}
+                            ? 'ሰዓት'
+                            : 'TIMER'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <div
-                      className={`font-mono text-lg sm:text-xl font-extrabold tabular-nums leading-none ${
+                      className={`font-mono text-base sm:text-lg font-extrabold tabular-nums leading-none ${
                         activeRoom.status === 'live'
                           ? 'text-[#08743A]'
                           : isUrgentCountdown
@@ -1812,7 +1942,7 @@ export default function App() {
                           ? `${calls.length}/75`
                           : '00:05'}
                     </div>
-                    <div className="flex-1 max-w-[90px] h-1.5 rounded-full bg-white border border-[#E7EDE8] overflow-hidden">
+                    <div className="flex-1 max-w-[80px] h-1.5 rounded-full bg-white border border-[#E7EDE8] overflow-hidden">
                       <div
                         className={`h-full transition-all duration-500 ${
                           activeRoom.status === 'live'
@@ -1834,217 +1964,56 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Balance & Rewards Summary Strip (2-col on mobile, 3-col on desktop) */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-0.5">
+              {/* Balance & Winnings Strip */}
+              <div className="grid grid-cols-2 gap-1.5">
                 <BalanceCard
                   variant="emerald"
-                  label={lang === 'am' ? 'የመጫወቻ ቀሪ ሂሳብ' : 'Playable Balance'}
+                  label={lang === 'am' ? 'ቀሪ ሂሳብ' : 'Balance'}
                   amount={demoBalance.toFixed(2)}
                   unit="ETB"
-                  badgeText={lang === 'am' ? '15 ብር ቦነስ' : '15 ETB Welcome'}
-                  subtitle={
+                  tooltip={
                     lang === 'am'
-                      ? `የተመረጡ ካርዶች፦ ${selectedCardIds.length}/4`
-                      : `Selected Cards: ${selectedCardIds.length}/4`
+                      ? 'ሲቀላቀሉ 15 ብር የመጀመሪያ ቦነስ ያገኛሉ'
+                      : '15 ETB welcome join bonus'
                   }
                   icon={<Wallet className="w-3 h-3" />}
                 />
 
                 <BalanceCard
                   variant="gold"
-                  label={lang === 'am' ? 'የሽልማት ሂሳብ' : 'Winnings & Rewards'}
+                  label={lang === 'am' ? 'ሽልማት' : 'Winnings'}
                   amount={winningsBalance.toFixed(2)}
                   unit="ETB"
-                  badgeText={lang === 'am' ? '+20 ብር ግብዣ' : '+20 ETB Invite'}
-                  subtitle={
+                  tooltip={
                     lang === 'am'
-                      ? 'ጓደኛ ሲጋብዙ ወዲያውኑ +20 ብር ያግኙ'
-                      : 'Earn +20 ETB per invited friend'
+                      ? 'ጓደኛ ሲጋብዙ +20 ብር ቦነስ ያገኛሉ'
+                      : 'Earn +20 ETB bonus per invited friend'
                   }
                   icon={<Trophy className="w-3 h-3 text-[#D99B20]" />}
                 />
-
-                <div className="col-span-2 sm:col-span-1 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] p-2.5 flex flex-col justify-between gap-1.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10.5px] font-extrabold uppercase tracking-wider text-[#68776D] flex items-center gap-1">
-                      <Users size={12} className="text-[#159447]" />
-                      {lang === 'am' ? 'ፈጣን መዳረሻ' : 'Quick Actions'}
-                    </span>
-                    <span className="text-[10px] font-extrabold text-[#159447]">
-                      1–600 {lang === 'am' ? 'ካርዶች' : 'Cards'}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    <SecondaryButton
-                      size="sm"
-                      onClick={() => setScreen('cards')}
-                      icon={<Grid size={12} className="text-[#159447]" />}
-                      className="flex-1"
-                    >
-                      {lang === 'am' ? 'ሙሉ ካርድ መምረጫ' : 'Full Card Picker'}
-                    </SecondaryButton>
-                    <SecondaryButton
-                      size="sm"
-                      onClick={() => setScreen('referral')}
-                      icon={<Gift size={12} className="text-[#D99B20]" />}
-                      className="flex-1"
-                    >
-                      {lang === 'am' ? 'ጓደኛ ጋብዝ' : 'Invite (+20)'}
-                    </SecondaryButton>
-                  </div>
-                </div>
-              </div>
-
-              {/* Compact Emerald Green Play Bingo Button */}
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-0.5">
-                <PrimaryButton
-                  data-start="true"
-                  variant="emerald"
-                  size="md"
-                  fullWidth
-                  onClick={handleEnterLiveGame}
-                  icon={<Play size={15} className="fill-current" />}
-                  className="shadow-[0_6px_16px_rgba(21,148,71,0.26)]"
-                >
-                  {selectedCardIds.length > 0
-                    ? lang === 'am'
-                      ? `ቢንጎ ይጫወቱ (${selectedCardIds.length} ካርድ · ${(selectedCardIds.length * cardPrice).toFixed(0)} ብር)`
-                      : `Play Bingo Now (${selectedCardIds.length} Card${selectedCardIds.length === 1 ? '' : 's'} · ${(selectedCardIds.length * cardPrice).toFixed(0)} ETB)`
-                    : demoBalance < cardPrice
-                      ? lang === 'am'
-                        ? 'ለመጫወት ጓደኛ ይጋብዙ (+20 ብር) ወይም ሂሳብ ይሙሉ'
-                        : 'Invite Friends (+20 ETB) or Deposit to Play'
-                      : lang === 'am'
-                        ? 'ቢንጎ ይጫወቱ — መጀመሪያ ከታች ካርድ ይምረጡ (10 ብር)'
-                        : 'Play Bingo — Select a Card Below (10 ETB)'}
-                </PrimaryButton>
-
-                {selectedCardIds.length === 0 && !isCardsLocked && (
-                  <PrimaryButton
-                    variant="gold"
-                    size="md"
-                    onClick={() => handleQuickPickCards(1)}
-                    icon={<Shuffle size={14} />}
-                    className="sm:w-auto shrink-0 whitespace-nowrap"
-                  >
-                    {lang === 'am' ? '1 ዕድለኛ ካርድ ምረጥ' : 'Quick Pick 1 Card'}
-                  </PrimaryButton>
-                )}
               </div>
             </section>
 
-            {/* 2. All Cards Selector (1–600) — Ultra-Compact Bright White/Cream & Emerald/Gold Design */}
-            <section className="rounded-2xl bg-white border border-[#E7EDE8] p-2.5 sm:p-3.5 shadow-[0_4px_16px_rgba(24,51,38,0.05)] space-y-2.5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <h2 className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#08743A]">
-                      {lang === 'am'
-                        ? `የቢንጎ ካርድ መምረጫ (1–600)`
-                        : `Select Your Bingo Cards (1–600)`}
-                    </h2>
-                    <span className="px-2 py-0.5 rounded-full bg-[#E6F6EB] border border-[#159447]/30 text-[10.5px] font-extrabold text-[#08743A]">
-                      {selectedCardIds.length} / {DEFAULT_GAME_RULES.maxCardsPerPlayer}{' '}
-                      {lang === 'am' ? 'ተመርጧል' : 'Selected'}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-[#68776D] mt-0.5">
-                    {isCardsLocked
-                      ? lang === 'am'
-                        ? '60 ሰከንዱ አልቋል — ይህ ዙር እስኪያልቅ ድረስ ካርድ መምረጥ አይቻልም'
-                        : '60s window closed — cards are locked until this round finishes'
-                      : lang === 'am'
-                        ? 'የሚፈልጉትን ነጭ የካርድ ቁጥር ይንኩ (አረንጓዴ = የተመረጠ፣ ወርቃማ = ልዩ ዕድለኛ ቁጥር)'
-                        : 'Tap any white number tile below to reserve (Emerald = Selected, Gold = Lucky Milestone)'}
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-1.5 w-full sm:w-auto">
-                  <div className="relative flex-1 sm:w-44">
-                    <Search
-                      size={13}
-                      className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#68776D]"
-                    />
-                    <input
-                      type="search"
-                      value={homeCardSearch}
-                      onChange={(e) => setHomeCardSearch(e.target.value)}
-                      placeholder={lang === 'am' ? 'ካርድ ቁጥር ፈልግ (1-600)...' : 'Search card (1-600)...'}
-                      aria-label="Search card number 1 to 600"
-                      className="w-full pl-7 pr-2.5 py-1.5 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-[11px] font-bold text-[#183326] placeholder:text-[#68776D] focus:outline-none focus:border-[#159447] min-h-[34px]"
-                    />
-                  </div>
-
-                  {selectedCardIds.length < 4 && (
-                    <SecondaryButton
-                      size="sm"
-                      disabled={isCardsLocked}
-                      onClick={() =>
-                        selectedCardIds.length === 0
-                          ? handleQuickPickCards(1)
-                          : handleAddQuickCard()
-                      }
-                      icon={<Shuffle size={12} className="text-[#159447]" />}
-                      className="shrink-0"
-                    >
-                      {selectedCardIds.length === 0
-                        ? lang === 'am'
-                          ? 'ፈጣን ምርጫ'
-                          : 'Quick Pick'
-                        : lang === 'am'
-                          ? '+ ካርድ ጨምር'
-                          : '+ Add Card'}
-                    </SecondaryButton>
-                  )}
-                </div>
-              </div>
-
-              {/* Legend Strip */}
-              <div className="flex flex-wrap items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[10.5px] font-bold text-[#68776D]">
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <span className="inline-flex items-center gap-1">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-white border border-[#E7EDE8] inline-block" />
-                    {lang === 'am' ? 'ክፍት' : 'Available'}
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-[#08743A]">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-[#159447] inline-block" />
-                    {lang === 'am' ? 'የእርስዎ ምርጫ' : 'Your Selection'}
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-[#9A6B0B]">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-[#FEF5DC] border border-[#F5BD42] inline-block" />
-                    {lang === 'am' ? 'ወርቃማ ዕድል' : 'Lucky Gold'}
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-[#D94B4B]">
-                    <span className="w-2.5 h-2.5 rounded-xs bg-[#FFF4F4] border border-[#D94B4B]/40 inline-block" />
-                    {lang === 'am' ? 'የተያዘ' : 'Reserved'}
-                  </span>
-                </div>
-                <span className="text-[#183326] font-extrabold">
-                  {cardPrice} ETB / {lang === 'am' ? 'ካርድ' : 'card'}
-                </span>
-              </div>
-
+            {/* 2. Card Number Grid */}
+            <section className="rounded-2xl bg-white border border-[#E7EDE8] p-2 sm:p-3 shadow-[0_3px_12px_rgba(24,51,38,0.05)] space-y-2">
               {isCardsLocked && (
-                <div className="rounded-xl bg-[#FFF5F5] border border-[#D94B4B]/35 px-3 py-2 text-[11px] font-bold text-[#D94B4B] flex items-center justify-between gap-2">
+                <div className="rounded-lg bg-[#FFF5F5] border border-[#D94B4B]/35 px-2.5 py-1.5 text-[10.5px] font-bold text-[#D94B4B] flex items-center justify-between gap-2">
                   <span>
                     {activeRoom.status === 'completed'
                       ? lang === 'am'
-                        ? 'ዙሩ ተጠናቋል — አዲስ የ60 ሰከንድ ዙር በጥቂት ሰከንዶች ውስጥ ይጀምራል።'
-                        : 'Round completed — a fresh 60s card window starts automatically in seconds.'
+                        ? 'ዙሩ ተጠናቋል · አዲስ ዙር ይጀምራል'
+                        : 'Round completed · Next round starting'
                       : lang === 'am'
-                        ? 'ጨዋታው ቀጥታ እየተካሄደ ነው — ዙሩ እስኪያልቅ ካርዶች ተቆልፈዋል።'
-                        : 'Live round in progress — cards are locked until this round finishes.'}
+                        ? 'ቀጥታ ጨዋታ · ካርዶች ተቆልፈዋል'
+                        : 'Live round · Cards locked'}
                   </span>
                 </div>
               )}
 
-              {/* Warm Cream Container with Compact Rounded White/Emerald/Gold Number Tiles (6 cols mobile / 10-12 desktop) */}
-              <div className="rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] p-2">
-                <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-12 gap-1.5 max-h-[230px] sm:max-h-[290px] overflow-y-auto overscroll-contain pr-0.5">
-                  {(homeCardSearch.trim()
-                    ? ALL_CARD_NUMBERS.filter((id) => String(id).includes(homeCardSearch.trim()))
-                    : ALL_CARD_NUMBERS
-                  ).map((cardNum) => {
+              {/* Warm Cream Container with 8-col mobile / 10-12 desktop Number Tiles */}
+              <div className="rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] p-1.5">
+                <div className="grid grid-cols-8 sm:grid-cols-10 md:grid-cols-12 gap-1 max-h-[210px] sm:max-h-[260px] overflow-y-auto overscroll-contain pr-0.5">
+                  {ALL_CARD_NUMBERS.map((cardNum) => {
                     const isSelected = selectedCardIds.includes(cardNum);
                     const isTaken = activeRoom.takenCardIds.includes(cardNum);
                     const isSpecialGold = cardNum % 25 === 0 || cardNum === 1 || cardNum === 77;
@@ -2066,43 +2035,42 @@ export default function App() {
 
               {/* Selected Cards Preview & Confirmation Strip */}
               {selectedCardIds.length > 0 && (
-                <div className="space-y-2 pt-2 border-t border-[#E7EDE8]">
-                  <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-2 rounded-xl bg-[#E6F6EB] border border-[#159447]/30 text-[11px]">
+                <div className="space-y-1.5 pt-1.5 border-t border-[#E7EDE8]">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#E6F6EB] border border-[#159447]/30 text-[11px]">
                     <span className="text-[#183326] font-bold">
-                      {lang === 'am' ? 'የተመረጡ ካርዶች፦' : 'Your Selected Cards:'}{' '}
                       <b className="text-[#08743A] font-mono text-xs">
                         #{selectedCardIds.join(', #')}
                       </b>{' '}
                       <span className="text-[#68776D]">
-                        ({(selectedCardIds.length * cardPrice).toFixed(2)} ETB)
+                        ({(selectedCardIds.length * cardPrice).toFixed(0)} ETB)
                       </span>
                     </span>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                       {!isCardsLocked && (
                         <button
                           type="button"
                           onClick={handleClearSelectedCards}
-                          className="text-[#D94B4B] font-extrabold hover:underline"
+                          className="text-[#D94B4B] text-[10.5px] font-extrabold hover:underline"
                         >
-                          {lang === 'am' ? 'ሁሉንም አጽዳ' : 'Clear All'}
+                          {lang === 'am' ? 'አጽዳ' : 'Clear'}
                         </button>
                       )}
                       <PrimaryButton
                         size="sm"
                         variant="emerald"
                         onClick={handleEnterLiveGame}
-                        icon={<Play size={12} className="fill-current" />}
+                        icon={<Play size={11} className="fill-current" />}
                       >
-                        {lang === 'am' ? 'ወደ ጨዋታ ቀጥል' : 'Confirm & Play'}
+                        {lang === 'am' ? 'ይጫወቱ' : 'Play'}
                       </PrimaryButton>
                     </div>
                   </div>
 
                   {/* Live 5x5 Previews of Selected Cards */}
                   <div
-                    className={`grid gap-2 ${
+                    className={`grid gap-1.5 ${
                       playerCards.length === 1
-                        ? 'grid-cols-1 max-w-[190px]'
+                        ? 'grid-cols-1 max-w-[175px]'
                         : 'grid-cols-2 sm:grid-cols-2 lg:grid-cols-4'
                     }`}
                   >

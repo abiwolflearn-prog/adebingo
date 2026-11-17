@@ -161,6 +161,15 @@ service cloud.firestore {
           'countdownSeconds',
           'activePlayersCount',
           'reservedCardsCount',
+          'maxPlayers',
+          'confirmedPlayersCount',
+          'verifiedPaidEntriesCount',
+          'availableSpaces',
+          'totalCardsSold',
+          'totalCollectedEtb',
+          'adeyShareEtb',
+          'winnersPrizePoolEtb',
+          'lifecycleStage',
           'status',
           'currentGameId',
           'updatedAt'
@@ -175,6 +184,15 @@ service cloud.firestore {
         data.countdownSeconds is int && data.countdownSeconds >= 0 && data.countdownSeconds <= 60 &&
         data.activePlayersCount is int && data.activePlayersCount >= 0 && data.activePlayersCount <= 600 &&
         data.reservedCardsCount is int && data.reservedCardsCount >= 0 && data.reservedCardsCount <= 600 &&
+        (!('maxPlayers' in data) || (data.maxPlayers is int && data.maxPlayers == 600)) &&
+        (!('confirmedPlayersCount' in data) || (data.confirmedPlayersCount is int && data.confirmedPlayersCount >= 0 && data.confirmedPlayersCount <= 600)) &&
+        (!('verifiedPaidEntriesCount' in data) || (data.verifiedPaidEntriesCount is int && data.verifiedPaidEntriesCount >= 0 && data.verifiedPaidEntriesCount <= 600)) &&
+        (!('availableSpaces' in data) || (data.availableSpaces is int && data.availableSpaces >= 0 && data.availableSpaces <= 600)) &&
+        (!('totalCardsSold' in data) || (data.totalCardsSold is int && data.totalCardsSold >= 0 && data.totalCardsSold <= 600)) &&
+        (!('totalCollectedEtb' in data) || (data.totalCollectedEtb is number && data.totalCollectedEtb >= 0 && data.totalCollectedEtb <= 6000)) &&
+        (!('adeyShareEtb' in data) || (data.adeyShareEtb is number && data.adeyShareEtb >= 0 && data.adeyShareEtb <= 1200)) &&
+        (!('winnersPrizePoolEtb' in data) || (data.winnersPrizePoolEtb is number && data.winnersPrizePoolEtb >= 0 && data.winnersPrizePoolEtb <= 4800)) &&
+        (!('lifecycleStage' in data) || (data.lifecycleStage is string && data.lifecycleStage.size() <= 24 && (data.lifecycleStage == 'WAITING' || data.lifecycleStage == 'REGISTRATION' || data.lifecycleStage == 'READY' || data.lifecycleStage == 'IN_PROGRESS' || data.lifecycleStage == 'COMPLETED'))) &&
         data.status is string && data.status.size() <= 16 &&
         (data.status == 'waiting' || data.status == 'countdown' || data.status == 'live' || data.status == 'completed') &&
         data.currentGameId is string && data.currentGameId.size() >= 1 && data.currentGameId.size() <= 64 &&
@@ -456,6 +474,15 @@ service cloud.firestore {
           'countdownSeconds',
           'activePlayersCount',
           'reservedCardsCount',
+          'maxPlayers',
+          'confirmedPlayersCount',
+          'verifiedPaidEntriesCount',
+          'availableSpaces',
+          'totalCardsSold',
+          'totalCollectedEtb',
+          'adeyShareEtb',
+          'winnersPrizePoolEtb',
+          'lifecycleStage',
           'status',
           'currentGameId',
           'updatedAt'

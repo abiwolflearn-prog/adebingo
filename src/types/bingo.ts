@@ -45,6 +45,13 @@ export interface WinResult {
   missingNumbers?: number[];
 }
 
+export type GameLifecycleStage =
+  | 'WAITING'
+  | 'REGISTRATION'
+  | 'READY'
+  | 'IN_PROGRESS'
+  | 'COMPLETED';
+
 export interface RoomConfig {
   id: string;
   nameAm: string;
@@ -54,11 +61,20 @@ export interface RoomConfig {
   cardPrice: number; // Default 10 ETB
   maxCardsPerRoom: number; // 600
   maxCardsPerPlayer: number; // 4
+  maxPlayers?: number; // 600 individual players
   minPlayers: number; // 3
   countdownSeconds: number;
   activePlayers: number;
+  confirmedPlayersCount?: number;
+  verifiedPaidEntriesCount?: number;
+  availableSpaces?: number;
+  totalCardsSold?: number;
+  totalCollectedEtb?: number;
+  adeyShareEtb?: number;
+  winnersPrizePoolEtb?: number;
   takenCardIds: number[];
   status: 'countdown' | 'live' | 'waiting' | 'completed';
+  lifecycleStage?: GameLifecycleStage;
   badgeAm: string;
   badgeEn: string;
 }

@@ -18,12 +18,21 @@ import {
 } from 'firebase/firestore';
 import type { RoundWinnerShare } from '../game/roundSettlement';
 import {
+  calculateAuthoritativeGameFinancials,
+  resolveGameLifecycleStage,
+} from '../game/rules';
+import {
   auth,
   db,
   handleFirestoreError,
   OperationType,
 } from '../lib/firebase';
-import { Language, WinResult } from '../types/bingo';
+import {
+  ConnectionState,
+  GameLifecycleStage,
+  Language,
+  WinResult,
+} from '../types/bingo';
 import { TelegramUserProfile } from '../utils/telegram';
 
 export interface FirestoreUserProfile {
@@ -65,12 +74,19 @@ export interface FirestoreLiveGameSession {
   hostUid: string;
   roundNumber?: number;
   status: 'countdown' | 'live' | 'completed';
+  lifecycleStage?: GameLifecycleStage;
   calledNumbers: number[];
   latestBall: number;
   winnerUid: string;
   winnerName: string;
   winningCardId: number;
   winningPattern: string;
+  confirmedPlayersCount?: number;
+  availableSpaces?: number;
+  totalCardsSold?: number;
+  totalCollectedEtb?: number;
+  adeyShareEtb?: number;
+  winnersPrizePoolEtb?: number;
   prizePoolEtb?: number;
   winners?: RoundWinnerShare[];
 }
@@ -333,15 +349,88 @@ export async function ensureDefaultRoomsInFirestore(): Promise<void> {
 }
 
 /**
- * Subscribes in real time to all Reserved Cards (/rooms/{roomId}/cards) and Players (/rooms/{roomId}/players).
+ * Subscribes in real time to the parent room doc (/rooms/{roomId}),
+ * all Reserved Cards (/rooms/{roomId}/cards), and Players (/rooms/{roomId}/players).
  */
 export function subscribeToRoomState(
   roomId: string,
   onCardsChange: (reservations: FirestoreCardReservation[]) => void,
-  onPlayersChange: (players: FirestoreRoomPlayer[]) => void
+  onPlayersChange: (players: FirestoreRoomPlayer[]) => void,
+  onRoomDocChange?: (room: ServerRoomSummary) => void,
+  onConnectionStateChange?: (state: ConnectionState) => void
 ): Unsubscribe {
+  const roomPath = `rooms/${roomId}`;
   const cardsPath = `rooms/${roomId}/cards`;
   const playersPath = `rooms/${roomId}/players`;
+
+  const unsubRoomDoc = onSnapshot(
+    doc(db, 'rooms', roomId),
+    (snap) => {
+      onConnectionStateChange?.('online');
+      if (!snap.exists() || !onRoomDocChange) return;
+      const d = snap.data();
+      const rawStatus = String(d.status || 'countdown');
+      const status: ServerRoomSummary['status'] =
+        rawStatus === 'waiting' ||
+        rawStatus === 'countdown' ||
+        rawStatus === 'live' ||
+        rawStatus === 'completed'
+          ? rawStatus
+          : 'countdown';
+      const cardPrice = Number(d.cardPrice ?? 10);
+      const minPlayers = Number(d.minPlayers ?? 3);
+      const countdownSeconds = Number(d.countdownSeconds ?? 60);
+      const activePlayersCount = Number(d.confirmedPlayersCount ?? d.activePlayersCount ?? 0);
+      const reservedCardsCount = Number(d.totalCardsSold ?? d.reservedCardsCount ?? 0);
+      const financials = calculateAuthoritativeGameFinancials(
+        activePlayersCount,
+        reservedCardsCount,
+        cardPrice
+      );
+      const lifecycleStage = resolveGameLifecycleStage({
+        status,
+        confirmedPlayersCount: financials.confirmedPlayersCount,
+        countdownSeconds,
+        minPlayers,
+        explicitStage:
+          typeof d.lifecycleStage === 'string'
+            ? (d.lifecycleStage as GameLifecycleStage)
+            : undefined,
+      });
+      onRoomDocChange({
+        roomId: String(d.roomId || roomId),
+        nameAm: String(d.nameAm || ''),
+        nameEn: String(d.nameEn || ''),
+        cardPrice,
+        maxPlayersPerRoom: financials.maxCapacityPlayers,
+        maxCardsPerRoom: Number(d.maxCardsPerRoom ?? 600),
+        maxCardsPerPlayer: Number(d.maxCardsPerPlayer ?? 4),
+        minPlayers,
+        countdownSeconds,
+        activePlayersCount: financials.confirmedPlayersCount,
+        confirmedPlayersCount: financials.confirmedPlayersCount,
+        verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+        availableSpaces: financials.availableSpaces,
+        reservedCardsCount,
+        totalCardsSold: financials.totalCardsSold,
+        totalCollectedEtb: financials.totalCollectedEtb,
+        adeyShareEtb: financials.adeyShareEtb,
+        winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+        status,
+        lifecycleStage,
+        currentGameId: String(d.currentGameId || `game_${roomId}_live`),
+        hostUid: String(d.hostUid || ''),
+      });
+    },
+    (err) => {
+      onConnectionStateChange?.('reconnecting');
+      try {
+        handleFirestoreError(err, OperationType.GET, roomPath);
+      } catch {
+        // Handled by caller fallback
+      }
+    }
+  );
 
   const qCards = query(
     collection(db, 'rooms', roomId, 'cards'),
@@ -350,6 +439,7 @@ export function subscribeToRoomState(
   const unsubCards = onSnapshot(
     qCards,
     (snap) => {
+      onConnectionStateChange?.('online');
       const list: FirestoreCardReservation[] = [];
       snap.forEach((docSnap) => {
         const d = docSnap.data();
@@ -364,6 +454,7 @@ export function subscribeToRoomState(
       onCardsChange(list);
     },
     (err) => {
+      onConnectionStateChange?.('reconnecting');
       try {
         handleFirestoreError(err, OperationType.LIST, cardsPath);
       } catch {
@@ -379,6 +470,7 @@ export function subscribeToRoomState(
   const unsubPlayers = onSnapshot(
     qPlayers,
     (snap) => {
+      onConnectionStateChange?.('online');
       const list: FirestoreRoomPlayer[] = [];
       snap.forEach((docSnap) => {
         const d = docSnap.data();
@@ -393,6 +485,7 @@ export function subscribeToRoomState(
       onPlayersChange(list);
     },
     (err) => {
+      onConnectionStateChange?.('reconnecting');
       try {
         handleFirestoreError(err, OperationType.LIST, playersPath);
       } catch {
@@ -402,6 +495,7 @@ export function subscribeToRoomState(
   );
 
   return () => {
+    unsubRoomDoc();
     unsubCards();
     unsubPlayers();
   };
@@ -412,12 +506,14 @@ export function subscribeToRoomState(
  */
 export function subscribeToGameState(
   gameId: string,
-  onGameChange: (game: FirestoreLiveGameSession) => void
+  onGameChange: (game: FirestoreLiveGameSession) => void,
+  onConnectionStateChange?: (state: ConnectionState) => void
 ): Unsubscribe {
   const gameRef = doc(db, 'games', gameId);
   return onSnapshot(
     gameRef,
     (snap) => {
+      onConnectionStateChange?.('online');
       if (!snap.exists()) return;
       const d = snap.data();
       onGameChange({
@@ -427,6 +523,10 @@ export function subscribeToGameState(
         roundNumber: typeof d.roundNumber === 'number' ? d.roundNumber : 1,
         status:
           d.status === 'live' || d.status === 'completed' ? d.status : 'countdown',
+        lifecycleStage:
+          typeof d.lifecycleStage === 'string'
+            ? (d.lifecycleStage as GameLifecycleStage)
+            : undefined,
         calledNumbers: Array.isArray(d.calledNumbers)
           ? d.calledNumbers.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 75)
           : [],
@@ -435,10 +535,22 @@ export function subscribeToGameState(
         winnerName: String(d.winnerName || ''),
         winningCardId: Number(d.winningCardId ?? 0),
         winningPattern: String(d.winningPattern || ''),
+        confirmedPlayersCount:
+          typeof d.confirmedPlayersCount === 'number' ? d.confirmedPlayersCount : undefined,
+        availableSpaces:
+          typeof d.availableSpaces === 'number' ? d.availableSpaces : undefined,
+        totalCardsSold:
+          typeof d.totalCardsSold === 'number' ? d.totalCardsSold : undefined,
+        totalCollectedEtb:
+          typeof d.totalCollectedEtb === 'number' ? d.totalCollectedEtb : undefined,
+        adeyShareEtb:
+          typeof d.adeyShareEtb === 'number' ? d.adeyShareEtb : undefined,
+        winnersPrizePoolEtb:
+          typeof d.winnersPrizePoolEtb === 'number' ? d.winnersPrizePoolEtb : undefined,
       });
     },
     () => {
-      // Ignore listener permission errors when unauthenticated
+      onConnectionStateChange?.('reconnecting');
     }
   );
 }
@@ -736,13 +848,22 @@ export interface ServerRoomSummary {
   nameAm: string;
   nameEn: string;
   cardPrice: number;
+  maxPlayersPerRoom?: number;
   maxCardsPerRoom: number;
   maxCardsPerPlayer: number;
   minPlayers: number;
   countdownSeconds: number;
   activePlayersCount: number;
+  confirmedPlayersCount?: number;
+  verifiedPaidEntriesCount?: number;
+  availableSpaces?: number;
   reservedCardsCount: number;
+  totalCardsSold?: number;
+  totalCollectedEtb?: number;
+  adeyShareEtb?: number;
+  winnersPrizePoolEtb?: number;
   status: 'countdown' | 'live' | 'waiting' | 'completed';
+  lifecycleStage?: GameLifecycleStage;
   currentGameId: string;
   hostUid: string;
 }

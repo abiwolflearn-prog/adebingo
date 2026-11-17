@@ -1,5 +1,9 @@
 import crypto from 'node:crypto';
-import type { Language } from '../types/bingo.ts';
+import {
+  calculateAuthoritativeGameFinancials,
+  resolveGameLifecycleStage,
+} from '../game/rules.ts';
+import type { GameLifecycleStage, Language } from '../types/bingo.ts';
 import { validateTelegramWebAppInitData } from './telegramVerify.ts';
 import type {
   AdeyBingoTelegramBotEngine,
@@ -146,12 +150,57 @@ export interface AdminRoomConfigRecord {
   nameAm: string;
   nameEn: string;
   cardPriceEtb: number;
+  maxPlayersPerRoom?: number;
   maxCardsPerRoom: number;
   maxCardsPerPlayer: number;
   lobbyCountdownSeconds: number;
   minPlayers: number;
   activePlayers: number;
+  confirmedPlayersCount?: number;
+  availableSpaces?: number;
+  reservedCardsCount?: number;
+  totalCardsSold?: number;
+  totalCollectedEtb?: number;
+  adeyShareEtb?: number;
+  winnersPrizePoolEtb?: number;
+  lifecycleStage?: GameLifecycleStage;
   status: 'open' | 'starting' | 'live' | 'maintenance';
+  updatedAt: string;
+}
+
+export interface AdminLiveActivityItem {
+  id: string;
+  timestamp: string;
+  type: 'join' | 'card' | 'payment' | 'game' | 'winner' | 'audit';
+  label: string;
+  amountEtb?: number;
+  status?: string;
+}
+
+export interface AdminFinancialDashboardMetrics {
+  roomId: string;
+  gameId: string;
+  gameStatus: string;
+  lifecycleStage: GameLifecycleStage;
+  maxCapacityPlayers: number;
+  entryPriceEtb: number;
+  confirmedPlayersCount: number;
+  availableSpaces: number;
+  totalCardsSold: number;
+  verifiedTotalRevenueEtb: number;
+  adeyShareEtb: number;
+  winnersPrizePoolEtb: number;
+  approvedDepositsCount: number;
+  approvedDepositsEtb: number;
+  pendingPaymentsCount: number;
+  pendingPaymentsEtb: number;
+  rejectedPaymentsCount: number;
+  rejectedPaymentsEtb: number;
+  refundedPaymentsCount: number;
+  refundedPaymentsEtb: number;
+  latestBall: number;
+  calledNumbersCount: number;
+  liveActivityFeed: AdminLiveActivityItem[];
   updatedAt: string;
 }
 
@@ -1035,6 +1084,48 @@ export class ServerAdminAuthority {
     return { ok: true, user: { ...target, walletLedger: [...target.walletLedger] }, auditRecord };
   }
 
+  public syncLiveRoomFinancials(params: {
+    roomId: string;
+    confirmedPlayersCount: number;
+    totalCardsSold: number;
+    status?: 'waiting' | 'countdown' | 'live' | 'completed';
+    countdownSeconds?: number;
+    latestBall?: number;
+    calledNumbersCount?: number;
+  }): void {
+    const rm = this.rooms.get(params.roomId);
+    if (!rm) return;
+    const financials = calculateAuthoritativeGameFinancials(
+      params.confirmedPlayersCount,
+      params.totalCardsSold,
+      rm.cardPriceEtb || 10
+    );
+    const rawStatus = params.status || (rm.status === 'live' ? 'live' : 'countdown');
+    const lifecycleStage = resolveGameLifecycleStage({
+      status: rawStatus,
+      confirmedPlayersCount: financials.confirmedPlayersCount,
+      countdownSeconds: params.countdownSeconds ?? rm.lobbyCountdownSeconds,
+      minPlayers: rm.minPlayers,
+    });
+    rm.activePlayers = financials.confirmedPlayersCount;
+    rm.confirmedPlayersCount = financials.confirmedPlayersCount;
+    rm.availableSpaces = financials.availableSpaces;
+    rm.reservedCardsCount = financials.totalCardsSold;
+    rm.totalCardsSold = financials.totalCardsSold;
+    rm.totalCollectedEtb = financials.totalCollectedEtb;
+    rm.adeyShareEtb = financials.adeyShareEtb;
+    rm.winnersPrizePoolEtb = financials.winnersPrizePoolEtb;
+    rm.lifecycleStage = lifecycleStage;
+    if (params.status === 'live') {
+      rm.status = 'live';
+    } else if (params.status === 'countdown') {
+      rm.status = 'starting';
+    } else if (params.status === 'waiting') {
+      rm.status = 'open';
+    }
+    rm.updatedAt = new Date().toISOString();
+  }
+
   public getOverviewMetrics() {
     this.syncBotPlayers();
     const allUsers = Array.from(this.users.values());
@@ -1042,6 +1133,106 @@ export class ServerAdminAuthority {
     const allDeposits = Array.from(this.deposits.values());
     const allRooms = Array.from(this.rooms.values());
     const botCfg = this.botEngine.getBotConfig();
+
+    const primaryRoom = allRooms.find((r) => r.id === 'adey-main') || allRooms[0];
+    const confirmedPlayersCount = Math.min(
+      600,
+      Math.max(0, Number(primaryRoom?.confirmedPlayersCount ?? primaryRoom?.activePlayers ?? 0))
+    );
+    const totalCardsSold = Math.max(
+      confirmedPlayersCount,
+      Number(primaryRoom?.totalCardsSold ?? primaryRoom?.reservedCardsCount ?? confirmedPlayersCount)
+    );
+    const financials = calculateAuthoritativeGameFinancials(
+      confirmedPlayersCount,
+      totalCardsSold,
+      10
+    );
+    const roomRawStatus: 'waiting' | 'countdown' | 'live' | 'completed' =
+      primaryRoom?.status === 'live'
+        ? 'live'
+        : primaryRoom?.status === 'starting'
+        ? 'countdown'
+        : 'waiting';
+    const lifecycleStage =
+      primaryRoom?.lifecycleStage ||
+      resolveGameLifecycleStage({
+        status: roomRawStatus,
+        confirmedPlayersCount: financials.confirmedPlayersCount,
+        countdownSeconds: primaryRoom?.lobbyCountdownSeconds ?? 60,
+        minPlayers: primaryRoom?.minPlayers ?? 3,
+      });
+
+    const pendingDeposits = allDeposits.filter((d) => d.status === 'Pending');
+    const approvedDeposits = allDeposits.filter((d) => d.status === 'Approved');
+    const rejectedDeposits = allDeposits.filter((d) => d.status === 'Rejected');
+    const rejectedPayouts = allPayouts.filter((p) => p.status === 'Rejected');
+
+    const pendingPaymentsEtb = Number(
+      pendingDeposits.reduce((sum, d) => sum + Number(d.amountEtb || 0), 0).toFixed(2)
+    );
+    const rejectedPaymentsEtb = Number(
+      rejectedDeposits.reduce((sum, d) => sum + Number(d.amountEtb || 0), 0).toFixed(2)
+    );
+    const approvedDepositsEtb = Number(
+      approvedDeposits.reduce((sum, d) => sum + Number(d.amountEtb || 0), 0).toFixed(2)
+    );
+    const refundedPaymentsEtb = Number(
+      rejectedPayouts.reduce((sum, p) => sum + Number(p.requestedAmountEtb || 0), 0).toFixed(2)
+    );
+
+    const liveActivityFeed: AdminLiveActivityItem[] = [
+      ...allDeposits.slice(0, 4).map((d) => ({
+        id: `act_dep_${d.depositId}`,
+        timestamp: d.requestDate,
+        type: 'payment' as const,
+        label: `${d.userDisplayName} · ${d.provider} (${d.referenceCode})`,
+        amountEtb: d.amountEtb,
+        status: d.status,
+      })),
+      ...allPayouts.slice(0, 3).map((p) => ({
+        id: `act_po_${p.requestId}`,
+        timestamp: p.requestDate,
+        type: 'payment' as const,
+        label: `${p.userDisplayName} · Payout ${p.requestId}`,
+        amountEtb: -p.requestedAmountEtb,
+        status: p.status,
+      })),
+      ...this.auditChain.slice(-4).reverse().map((a) => ({
+        id: `act_aud_${a.id}`,
+        timestamp: a.timestamp,
+        type: 'audit' as const,
+        label: a.summary,
+        status: a.action,
+      })),
+    ].slice(0, 8);
+
+    const financialDashboard: AdminFinancialDashboardMetrics = {
+      roomId: primaryRoom?.id || 'adey-main',
+      gameId: `game_${primaryRoom?.id || 'adey-main'}_live`,
+      gameStatus: primaryRoom?.status || 'open',
+      lifecycleStage,
+      maxCapacityPlayers: financials.maxCapacityPlayers,
+      entryPriceEtb: financials.entryPriceEtb,
+      confirmedPlayersCount: financials.confirmedPlayersCount,
+      availableSpaces: financials.availableSpaces,
+      totalCardsSold: financials.totalCardsSold,
+      verifiedTotalRevenueEtb: financials.totalCollectedEtb,
+      adeyShareEtb: financials.adeyShareEtb,
+      winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+      approvedDepositsCount: approvedDeposits.length,
+      approvedDepositsEtb,
+      pendingPaymentsCount: pendingDeposits.length,
+      pendingPaymentsEtb,
+      rejectedPaymentsCount: rejectedDeposits.length,
+      rejectedPaymentsEtb,
+      refundedPaymentsCount: rejectedPayouts.length,
+      refundedPaymentsEtb,
+      latestBall: 0,
+      calledNumbersCount: 0,
+      liveActivityFeed,
+      updatedAt: new Date().toISOString(),
+    };
 
     return {
       totalUsers: allUsers.length,
@@ -1058,9 +1249,9 @@ export class ServerAdminAuthority {
       },
       depositCounts: {
         total: allDeposits.length,
-        Pending: allDeposits.filter((d) => d.status === 'Pending').length,
-        Approved: allDeposits.filter((d) => d.status === 'Approved').length,
-        Rejected: allDeposits.filter((d) => d.status === 'Rejected').length,
+        Pending: pendingDeposits.length,
+        Approved: approvedDeposits.length,
+        Rejected: rejectedDeposits.length,
       },
       activeRoomsCount: allRooms.length,
       totalOnlinePlayers: allRooms.reduce((acc, r) => acc + r.activePlayers, 0),
@@ -1068,6 +1259,7 @@ export class ServerAdminAuthority {
       botStats: botCfg.stats,
       auditTrailEntries: this.auditChain.length,
       auditIntegrity: this.verifyAuditChainIntegrity(),
+      financialDashboard,
       mode: 'demo_sandbox',
     };
   }

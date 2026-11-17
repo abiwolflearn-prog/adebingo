@@ -2,6 +2,7 @@ import type {
   BingoCard,
   BingoColumnSpec,
   BingoLetter,
+  GameLifecycleStage,
   WinResult,
 } from '../types/bingo.ts';
 
@@ -14,14 +15,112 @@ export const BINGO_COLUMNS: BingoColumnSpec[] = [
 ];
 
 export const DEFAULT_GAME_RULES = {
+  maxPlayersPerRoom: 600,
   maxCardsPerRoom: 600,
   maxCardsPerPlayer: 4,
   defaultCardPrice: 10,
+  adeyShareRatio: 0.2,
+  winnersPrizeRatio: 0.8,
   lobbyCountdownSeconds: 60,
   minEligiblePlayers: 3,
   inviterBonusEtb: 20,
   inviteeBonusEtb: 15,
 } as const;
+
+export interface AuthoritativeGameFinancials {
+  maxPlayers: number;
+  maxCapacityPlayers: number;
+  entryPriceEtb: number;
+  confirmedPlayersCount: number;
+  verifiedPaidEntriesCount: number;
+  availableSpaces: number;
+  totalCardsSold: number;
+  totalCollectedEtb: number;
+  adeyShareRatio: number;
+  winnersPrizeRatio: number;
+  adeyShareEtb: number;
+  winnersPrizePoolEtb: number;
+}
+
+/**
+ * Authoritative financial rules for ADEYBINGO:
+ * - Maximum capacity: 600 individual players (kept strictly separate from totalCardsSold).
+ * - Entry price: 10 ETB per verified paid player entry.
+ * - ADEYBINGO share: 20% (totalCollected * 0.20 -> 1,200 ETB at 600 players).
+ * - Winners' prize pool: 80% (totalCollected * 0.80 -> 4,800 ETB at 600 players).
+ * - Available spaces: 600 - confirmedPlayersCount.
+ * Only verified paid entries count as revenue.
+ */
+export function calculateAuthoritativeGameFinancials(
+  confirmedPaidPlayersCount: number,
+  totalCardsSold?: number,
+  entryPriceEtb: number = DEFAULT_GAME_RULES.defaultCardPrice
+): AuthoritativeGameFinancials {
+  const maxCapacityPlayers = DEFAULT_GAME_RULES.maxPlayersPerRoom;
+  const safeEntryPrice = Number.isFinite(entryPriceEtb) && entryPriceEtb > 0 ? entryPriceEtb : 10;
+  const confirmedPlayersCount = Math.max(
+    0,
+    Math.min(maxCapacityPlayers, Math.floor(Number(confirmedPaidPlayersCount) || 0))
+  );
+  const verifiedPaidEntriesCount = confirmedPlayersCount;
+  const availableSpaces = Math.max(0, maxCapacityPlayers - confirmedPlayersCount);
+  const resolvedCardsSold = Math.max(
+    confirmedPlayersCount,
+    Math.min(
+      DEFAULT_GAME_RULES.maxCardsPerRoom,
+      Math.floor(Number(totalCardsSold ?? confirmedPlayersCount) || 0)
+    )
+  );
+  const totalCollectedEtb = Number((verifiedPaidEntriesCount * safeEntryPrice).toFixed(2));
+  const adeyShareEtb = Number(
+    (totalCollectedEtb * DEFAULT_GAME_RULES.adeyShareRatio).toFixed(2)
+  );
+  const winnersPrizePoolEtb = Number(
+    (totalCollectedEtb * DEFAULT_GAME_RULES.winnersPrizeRatio).toFixed(2)
+  );
+
+  return {
+    maxPlayers: maxCapacityPlayers,
+    maxCapacityPlayers,
+    entryPriceEtb: safeEntryPrice,
+    confirmedPlayersCount,
+    verifiedPaidEntriesCount,
+    availableSpaces,
+    totalCardsSold: resolvedCardsSold,
+    totalCollectedEtb,
+    adeyShareRatio: DEFAULT_GAME_RULES.adeyShareRatio,
+    winnersPrizeRatio: DEFAULT_GAME_RULES.winnersPrizeRatio,
+    adeyShareEtb,
+    winnersPrizePoolEtb,
+  };
+}
+
+/**
+ * Maps internal room status & player count to the shared game lifecycle:
+ * WAITING -> REGISTRATION -> READY -> IN_PROGRESS -> COMPLETED
+ */
+export function resolveGameLifecycleStage(params: {
+  status: 'waiting' | 'countdown' | 'live' | 'completed';
+  confirmedPlayersCount: number;
+  countdownSeconds?: number;
+  minPlayers?: number;
+  explicitStage?: GameLifecycleStage;
+}): GameLifecycleStage {
+  if (params.explicitStage) {
+    return params.explicitStage;
+  }
+  const { status, confirmedPlayersCount, countdownSeconds = 60, minPlayers = 2 } = params;
+  if (status === 'completed') return 'COMPLETED';
+  if (status === 'live') return 'IN_PROGRESS';
+  if (confirmedPlayersCount <= 0 || status === 'waiting') return 'WAITING';
+  if (
+    confirmedPlayersCount >= minPlayers &&
+    (countdownSeconds <= 10 || confirmedPlayersCount >= DEFAULT_GAME_RULES.maxPlayersPerRoom)
+  ) {
+    return 'READY';
+  }
+  return 'REGISTRATION';
+}
 
 /**
  * Seeded Mulberry32 PRNG so that each card ID (1..600) has a deterministic,

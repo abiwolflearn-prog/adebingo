@@ -1,10 +1,16 @@
 import crypto from 'node:crypto';
 import type { Firestore, Transaction } from 'firebase-admin/firestore';
 import { FieldValue } from 'firebase-admin/firestore';
-import type { Language } from '../../src/types/bingo.ts';
+import {
+  calculateAuthoritativeGameFinancials,
+  resolveGameLifecycleStage,
+} from '../../src/game/rules.ts';
+import type { GameLifecycleStage, Language } from '../../src/types/bingo.ts';
 import type {
   AdminAuditRecord,
   AdminDepositRequest,
+  AdminFinancialDashboardMetrics,
+  AdminLiveActivityItem,
   AdminManagedUserRecord,
   AdminPayoutOrder,
   AdminReferralRecord,
@@ -1266,18 +1272,59 @@ export class PersistentAdminService {
       const data = d.data() || {};
       const id = String(data.id || data.roomId || d.id);
       const rawAdminStatus = String(data.adminStatus || data.status || 'open');
+      const cardPriceEtb = Number(data.cardPriceEtb ?? data.cardPrice ?? 10);
+      const activePlayers = Number(
+        data.confirmedPlayersCount ?? data.activePlayers ?? data.activePlayersCount ?? 0
+      );
+      const reservedCardsCount = Number(
+        data.totalCardsSold ?? data.reservedCardsCount ?? activePlayers
+      );
+      const financials = calculateAuthoritativeGameFinancials(
+        activePlayers,
+        reservedCardsCount,
+        cardPriceEtb
+      );
+      const rawRoomStatus: 'waiting' | 'countdown' | 'live' | 'completed' =
+        rawAdminStatus === 'live'
+          ? 'live'
+          : rawAdminStatus === 'completed'
+          ? 'completed'
+          : rawAdminStatus === 'starting' || rawAdminStatus === 'countdown'
+          ? 'countdown'
+          : 'waiting';
+      const lifecycleStage = resolveGameLifecycleStage({
+        status: rawRoomStatus,
+        confirmedPlayersCount: financials.confirmedPlayersCount,
+        countdownSeconds: Number(
+          data.lobbyCountdownSeconds ?? data.countdownSeconds ?? 60
+        ),
+        minPlayers: Number(data.minPlayers ?? 3),
+        explicitStage:
+          typeof data.lifecycleStage === 'string'
+            ? (data.lifecycleStage as GameLifecycleStage)
+            : undefined,
+      });
       return {
         id,
         nameAm: String(data.nameAm || ''),
         nameEn: String(data.nameEn || ''),
-        cardPriceEtb: Number(data.cardPriceEtb ?? data.cardPrice ?? 10),
+        cardPriceEtb,
+        maxPlayersPerRoom: financials.maxCapacityPlayers,
         maxCardsPerRoom: Number(data.maxCardsPerRoom ?? 600),
         maxCardsPerPlayer: Number(data.maxCardsPerPlayer ?? 4),
         lobbyCountdownSeconds: Number(
           data.lobbyCountdownSeconds ?? data.countdownSeconds ?? 60
         ),
         minPlayers: Number(data.minPlayers ?? 3),
-        activePlayers: Number(data.activePlayers ?? data.activePlayersCount ?? 0),
+        activePlayers: financials.confirmedPlayersCount,
+        confirmedPlayersCount: financials.confirmedPlayersCount,
+        availableSpaces: financials.availableSpaces,
+        reservedCardsCount: financials.totalCardsSold,
+        totalCardsSold: financials.totalCardsSold,
+        totalCollectedEtb: financials.totalCollectedEtb,
+        adeyShareEtb: financials.adeyShareEtb,
+        winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+        lifecycleStage,
         status: mapRoomStatusToAdminStatus(rawAdminStatus),
         updatedAt:
           typeof data.updatedAt === 'string'
@@ -1701,17 +1748,140 @@ export class PersistentAdminService {
 
   public async getOverviewMetrics() {
     await this.ensureSeedData();
-    const [allUsers, allPayouts, allDeposits, allRooms, allReferrals, botCfg, auditTrail, auditIntegrity] =
-      await Promise.all([
-        this.loadMergedUsers(),
-        this.getPayoutOrders(),
-        this.getDepositRequests(),
-        this.getRooms(),
-        this.getReferrals(),
-        this.getBotManagementState(),
-        this.getAuditTrail(),
-        this.verifyAuditChainIntegrity(),
-      ]);
+    const [
+      allUsers,
+      allPayouts,
+      allDeposits,
+      allRooms,
+      allReferrals,
+      botCfg,
+      auditTrail,
+      auditIntegrity,
+      gamesSnap,
+      txSnap,
+    ] = await Promise.all([
+      this.loadMergedUsers(),
+      this.getPayoutOrders(),
+      this.getDepositRequests(),
+      this.getRooms(),
+      this.getReferrals(),
+      this.getBotManagementState(),
+      this.getAuditTrail(),
+      this.verifyAuditChainIntegrity(),
+      this.db.collection('games').get(),
+      this.db.collection('transactions').get(),
+    ]);
+
+    const primaryRoom = allRooms.find((r) => r.id === 'adey-main') || allRooms[0];
+    const primaryGameId = `game_${primaryRoom?.id || 'adey-main'}_live`;
+    const primaryGameDoc = gamesSnap.docs.find((d) => d.id === primaryGameId);
+    const primaryGameData = primaryGameDoc ? primaryGameDoc.data() || {} : {};
+    const calledNumbers = Array.isArray(primaryGameData.calledNumbers)
+      ? (primaryGameData.calledNumbers as unknown[]).map(Number).filter(Number.isInteger)
+      : [];
+    const latestBall = Number(
+      primaryGameData.latestBall ??
+        (calledNumbers.length > 0 ? calledNumbers[calledNumbers.length - 1] : 0)
+    );
+
+    const confirmedPlayersCount = Math.min(
+      600,
+      Math.max(0, Number(primaryRoom?.confirmedPlayersCount ?? primaryRoom?.activePlayers ?? 0))
+    );
+    const totalCardsSold = Math.max(
+      confirmedPlayersCount,
+      Number(primaryRoom?.totalCardsSold ?? primaryRoom?.reservedCardsCount ?? confirmedPlayersCount)
+    );
+    const financials = calculateAuthoritativeGameFinancials(
+      confirmedPlayersCount,
+      totalCardsSold,
+      10
+    );
+
+    const pendingDeposits = allDeposits.filter((d) => d.status === 'Pending');
+    const approvedDeposits = allDeposits.filter((d) => d.status === 'Approved');
+    const rejectedDeposits = allDeposits.filter((d) => d.status === 'Rejected');
+    const rejectedPayouts = allPayouts.filter((p) => p.status === 'Rejected');
+
+    let cardRefundCount = 0;
+    let cardRefundEtb = 0;
+    for (const d of txSnap.docs) {
+      const ref = String(d.get('reference') || '');
+      const amt = Number(d.get('amountEtb') ?? 0);
+      if (ref.startsWith('ADB-REL-') && amt > 0) {
+        cardRefundCount += 1;
+        cardRefundEtb += amt;
+      }
+    }
+
+    const pendingPaymentsEtb = Number(
+      pendingDeposits.reduce((sum, d) => sum + Number(d.amountEtb || 0), 0).toFixed(2)
+    );
+    const rejectedPaymentsEtb = Number(
+      rejectedDeposits.reduce((sum, d) => sum + Number(d.amountEtb || 0), 0).toFixed(2)
+    );
+    const approvedDepositsEtb = Number(
+      approvedDeposits.reduce((sum, d) => sum + Number(d.amountEtb || 0), 0).toFixed(2)
+    );
+    const refundedPaymentsEtb = Number(
+      (
+        rejectedPayouts.reduce((sum, p) => sum + Number(p.requestedAmountEtb || 0), 0) +
+        cardRefundEtb
+      ).toFixed(2)
+    );
+
+    const liveActivityFeed: AdminLiveActivityItem[] = [
+      ...allDeposits.slice(0, 4).map((d) => ({
+        id: `act_dep_${d.depositId}`,
+        timestamp: d.requestDate,
+        type: 'payment' as const,
+        label: `${d.userDisplayName} · ${d.provider} (${d.referenceCode})`,
+        amountEtb: d.amountEtb,
+        status: d.status,
+      })),
+      ...allPayouts.slice(0, 3).map((p) => ({
+        id: `act_po_${p.requestId}`,
+        timestamp: p.requestDate,
+        type: 'payment' as const,
+        label: `${p.userDisplayName} · Payout ${p.requestId}`,
+        amountEtb: -p.requestedAmountEtb,
+        status: p.status,
+      })),
+      ...auditTrail.slice(0, 4).map((a) => ({
+        id: `act_aud_${a.id}`,
+        timestamp: a.timestamp,
+        type: 'audit' as const,
+        label: a.summary,
+        status: a.action,
+      })),
+    ].slice(0, 8);
+
+    const financialDashboard: AdminFinancialDashboardMetrics = {
+      roomId: primaryRoom?.id || 'adey-main',
+      gameId: primaryGameId,
+      gameStatus: String(primaryGameData.status || primaryRoom?.status || 'open'),
+      lifecycleStage: primaryRoom?.lifecycleStage || 'WAITING',
+      maxCapacityPlayers: financials.maxCapacityPlayers,
+      entryPriceEtb: financials.entryPriceEtb,
+      confirmedPlayersCount: financials.confirmedPlayersCount,
+      availableSpaces: financials.availableSpaces,
+      totalCardsSold: financials.totalCardsSold,
+      verifiedTotalRevenueEtb: financials.totalCollectedEtb,
+      adeyShareEtb: financials.adeyShareEtb,
+      winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+      approvedDepositsCount: approvedDeposits.length,
+      approvedDepositsEtb,
+      pendingPaymentsCount: pendingDeposits.length,
+      pendingPaymentsEtb,
+      rejectedPaymentsCount: rejectedDeposits.length,
+      rejectedPaymentsEtb,
+      refundedPaymentsCount: rejectedPayouts.length + cardRefundCount,
+      refundedPaymentsEtb,
+      latestBall,
+      calledNumbersCount: calledNumbers.length,
+      liveActivityFeed,
+      updatedAt: new Date().toISOString(),
+    };
 
     return {
       totalUsers: allUsers.length,
@@ -1723,14 +1893,14 @@ export class PersistentAdminService {
         Pending: allPayouts.filter((p) => p.status === 'Pending').length,
         'Under Review': allPayouts.filter((p) => p.status === 'Under Review').length,
         Approved: allPayouts.filter((p) => p.status === 'Approved').length,
-        Rejected: allPayouts.filter((p) => p.status === 'Rejected').length,
+        Rejected: rejectedPayouts.length,
         Completed: allPayouts.filter((p) => p.status === 'Completed').length,
       },
       depositCounts: {
         total: allDeposits.length,
-        Pending: allDeposits.filter((d) => d.status === 'Pending').length,
-        Approved: allDeposits.filter((d) => d.status === 'Approved').length,
-        Rejected: allDeposits.filter((d) => d.status === 'Rejected').length,
+        Pending: pendingDeposits.length,
+        Approved: approvedDeposits.length,
+        Rejected: rejectedDeposits.length,
       },
       activeRoomsCount: allRooms.length,
       totalOnlinePlayers: allRooms.reduce((acc, r) => acc + r.activePlayers, 0),
@@ -1738,6 +1908,7 @@ export class PersistentAdminService {
       botStats: botCfg.stats,
       auditTrailEntries: auditTrail.length,
       auditIntegrity,
+      financialDashboard,
       mode: 'demo_sandbox',
     };
   }

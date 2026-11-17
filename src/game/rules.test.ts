@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   BINGO_COLUMNS,
   DEFAULT_GAME_RULES,
+  calculateAuthoritativeGameFinancials,
   calculateDemoPrizePool,
   checkCardWin,
   drawNextBall,
@@ -11,6 +12,7 @@ import {
   getLetterForNumber,
   getNextHelpfulNumberForCard,
   isRoomEligibleToStart,
+  resolveGameLifecycleStage,
   toggleCardSelection,
 } from './rules';
 
@@ -136,3 +138,33 @@ test('room eligibility and demo prize pool calculations', () => {
   assert.equal(pool.serviceReserveDemo, 60);
   assert.equal(pool.winnerPrizeDemo, 340);
 });
+
+test('calculateAuthoritativeGameFinancials enforces 600-player cap, 10 ETB entry, 20% ADEYBINGO share, and 80% winners prize pool', () => {
+  // Full capacity: 600 players -> 6,000 ETB total, 1,200 ETB ADEYBINGO share (20%), 4,800 ETB winners prize pool (80%)
+  const full = calculateAuthoritativeGameFinancials(600, 600, 10);
+  assert.equal(full.maxPlayers, 600);
+  assert.equal(full.confirmedPlayersCount, 600);
+  assert.equal(full.verifiedPaidEntriesCount, 600);
+  assert.equal(full.availableSpaces, 0);
+  assert.equal(full.totalCardsSold, 600);
+  assert.equal(full.totalCollectedEtb, 6000);
+  assert.equal(full.adeyShareEtb, 1200);
+  assert.equal(full.winnersPrizePoolEtb, 4800);
+
+  // Separate player count vs card count: 1 player buying 4 cards counts as 1 confirmed player, 599 available spaces
+  const multiCardPlayer = calculateAuthoritativeGameFinancials(1, 4, 10);
+  assert.equal(multiCardPlayer.confirmedPlayersCount, 1);
+  assert.equal(multiCardPlayer.availableSpaces, 599);
+  assert.equal(multiCardPlayer.totalCardsSold, 4);
+  assert.equal(multiCardPlayer.totalCollectedEtb, 10);
+  assert.equal(multiCardPlayer.adeyShareEtb, 2);
+  assert.equal(multiCardPlayer.winnersPrizePoolEtb, 8);
+
+  // Lifecycle stages: WAITING -> REGISTRATION -> READY -> IN_PROGRESS -> COMPLETED
+  assert.equal(resolveGameLifecycleStage({ status: 'countdown', confirmedPlayersCount: 0, countdownSeconds: 60 }), 'WAITING');
+  assert.equal(resolveGameLifecycleStage({ status: 'countdown', confirmedPlayersCount: 2, countdownSeconds: 45 }), 'REGISTRATION');
+  assert.equal(resolveGameLifecycleStage({ status: 'countdown', confirmedPlayersCount: 3, countdownSeconds: 5 }), 'READY');
+  assert.equal(resolveGameLifecycleStage({ status: 'live', confirmedPlayersCount: 10, countdownSeconds: 0 }), 'IN_PROGRESS');
+  assert.equal(resolveGameLifecycleStage({ status: 'completed', confirmedPlayersCount: 10, countdownSeconds: 0 }), 'COMPLETED');
+});
+

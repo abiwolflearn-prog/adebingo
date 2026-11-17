@@ -23,6 +23,10 @@ import {
 import type { NotificationEventType } from './src/utils/telegramBot.ts';
 import { getBingoVoiceCallScript } from './src/utils/amharicNumbers.ts';
 import {
+  calculateAuthoritativeGameFinancials,
+  resolveGameLifecycleStage,
+} from './src/game/rules.ts';
+import {
   evaluateRoundWinners,
   type RoomCardOwnerEntry,
   type RoundWinnerShare,
@@ -1437,23 +1441,53 @@ async function startServer() {
     const cycle = ensureRoomCycle(r.id);
     const roomCards = localRoomCardOwnership.get(r.id);
     const activePlayersCount = roomCards ? new Set(roomCards.values()).size : 0;
+    const reservedCardsCount = roomCards?.size ?? 0;
     const liveGame = localLiveGames.get(r.id);
     const remainingCountdown =
       cycle.status === 'countdown'
         ? Math.max(0, Math.ceil((cycle.phaseEndsAtMs - Date.now()) / 1000))
         : 0;
+    const financials = calculateAuthoritativeGameFinancials(
+      activePlayersCount,
+      reservedCardsCount,
+      r.cardPriceEtb
+    );
+    const lifecycleStage = resolveGameLifecycleStage({
+      status: cycle.status,
+      confirmedPlayersCount: financials.confirmedPlayersCount,
+      countdownSeconds: remainingCountdown,
+      minPlayers: r.minPlayers,
+    });
+    adminAuthority.syncLiveRoomFinancials({
+      roomId: r.id,
+      confirmedPlayersCount: financials.confirmedPlayersCount,
+      totalCardsSold: financials.totalCardsSold,
+      status: cycle.status,
+      countdownSeconds: remainingCountdown,
+      latestBall: liveGame?.latestBall ?? 0,
+      calledNumbersCount: liveGame?.calledNumbers?.length ?? 0,
+    });
     return {
       roomId: r.id,
       nameAm: r.nameAm,
       nameEn: r.nameEn,
       cardPrice: r.cardPriceEtb,
+      maxPlayersPerRoom: financials.maxCapacityPlayers,
       maxCardsPerRoom: r.maxCardsPerRoom,
       maxCardsPerPlayer: r.maxCardsPerPlayer,
       minPlayers: r.minPlayers,
       countdownSeconds: remainingCountdown,
-      activePlayersCount,
-      reservedCardsCount: roomCards?.size ?? 0,
+      activePlayersCount: financials.confirmedPlayersCount,
+      confirmedPlayersCount: financials.confirmedPlayersCount,
+      verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+      availableSpaces: financials.availableSpaces,
+      reservedCardsCount,
+      totalCardsSold: financials.totalCardsSold,
+      totalCollectedEtb: financials.totalCollectedEtb,
+      adeyShareEtb: financials.adeyShareEtb,
+      winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
       status: cycle.status,
+      lifecycleStage,
       currentGameId: liveGame?.gameId || `game_${r.id}_live`,
       hostUid: liveGame?.hostUid || 'tg_8842109',
     };
@@ -1893,6 +1927,18 @@ async function startServer() {
       const nextCards = myCards.filter((c) => c !== cardId).sort((a, b) => a - b);
       const updatedBal = currentBal + cardPrice;
       if (player) player.demoBalanceEtb = updatedBal;
+      const confirmedPlayers = new Set(roomCards.values()).size;
+      const financials = calculateAuthoritativeGameFinancials(
+        confirmedPlayers,
+        roomCards.size,
+        cardPrice
+      );
+      adminAuthority.syncLiveRoomFinancials({
+        roomId,
+        confirmedPlayersCount: financials.confirmedPlayersCount,
+        totalCardsSold: financials.totalCardsSold,
+        status: cycle.status,
+      });
       res.json({
         ok: true,
         action: 'released',
@@ -1900,6 +1946,7 @@ async function startServer() {
         cardId,
         cardIds: nextCards,
         updatedBalanceEtb: updatedBal,
+        financials,
       });
       return;
     }
@@ -1911,6 +1958,16 @@ async function startServer() {
 
     if (myCards.length >= 4) {
       res.status(409).json({ ok: false, error: 'max_4_cards_reached', message: 'Maximum 4 cards per player.' });
+      return;
+    }
+
+    const currentDistinctPlayers = new Set(roomCards.values()).size;
+    if ((myCards.length === 0 && currentDistinctPlayers >= 600) || roomCards.size >= 600) {
+      res.status(409).json({
+        ok: false,
+        error: 'room_full',
+        message: 'Room has reached maximum capacity (600 players).',
+      });
       return;
     }
 
@@ -1927,6 +1984,18 @@ async function startServer() {
     const nextCards = [...myCards, cardId].sort((a, b) => a - b);
     const updatedBal = currentBal - cardPrice;
     if (player) player.demoBalanceEtb = updatedBal;
+    const confirmedPlayers = new Set(roomCards.values()).size;
+    const financials = calculateAuthoritativeGameFinancials(
+      confirmedPlayers,
+      roomCards.size,
+      cardPrice
+    );
+    adminAuthority.syncLiveRoomFinancials({
+      roomId,
+      confirmedPlayersCount: financials.confirmedPlayersCount,
+      totalCardsSold: financials.totalCardsSold,
+      status: cycle.status,
+    });
     res.json({
       ok: true,
       action: 'reserved',
@@ -1934,6 +2003,7 @@ async function startServer() {
       cardId,
       cardIds: nextCards,
       updatedBalanceEtb: updatedBal,
+      financials,
     });
   });
 

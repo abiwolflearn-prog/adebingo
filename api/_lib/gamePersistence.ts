@@ -3,13 +3,16 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { FieldValue } from 'firebase-admin/firestore';
 import { INITIAL_ROOMS } from '../../src/data/demoData.ts';
 import {
+  type AuthoritativeGameFinancials,
+  calculateAuthoritativeGameFinancials,
   checkCardWin,
   formatBallCall,
   generateDeterministicCard,
   getLetterForNumber,
   isRoomEligibleToStart,
+  resolveGameLifecycleStage,
 } from '../../src/game/rules.ts';
-import type { WinResult } from '../../src/types/bingo.ts';
+import type { GameLifecycleStage, WinResult } from '../../src/types/bingo.ts';
 import { PersistentReplayGuard } from './replayGuard.ts';
 
 export interface PersistentGameSessionDoc {
@@ -18,12 +21,19 @@ export interface PersistentGameSessionDoc {
   hostUid: string;
   roundNumber?: number;
   status: 'countdown' | 'live' | 'completed';
+  lifecycleStage?: GameLifecycleStage;
   calledNumbers: number[];
   latestBall: number;
   winnerUid: string;
   winnerName: string;
   winningCardId: number;
   winningPattern: string;
+  confirmedPlayersCount?: number;
+  availableSpaces?: number;
+  totalCardsSold?: number;
+  totalCollectedEtb?: number;
+  adeyShareEtb?: number;
+  winnersPrizePoolEtb?: number;
 }
 
 export interface RoomSummary {
@@ -31,13 +41,22 @@ export interface RoomSummary {
   nameAm: string;
   nameEn: string;
   cardPrice: number;
+  maxPlayersPerRoom?: number;
   maxCardsPerRoom: number;
   maxCardsPerPlayer: number;
   minPlayers: number;
   countdownSeconds: number;
   activePlayersCount: number;
+  confirmedPlayersCount?: number;
+  verifiedPaidEntriesCount?: number;
+  availableSpaces?: number;
   reservedCardsCount: number;
+  totalCardsSold?: number;
+  totalCollectedEtb?: number;
+  adeyShareEtb?: number;
+  winnersPrizePoolEtb?: number;
   status: 'waiting' | 'countdown' | 'live' | 'completed';
+  lifecycleStage?: GameLifecycleStage;
   currentGameId: string;
   hostUid: string;
 }
@@ -87,6 +106,7 @@ export interface PersistentCardToggleResult {
   action?: 'reserved' | 'released';
   cardIds?: number[];
   updatedBalanceEtb?: number;
+  financials?: AuthoritativeGameFinancials;
 }
 
 export interface PersistentDrawBallResult {
@@ -119,6 +139,9 @@ export interface PersistentVerifyWinnerResult {
   cardId: number;
   winResult?: WinResult;
   demoPrizeEtb?: number;
+  winnersPrizePoolEtb?: number;
+  adeyShareEtb?: number;
+  totalCollectedEtb?: number;
   serverVerifiedAt: string;
 }
 
@@ -190,18 +213,43 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
       rawStatus === 'completed'
         ? rawStatus
         : 'countdown';
+    const cardPrice = Number(data.cardPrice ?? 10);
+    const minPlayers = Number(data.minPlayers ?? 3);
+    const countdownSeconds = Number(data.countdownSeconds ?? 60);
+    const activePlayersCount = Number(data.activePlayersCount ?? 0);
+    const reservedCardsCount = Number(data.reservedCardsCount ?? 0);
+    const financials = calculateAuthoritativeGameFinancials(
+      activePlayersCount,
+      reservedCardsCount,
+      cardPrice
+    );
+    const lifecycleStage = resolveGameLifecycleStage({
+      status,
+      confirmedPlayersCount: financials.confirmedPlayersCount,
+      countdownSeconds,
+      minPlayers,
+    });
     return {
       roomId: String(data.roomId || docId),
       nameAm: String(data.nameAm || ''),
       nameEn: String(data.nameEn || ''),
-      cardPrice: Number(data.cardPrice ?? 10),
+      cardPrice,
+      maxPlayersPerRoom: financials.maxCapacityPlayers,
       maxCardsPerRoom: Number(data.maxCardsPerRoom ?? 600),
       maxCardsPerPlayer: Number(data.maxCardsPerPlayer ?? 4),
-      minPlayers: Number(data.minPlayers ?? 3),
-      countdownSeconds: Number(data.countdownSeconds ?? 60),
-      activePlayersCount: Number(data.activePlayersCount ?? 0),
-      reservedCardsCount: Number(data.reservedCardsCount ?? 0),
+      minPlayers,
+      countdownSeconds,
+      activePlayersCount: financials.confirmedPlayersCount,
+      confirmedPlayersCount: financials.confirmedPlayersCount,
+      verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+      availableSpaces: financials.availableSpaces,
+      reservedCardsCount,
+      totalCardsSold: financials.totalCardsSold,
+      totalCollectedEtb: financials.totalCollectedEtb,
+      adeyShareEtb: financials.adeyShareEtb,
+      winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
       status,
+      lifecycleStage,
       currentGameId: String(data.currentGameId || `game_${docId}_live`),
       hostUid: String(data.hostUid || ''),
     };
@@ -214,18 +262,34 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         await db.runTransaction(async (tx) => {
           const snap = await tx.get(roomRef);
           if (!snap.exists) {
+            const financials = calculateAuthoritativeGameFinancials(0, 0, rm.cardPrice);
+            const lifecycleStage = resolveGameLifecycleStage({
+              status: rm.status,
+              confirmedPlayersCount: 0,
+              countdownSeconds: 60,
+              minPlayers: 3,
+            });
             tx.set(roomRef, {
               roomId: rm.id,
               nameAm: rm.nameAm.slice(0, 100),
               nameEn: rm.nameEn.slice(0, 100),
               cardPrice: rm.cardPrice,
+              maxPlayersPerRoom: 600,
               maxCardsPerRoom: 600,
               maxCardsPerPlayer: 4,
               minPlayers: 3,
               countdownSeconds: 60,
-              activePlayersCount: rm.activePlayers,
-              reservedCardsCount: rm.takenCardIds.length,
+              activePlayersCount: 0,
+              confirmedPlayersCount: 0,
+              verifiedPaidEntriesCount: 0,
+              availableSpaces: 600,
+              reservedCardsCount: 0,
+              totalCardsSold: 0,
+              totalCollectedEtb: 0,
+              adeyShareEtb: 0,
+              winnersPrizePoolEtb: 0,
               status: rm.status,
+              lifecycleStage,
               currentGameId: `game_${rm.id}_live`,
               updatedAt: FieldValue.serverTimestamp(),
             });
@@ -316,13 +380,22 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           nameAm: cleanNameAm,
           nameEn: cleanNameEn,
           cardPrice,
+          maxPlayersPerRoom: 600,
           maxCardsPerRoom: 600,
           maxCardsPerPlayer: 4,
           minPlayers: 3,
           countdownSeconds,
           activePlayersCount: 0,
+          confirmedPlayersCount: 0,
+          verifiedPaidEntriesCount: 0,
+          availableSpaces: 600,
           reservedCardsCount: 0,
+          totalCardsSold: 0,
+          totalCollectedEtb: 0,
+          adeyShareEtb: 0,
+          winnersPrizePoolEtb: 0,
           status: 'countdown' as const,
+          lifecycleStage: 'WAITING' as const,
           currentGameId: `game_${cleanRoomId}_live`,
           hostUid: hostUid.trim().slice(0, 128),
           updatedAt: FieldValue.serverTimestamp(),
@@ -379,6 +452,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         const activePlayersCount = Number(roomSnap.get('activePlayersCount') ?? 0);
         const reservedCardsCount = Number(roomSnap.get('reservedCardsCount') ?? 0);
         const minPlayers = Number(roomSnap.get('minPlayers') ?? 3);
+        const cardPrice = Number(roomSnap.get('cardPrice') ?? 10);
 
         if (!isRoomEligibleToStart(activePlayersCount, reservedCardsCount, minPlayers)) {
           return { ok: false, reason: 'eligibility_not_met' };
@@ -387,6 +461,11 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         const openingBall = crypto.randomInt(1, 76);
         const resolvedHost = existingHost || callerUid;
         const roundNumber = gameSnap.exists ? Number(gameSnap.get('roundNumber') ?? 1) : 1;
+        const financials = calculateAuthoritativeGameFinancials(
+          activePlayersCount,
+          reservedCardsCount,
+          cardPrice
+        );
 
         const sessionDoc: PersistentGameSessionDoc = {
           gameId,
@@ -394,12 +473,19 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           hostUid: resolvedHost,
           roundNumber,
           status: 'live',
+          lifecycleStage: 'IN_PROGRESS',
           calledNumbers: [openingBall],
           latestBall: openingBall,
           winnerUid: '',
           winnerName: '',
           winningCardId: 0,
           winningPattern: '',
+          confirmedPlayersCount: financials.confirmedPlayersCount,
+          availableSpaces: financials.availableSpaces,
+          totalCardsSold: financials.totalCardsSold,
+          totalCollectedEtb: financials.totalCollectedEtb,
+          adeyShareEtb: financials.adeyShareEtb,
+          winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
         };
 
         if (gameSnap.exists) {
@@ -417,6 +503,14 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
 
         tx.update(roomRef, {
           status: 'live',
+          lifecycleStage: 'IN_PROGRESS',
+          confirmedPlayersCount: financials.confirmedPlayersCount,
+          verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+          availableSpaces: financials.availableSpaces,
+          totalCardsSold: financials.totalCardsSold,
+          totalCollectedEtb: financials.totalCollectedEtb,
+          adeyShareEtb: financials.adeyShareEtb,
+          winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
           currentGameId: gameId,
           hostUid: resolvedHost,
           updatedAt: FieldValue.serverTimestamp(),
@@ -475,6 +569,8 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         }
 
         const cardPrice = Number(roomSnap.get('cardPrice') ?? 10);
+        const minPlayers = Number(roomSnap.get('minPlayers') ?? 3);
+        const countdownSeconds = Number(roomSnap.get('countdownSeconds') ?? 60);
         const currentBalance = Number(userSnap.get('demoBalanceEtb') ?? 0);
         const existingCardIds: number[] = playerSnap.exists
           ? Array.isArray(playerSnap.get('cardIds'))
@@ -494,13 +590,35 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           const nextCardIds = existingCardIds.filter((id) => id !== cardId);
           const updatedBalance = Math.min(100000, currentBalance + cardPrice);
           const txId = `tx_rel_${crypto.randomUUID()}`;
+          const nextReservedCount = Math.max(0, currentReservedCount - 1);
+          const nextPlayersCount =
+            nextCardIds.length === 0 ? Math.max(0, currentPlayersCount - 1) : currentPlayersCount;
+          const nextFinancials = calculateAuthoritativeGameFinancials(
+            nextPlayersCount,
+            nextReservedCount,
+            cardPrice
+          );
+          const nextLifecycle = resolveGameLifecycleStage({
+            status: 'countdown',
+            confirmedPlayersCount: nextFinancials.confirmedPlayersCount,
+            countdownSeconds,
+            minPlayers,
+          });
 
           tx.delete(cardRef);
           if (nextCardIds.length === 0) {
             tx.delete(playerRef);
             tx.update(roomRef, {
-              reservedCardsCount: Math.max(0, currentReservedCount - 1),
-              activePlayersCount: Math.max(0, currentPlayersCount - 1),
+              reservedCardsCount: nextReservedCount,
+              totalCardsSold: nextFinancials.totalCardsSold,
+              activePlayersCount: nextFinancials.confirmedPlayersCount,
+              confirmedPlayersCount: nextFinancials.confirmedPlayersCount,
+              verifiedPaidEntriesCount: nextFinancials.verifiedPaidEntriesCount,
+              availableSpaces: nextFinancials.availableSpaces,
+              totalCollectedEtb: nextFinancials.totalCollectedEtb,
+              adeyShareEtb: nextFinancials.adeyShareEtb,
+              winnersPrizePoolEtb: nextFinancials.winnersPrizePoolEtb,
+              lifecycleStage: nextLifecycle,
               updatedAt: FieldValue.serverTimestamp(),
             });
           } else {
@@ -513,7 +631,16 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
               updatedAt: FieldValue.serverTimestamp(),
             });
             tx.update(roomRef, {
-              reservedCardsCount: Math.max(0, currentReservedCount - 1),
+              reservedCardsCount: nextReservedCount,
+              totalCardsSold: nextFinancials.totalCardsSold,
+              activePlayersCount: nextFinancials.confirmedPlayersCount,
+              confirmedPlayersCount: nextFinancials.confirmedPlayersCount,
+              verifiedPaidEntriesCount: nextFinancials.verifiedPaidEntriesCount,
+              availableSpaces: nextFinancials.availableSpaces,
+              totalCollectedEtb: nextFinancials.totalCollectedEtb,
+              adeyShareEtb: nextFinancials.adeyShareEtb,
+              winnersPrizePoolEtb: nextFinancials.winnersPrizePoolEtb,
+              lifecycleStage: nextLifecycle,
               updatedAt: FieldValue.serverTimestamp(),
             });
           }
@@ -538,6 +665,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
             action: 'released',
             cardIds: nextCardIds,
             updatedBalanceEtb: updatedBalance,
+            financials: nextFinancials,
           };
         }
 
@@ -547,6 +675,10 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
 
         if (existingCardIds.length >= 4) {
           return { ok: false, reason: 'max_4_cards_reached' };
+        }
+        // Strict 600 individual player cap AND 600 card cap
+        if (!playerSnap.exists && currentPlayersCount >= 600) {
+          return { ok: false, reason: 'room_full' };
         }
         if (currentReservedCount >= 600) {
           return { ok: false, reason: 'room_full' };
@@ -559,6 +691,21 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         const serial = `ADB-${String(cardId).padStart(3, '0')}`;
         const updatedBalance = Math.max(0, currentBalance - cardPrice);
         const txId = `tx_ent_${crypto.randomUUID()}`;
+        const nextReservedCount = currentReservedCount + 1;
+        const nextPlayersCount = playerSnap.exists
+          ? currentPlayersCount
+          : Math.min(600, currentPlayersCount + 1);
+        const nextFinancials = calculateAuthoritativeGameFinancials(
+          nextPlayersCount,
+          nextReservedCount,
+          cardPrice
+        );
+        const nextLifecycle = resolveGameLifecycleStage({
+          status: 'countdown',
+          confirmedPlayersCount: nextFinancials.confirmedPlayersCount,
+          countdownSeconds,
+          minPlayers,
+        });
 
         tx.set(playerRef, {
           playerId: uid,
@@ -579,10 +726,16 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         });
 
         tx.update(roomRef, {
-          reservedCardsCount: currentReservedCount + 1,
-          activePlayersCount: playerSnap.exists
-            ? currentPlayersCount
-            : Math.min(600, currentPlayersCount + 1),
+          reservedCardsCount: nextReservedCount,
+          totalCardsSold: nextFinancials.totalCardsSold,
+          activePlayersCount: nextFinancials.confirmedPlayersCount,
+          confirmedPlayersCount: nextFinancials.confirmedPlayersCount,
+          verifiedPaidEntriesCount: nextFinancials.verifiedPaidEntriesCount,
+          availableSpaces: nextFinancials.availableSpaces,
+          totalCollectedEtb: nextFinancials.totalCollectedEtb,
+          adeyShareEtb: nextFinancials.adeyShareEtb,
+          winnersPrizePoolEtb: nextFinancials.winnersPrizePoolEtb,
+          lifecycleStage: nextLifecycle,
           updatedAt: FieldValue.serverTimestamp(),
         });
 
@@ -607,6 +760,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           action: 'reserved',
           cardIds: nextCardIds,
           updatedBalanceEtb: updatedBalance,
+          financials: nextFinancials,
         };
       });
     },
@@ -690,6 +844,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
             hostUid,
             roundNumber,
             status: 'live',
+            lifecycleStage: 'IN_PROGRESS',
             calledNumbers: updatedCalls,
             latestBall: drawnBall,
             winnerUid: '',
@@ -702,6 +857,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         } else {
           tx.update(gameRef, {
             status: 'live',
+            lifecycleStage: 'IN_PROGRESS',
             calledNumbers: updatedCalls,
             latestBall: drawnBall,
             updatedAt: FieldValue.serverTimestamp(),
@@ -711,6 +867,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         if (roomSnap.get('status') !== 'live') {
           tx.update(roomRef, {
             status: 'live',
+            lifecycleStage: 'IN_PROGRESS',
             currentGameId: gameId,
             updatedAt: FieldValue.serverTimestamp(),
           });
@@ -829,7 +986,18 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         }
 
         const cardPrice = Number(roomSnap.get('cardPrice') ?? 10);
-        const demoPrizeEtb = Math.max(50, playerCardIds.length * cardPrice * 4);
+        const activePlayersCount = Number(roomSnap.get('activePlayersCount') ?? 0);
+        const reservedCardsCount = Number(roomSnap.get('reservedCardsCount') ?? 0);
+        const financials = calculateAuthoritativeGameFinancials(
+          activePlayersCount,
+          reservedCardsCount,
+          cardPrice
+        );
+        const demoPrizeEtb = Math.max(
+          50,
+          financials.winnersPrizePoolEtb,
+          playerCardIds.length * cardPrice * 4
+        );
         const patternLabel = (winResult.patternLabelEn || 'Bingo Line').slice(0, 64);
         const roundNumber = Number(gameData.roundNumber ?? 1);
         const currentBal = Number(userSnap.get('demoBalanceEtb') ?? 250);
@@ -837,15 +1005,30 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
 
         tx.update(gameRef, {
           status: 'completed',
+          lifecycleStage: 'COMPLETED',
           winnerUid: claimantUid,
           winnerName: playerName.slice(0, 80),
           winningCardId: cardId,
           winningPattern: patternLabel,
+          confirmedPlayersCount: financials.confirmedPlayersCount,
+          availableSpaces: financials.availableSpaces,
+          totalCardsSold: financials.totalCardsSold,
+          totalCollectedEtb: financials.totalCollectedEtb,
+          adeyShareEtb: financials.adeyShareEtb,
+          winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
           updatedAt: FieldValue.serverTimestamp(),
         });
 
         tx.update(roomRef, {
           status: 'completed',
+          lifecycleStage: 'COMPLETED',
+          confirmedPlayersCount: financials.confirmedPlayersCount,
+          verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+          availableSpaces: financials.availableSpaces,
+          totalCardsSold: financials.totalCardsSold,
+          totalCollectedEtb: financials.totalCollectedEtb,
+          adeyShareEtb: financials.adeyShareEtb,
+          winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
           updatedAt: FieldValue.serverTimestamp(),
         });
 
@@ -873,6 +1056,9 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           cardId,
           winResult,
           demoPrizeEtb,
+          winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+          adeyShareEtb: financials.adeyShareEtb,
+          totalCollectedEtb: financials.totalCollectedEtb,
           serverVerifiedAt: nowIso,
         };
       });
@@ -914,6 +1100,14 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           ? Number(gameSnap.get('roundNumber') ?? 1) + 1
           : 1;
         const hostUid = existingHost || callerUid;
+        const activePlayersCount = Number(roomSnap.get('activePlayersCount') ?? 0);
+        const minPlayers = Number(roomSnap.get('minPlayers') ?? 3);
+        const nextLifecycle = resolveGameLifecycleStage({
+          status: 'countdown',
+          confirmedPlayersCount: activePlayersCount,
+          countdownSeconds: 60,
+          minPlayers,
+        });
 
         tx.set(gameRef, {
           gameId,
@@ -921,6 +1115,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           hostUid,
           roundNumber: nextRound,
           status: 'countdown',
+          lifecycleStage: nextLifecycle,
           calledNumbers: [9, 30, 7, 16, 14],
           latestBall: 14,
           winnerUid: '',
@@ -933,6 +1128,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
 
         tx.update(roomRef, {
           status: 'countdown',
+          lifecycleStage: nextLifecycle,
           currentGameId: gameId,
           hostUid,
           updatedAt: FieldValue.serverTimestamp(),

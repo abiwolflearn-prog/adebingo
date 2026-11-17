@@ -1247,4 +1247,235 @@ test('Milestone 5: PersistentTelegramBotService persists demo depositRequests, p
   assert.match(lbRes.text, /150/);
 });
 
+test('Real-Time Multiplayer Synchronization & Live Financial Dashboard: verifies all 9 multi-device & financial scenarios', async () => {
+  const { db, store } = createInMemoryFirestoreHarness();
+  const { PersistentAdminService } = await import('./adminPersistence.ts');
+
+  // Create two separate server/device instances backed by the same shared Firestore database
+  const deviceAGame = new PersistentGameAuthorityService(
+    createFirestoreGameStore(db),
+    new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300)
+  );
+  const deviceBGame = new PersistentGameAuthorityService(
+    createFirestoreGameStore(db),
+    new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300)
+  );
+  const adminService = new PersistentAdminService(db);
+
+  await createFirestoreGameStore(db).ensureDefaultRooms();
+  const roomId = 'adey-main';
+  const gameId = 'game_adey-main_live';
+
+  // Seed Device A (Existing Player) and Device B (Invited Player)
+  store.set('users/tg_101', {
+    uid: 'tg_101',
+    telegramUserId: 'tg_101',
+    displayName: 'Device A Existing',
+    username: 'device_a',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 100,
+  });
+  store.set('users/tg_102', {
+    uid: 'tg_102',
+    telegramUserId: 'tg_102',
+    displayName: 'Device B Invited',
+    username: 'device_b',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 100,
+    referredByCode: 'ADEY-101',
+  });
+
+  // Scenario 1 & 9: Device A joins (buys 2 cards) -> Device B immediately sees updated confirmed player count (1/600), available spaces (599), and cards sold (2)
+  const joinA1 = await deviceAGame.reserveOrReleaseCard({
+    roomId,
+    cardId: 1,
+    uid: 'tg_101',
+    displayName: 'Device A Existing',
+    telegramUserId: 'tg_101',
+  });
+  assert.equal(joinA1.ok, true);
+  const joinA2 = await deviceAGame.reserveOrReleaseCard({
+    roomId,
+    cardId: 2,
+    uid: 'tg_101',
+    displayName: 'Device A Existing',
+    telegramUserId: 'tg_101',
+  });
+  assert.equal(joinA2.ok, true);
+
+  // Device B reads authoritative room state without local fabrication
+  const roomsOnDeviceB = await createFirestoreGameStore(db).listRooms();
+  const mainOnB = roomsOnDeviceB.find((r) => r.roomId === roomId)!;
+  assert.equal(mainOnB.confirmedPlayersCount, 1, '1 player with 2 cards must count as 1 confirmed player');
+  assert.equal(mainOnB.availableSpaces, 599, 'Available spaces must be 600 - 1 = 599');
+  assert.equal(mainOnB.totalCardsSold, 2, 'Total cards sold tracked separately from player count');
+  assert.equal(mainOnB.totalCollectedEtb, 10);
+  assert.equal(mainOnB.adeyShareEtb, 2);
+  assert.equal(mainOnB.winnersPrizePoolEtb, 8);
+
+  // Scenario 2, 3 & 7: Device B joins -> verified paid entries update revenue & 80% prize pool on all devices; pending/rejected deposits do NOT inflate game revenue
+  store.set('depositRequests/dep_pending_1', {
+    depositId: 'dep_pending_1',
+    uid: 'tg_102',
+    userDisplayName: 'Device B Invited',
+    telegramUserId: 102,
+    amountEtb: 500,
+    status: 'Pending',
+    referenceCode: 'TLB-PEND-1',
+    requestDate: 'Just now',
+  });
+  store.set('depositRequests/dep_rejected_1', {
+    depositId: 'dep_rejected_1',
+    uid: 'tg_102',
+    userDisplayName: 'Device B Invited',
+    telegramUserId: 102,
+    amountEtb: 300,
+    status: 'Rejected',
+    referenceCode: 'TLB-REJ-1',
+    requestDate: 'Just now',
+  });
+
+  const joinB1 = await deviceBGame.reserveOrReleaseCard({
+    roomId,
+    cardId: 3,
+    uid: 'tg_102',
+    displayName: 'Device B Invited',
+    telegramUserId: 'tg_102',
+  });
+  assert.equal(joinB1.ok, true);
+
+  // Duplicate card reservation attempt by Device A on card 3 is rejected (Scenario 7)
+  const dupTake = await deviceAGame.reserveOrReleaseCard({
+    roomId,
+    cardId: 3,
+    uid: 'tg_101',
+    displayName: 'Device A Existing',
+    telegramUserId: 'tg_101',
+  });
+  assert.equal(dupTake.ok, false);
+  assert.equal(dupTake.reason, 'card_already_taken');
+
+  // Verify both Device A and Device B see identical prize pool (2 players * 10 ETB = 20 ETB -> 16 ETB prize pool 80%, 4 ETB ADEY share 20%)
+  const overviewAfter2 = await adminService.getOverviewMetrics();
+  assert.equal(overviewAfter2.financialDashboard.confirmedPlayersCount, 2);
+  assert.equal(overviewAfter2.financialDashboard.availableSpaces, 598);
+  assert.equal(overviewAfter2.financialDashboard.totalCardsSold, 3);
+  assert.equal(overviewAfter2.financialDashboard.verifiedTotalRevenueEtb, 20);
+  assert.equal(overviewAfter2.financialDashboard.adeyShareEtb, 4);
+  assert.equal(overviewAfter2.financialDashboard.winnersPrizePoolEtb, 16);
+  assert.ok(overviewAfter2.financialDashboard.pendingPaymentsCount >= 1);
+  assert.ok(overviewAfter2.financialDashboard.pendingPaymentsEtb >= 500);
+  assert.ok(overviewAfter2.financialDashboard.rejectedPaymentsCount >= 1);
+  assert.ok(overviewAfter2.financialDashboard.rejectedPaymentsEtb >= 300);
+
+  // Scenario 4 & 8: Server draws a Bingo number -> appears on all connected devices & survives disconnect/reconnect
+  const drawRes = await deviceAGame.drawNextBall({
+    roomId,
+    gameId,
+    callerUid: 'tg_101',
+    requestNonce: 'sync-draw-1',
+  });
+  assert.equal(drawRes.ok, true);
+  const reconnectedDeviceB = await createFirestoreGameStore(db).getRoomDetail(roomId, 'tg_102');
+  assert.ok(reconnectedDeviceB.game);
+  assert.deepEqual(reconnectedDeviceB.game.calledNumbers, drawRes.calledNumbers);
+  assert.equal(reconnectedDeviceB.game.latestBall, drawRes.ball);
+
+  // Scenario 5 & 7: Winner claim is synchronized and validated everywhere; duplicate claim cannot credit twice
+  let currentBalls = drawRes.calledNumbers!;
+  while (currentBalls.length < 75) {
+    const next = await deviceAGame.drawNextBall({
+      roomId,
+      gameId,
+      callerUid: 'tg_101',
+    });
+    currentBalls = next.calledNumbers!;
+  }
+  const card3TopRow = generateDeterministicCard(3).grid[0].filter((n) => n !== 0);
+  const winClaim = await deviceBGame.verifyWinner({
+    roomId,
+    gameId,
+    claimantUid: 'tg_102',
+    playerName: 'Device B Invited',
+    cardId: 3,
+    markedNumbers: card3TopRow,
+  });
+  assert.equal(winClaim.verified, true);
+  assert.equal(winClaim.winnersPrizePoolEtb, 16);
+
+  const dupWinClaim = await deviceBGame.verifyWinner({
+    roomId,
+    gameId,
+    claimantUid: 'tg_102',
+    playerName: 'Device B Invited',
+    cardId: 3,
+    markedNumbers: card3TopRow,
+  });
+  assert.equal(dupWinClaim.verified, false);
+  assert.equal(dupWinClaim.reason, 'game_already_completed');
+
+  // Scenario 6: Two simultaneous joins when 599 players are already confirmed -> 600th succeeds, 601st is rejected with room_full
+  await deviceAGame.resetRound({ roomId, gameId, callerUid: 'tg_101' });
+  store.set(`rooms/${roomId}`, {
+    ...store.get(`rooms/${roomId}`),
+    status: 'countdown',
+    activePlayersCount: 599,
+    confirmedPlayersCount: 599,
+    verifiedPaidEntriesCount: 599,
+    availableSpaces: 1,
+    totalCardsSold: 599,
+    reservedCardsCount: 599,
+  });
+  store.set('users/tg_600', {
+    uid: 'tg_600',
+    telegramUserId: 'tg_600',
+    displayName: 'Player 600',
+    username: 'p600',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 50,
+  });
+  store.set('users/tg_601', {
+    uid: 'tg_601',
+    telegramUserId: 'tg_601',
+    displayName: 'Player 601',
+    username: 'p601',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 50,
+  });
+
+  const [join600, join601] = await Promise.all([
+    deviceAGame.reserveOrReleaseCard({
+      roomId,
+      cardId: 599,
+      uid: 'tg_600',
+      displayName: 'Player 600',
+      telegramUserId: 'tg_600',
+    }),
+    deviceBGame.reserveOrReleaseCard({
+      roomId,
+      cardId: 600,
+      uid: 'tg_601',
+      displayName: 'Player 601',
+      telegramUserId: 'tg_601',
+    }),
+  ]);
+
+  const successes = [join600, join601].filter((r) => r.ok);
+  const fullRejections = [join600, join601].filter((r) => !r.ok && r.reason === 'room_full');
+  assert.equal(successes.length, 1, 'Exactly 1 player can take the 600th slot');
+  assert.equal(fullRejections.length, 1, '601st player must be rejected with room_full');
+
+  const finalRoom = store.get(`rooms/${roomId}`)!;
+  assert.equal(finalRoom.confirmedPlayersCount, 600);
+  assert.equal(finalRoom.availableSpaces, 0);
+  assert.equal(finalRoom.totalCollectedEtb, 6000);
+  assert.equal(finalRoom.adeyShareEtb, 1200);
+  assert.equal(finalRoom.winnersPrizePoolEtb, 4800);
+});
+
+
 

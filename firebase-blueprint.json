@@ -157,6 +157,43 @@
           "type": "number",
           "description": "Number of cards reserved (0-600)."
         },
+        "maxPlayers": {
+          "type": "number",
+          "description": "Maximum individual player capacity (600)."
+        },
+        "confirmedPlayersCount": {
+          "type": "number",
+          "description": "Confirmed distinct paid players in room (0-600)."
+        },
+        "verifiedPaidEntriesCount": {
+          "type": "number",
+          "description": "Verified paid player entries in room (0-600)."
+        },
+        "availableSpaces": {
+          "type": "number",
+          "description": "Remaining available player spaces (600 - confirmedPlayersCount)."
+        },
+        "totalCardsSold": {
+          "type": "number",
+          "description": "Total cards sold across all confirmed players (separate from player count)."
+        },
+        "totalCollectedEtb": {
+          "type": "number",
+          "description": "Total collected ETB (verifiedPaidEntriesCount * 10 ETB)."
+        },
+        "adeyShareEtb": {
+          "type": "number",
+          "description": "ADEYBINGO 20% share in ETB."
+        },
+        "winnersPrizePoolEtb": {
+          "type": "number",
+          "description": "Winners 80% prize pool in ETB."
+        },
+        "lifecycleStage": {
+          "type": "string",
+          "description": "Shared multiplayer lifecycle stage.",
+          "enum": ["WAITING", "REGISTRATION", "READY", "IN_PROGRESS", "COMPLETED"]
+        },
         "status": {
           "type": "string",
           "description": "Current room lifecycle state.",
