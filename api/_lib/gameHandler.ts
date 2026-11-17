@@ -535,13 +535,99 @@ export function createVerifyWinnerHandler(deps: VerifyWinnerHandlerDeps = {}) {
 }
 
 /**
- * Consolidated router for all 4 `/api/game/*` endpoints.
+ * POST /api/game/tick
+ * Persistent idempotent 24/7 scheduler tick endpoint (for Cloud Scheduler / background worker).
+ */
+export function createSchedulerTickHandler(deps: GameHandlerDeps = {}) {
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    if (!enforceMethod(req, res, ['POST'])) return;
+
+    const body = (await parseJsonBody(req, res, { maxBytes: 8 * 1024, required: false })) || {};
+    const roomId = typeof body.roomId === 'string' && isValidRoomId(body.roomId) ? body.roomId : undefined;
+    const workerId =
+      typeof body.workerId === 'string' && body.workerId.trim()
+        ? body.workerId.trim().slice(0, 64)
+        : 'cron_worker';
+
+    let db: Firestore;
+    try {
+      db = deps.getDb ? deps.getDb() : getAdminDb();
+    } catch {
+      sendError(
+        res,
+        503,
+        'firebase_admin_unavailable',
+        'Server persistence service is unavailable.'
+      );
+      return;
+    }
+
+    const gameStore = createFirestoreGameStore(db);
+    const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300);
+    const service = new PersistentGameAuthorityService(gameStore, replayGuard);
+
+    if (roomId) {
+      const result = await service.tickRoomScheduler({ roomId, workerId });
+      sendJson(res, 200, { ok: true, results: [result] });
+      return;
+    }
+
+    const results = await service.tickAllRooms({ workerId });
+    sendJson(res, 200, { ok: true, results });
+  };
+}
+
+/**
+ * GET /api/game/scheduler-status
+ */
+export function createSchedulerStatusHandler(deps: GameHandlerDeps = {}) {
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    if (!enforceMethod(req, res, ['GET'])) return;
+
+    let db: Firestore;
+    try {
+      db = deps.getDb ? deps.getDb() : getAdminDb();
+    } catch {
+      sendError(
+        res,
+        503,
+        'firebase_admin_unavailable',
+        'Server persistence service is unavailable.'
+      );
+      return;
+    }
+
+    const rawRoomId = typeof req.query?.roomId === 'string' ? req.query.roomId.trim() : undefined;
+    const gameStore = createFirestoreGameStore(db);
+    const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300);
+    const service = new PersistentGameAuthorityService(gameStore, replayGuard);
+
+    const [rooms, auditLogs] = await Promise.all([
+      service.listAvailableRooms(),
+      service.listSchedulerAuditLogs(rawRoomId || undefined, 25),
+    ]);
+
+    sendJson(res, 200, {
+      ok: true,
+      mode: '24_7_autonomous',
+      minPlayersDefault: 3,
+      maxCapacityPlayers: 600,
+      rooms,
+      auditLogs,
+    });
+  };
+}
+
+/**
+ * Consolidated router for `/api/game/*` endpoints.
  */
 export function createGameRouterHandler(deps: GameHandlerDeps = {}) {
   const startHandler = createStartGameHandler(deps);
   const drawBallHandler = createDrawBallHandler(deps);
   const resetRoundHandler = createResetRoundHandler(deps);
   const verifyWinnerHandler = createVerifyWinnerHandler(deps);
+  const tickHandler = createSchedulerTickHandler(deps);
+  const schedulerStatusHandler = createSchedulerStatusHandler(deps);
 
   return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
     const subRoute = extractSubRoute(req, '/api/game');
@@ -555,6 +641,10 @@ export function createGameRouterHandler(deps: GameHandlerDeps = {}) {
         return await resetRoundHandler(req, res);
       case 'verify-winner':
         return await verifyWinnerHandler(req, res);
+      case 'tick':
+        return await tickHandler(req, res);
+      case 'scheduler-status':
+        return await schedulerStatusHandler(req, res);
       default:
         sendError(
           res,

@@ -1,5 +1,6 @@
 import type { WinPatternType } from '../types/bingo.ts';
 import {
+  calculateAuthoritativeGameFinancials,
   calculateDemoPrizePool,
   checkCardWin,
   generateDeterministicCard,
@@ -35,6 +36,9 @@ export interface PlayerPayoutSummary {
 export interface RoundSettlementResult {
   hasWinner: boolean;
   prizePoolEtb: number;
+  totalCollectedEtb?: number;
+  adeyShareEtb?: number;
+  confirmedPlayersCount?: number;
   winners: RoundWinnerShare[];
   payoutsByPlayer: PlayerPayoutSummary[];
 }
@@ -49,20 +53,41 @@ export function evaluateRoundWinners(params: {
   calledNumbers: number[];
   cardPrice: number;
   totalCardsInRoom?: number;
+  confirmedPlayersCount?: number;
+  useAuthoritative8020Split?: boolean;
 }): RoundSettlementResult {
   const { entries, calledNumbers, cardPrice } = params;
   if (!entries.length || !calledNumbers.length) {
     return {
       hasWinner: false,
       prizePoolEtb: 0,
+      totalCollectedEtb: 0,
+      adeyShareEtb: 0,
+      confirmedPlayersCount: 0,
       winners: [],
       payoutsByPlayer: [],
     };
   }
 
   const totalCards = Math.max(entries.length, params.totalCardsInRoom ?? entries.length);
-  const { winnerPrizeDemo } = calculateDemoPrizePool(totalCards, cardPrice);
-  const prizePoolEtb = Math.max(0, winnerPrizeDemo);
+  const uniquePlayersCount =
+    params.confirmedPlayersCount !== undefined
+      ? params.confirmedPlayersCount
+      : new Set(entries.map((e) => e.uid)).size;
+
+  const financials = calculateAuthoritativeGameFinancials(
+    uniquePlayersCount,
+    totalCards,
+    cardPrice
+  );
+
+  let prizePoolEtb: number;
+  if (params.useAuthoritative8020Split || params.confirmedPlayersCount !== undefined) {
+    prizePoolEtb = Math.max(0, financials.winnersPrizePoolEtb);
+  } else {
+    const { winnerPrizeDemo } = calculateDemoPrizePool(totalCards, cardPrice);
+    prizePoolEtb = Math.max(0, winnerPrizeDemo);
+  }
 
   const rawWinners: Array<{
     entry: RoomCardOwnerEntry;
@@ -93,6 +118,9 @@ export function evaluateRoundWinners(params: {
     return {
       hasWinner: false,
       prizePoolEtb,
+      totalCollectedEtb: financials.totalCollectedEtb,
+      adeyShareEtb: financials.adeyShareEtb,
+      confirmedPlayersCount: financials.confirmedPlayersCount,
       winners: [],
       payoutsByPlayer: [],
     };
@@ -141,6 +169,9 @@ export function evaluateRoundWinners(params: {
   return {
     hasWinner: true,
     prizePoolEtb,
+    totalCollectedEtb: financials.totalCollectedEtb,
+    adeyShareEtb: financials.adeyShareEtb,
+    confirmedPlayersCount: financials.confirmedPlayersCount,
     winners,
     payoutsByPlayer: Array.from(playerMap.values()),
   };

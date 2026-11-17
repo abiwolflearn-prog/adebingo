@@ -741,6 +741,42 @@
         "createdAtMs",
         "deliveredViaBotApi"
       ]
+    },
+    "SchedulerLease": {
+      "title": "SchedulerLease",
+      "description": "Server-only distributed lease lock ensuring two concurrent scheduler workers cannot start or draw the same room simultaneously.",
+      "type": "object",
+      "properties": {
+        "roomId": { "type": "string" },
+        "workerId": { "type": "string" },
+        "lastTickMs": { "type": "number" },
+        "leasedUntilMs": { "type": "number" },
+        "lastAction": { "type": "string" },
+        "status": { "type": "string" },
+        "updatedAtMs": { "type": "number" }
+      },
+      "required": ["roomId", "workerId", "lastTickMs", "leasedUntilMs", "lastAction", "status", "updatedAtMs"]
+    },
+    "SchedulerAuditLog": {
+      "title": "SchedulerAuditLog",
+      "description": "Server-only immutable audit log recording every 24/7 autonomous scheduler transition and prize distribution.",
+      "type": "object",
+      "properties": {
+        "logId": { "type": "string" },
+        "roomId": { "type": "string" },
+        "gameId": { "type": "string" },
+        "roundNumber": { "type": "number" },
+        "action": { "type": "string" },
+        "confirmedPlayersCount": { "type": "number" },
+        "totalCardsSold": { "type": "number" },
+        "totalCollectedEtb": { "type": "number" },
+        "adeyShareEtb": { "type": "number" },
+        "winnersPrizePoolEtb": { "type": "number" },
+        "details": { "type": "string" },
+        "workerId": { "type": "string" },
+        "timestampMs": { "type": "number" }
+      },
+      "required": ["logId", "roomId", "gameId", "roundNumber", "action", "confirmedPlayersCount", "totalCardsSold", "totalCollectedEtb", "adeyShareEtb", "winnersPrizePoolEtb", "details", "workerId", "timestampMs"]
     }
   },
   "firestore": {
@@ -791,6 +827,14 @@
     "/botOutbox/{notificationId}": {
       "schema": { "$ref": "#/entities/BotOutboxMessage" },
       "description": "Server-only persistent outbox for Telegram bot notifications."
+    },
+    "/schedulerLeases/{roomId}": {
+      "schema": { "$ref": "#/entities/SchedulerLease" },
+      "description": "Server-only distributed lease lock for the 24/7 continuous game scheduler."
+    },
+    "/schedulerAuditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/SchedulerAuditLog" },
+      "description": "Server-only audit log for every 24/7 automatic game lifecycle transition."
     }
   }
 }

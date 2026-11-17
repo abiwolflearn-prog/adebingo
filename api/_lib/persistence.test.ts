@@ -1477,5 +1477,319 @@ test('Real-Time Multiplayer Synchronization & Live Financial Dashboard: verifies
   assert.equal(finalRoom.winnersPrizePoolEtb, 4800);
 });
 
+test('24/7 Continuous Automatic Game Operation: verifies 3, 5, 50, and 600 paid player games, registration extension when < minPlayers, automatic next-round creation, server restarts, and concurrent worker lease safety', async () => {
+  const { db, store } = createInMemoryFirestoreHarness();
+  const roomId = 'adey-main';
+  let nowMs = 1_770_000_000_000;
+
+  const makeSchedulerWorker = (workerName: string) =>
+    new PersistentGameAuthorityService(
+      createFirestoreGameStore(db),
+      new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300)
+    );
+
+  const workerA = makeSchedulerWorker('worker_a');
+  const workerB = makeSchedulerWorker('worker_b');
+
+  await createFirestoreGameStore(db).ensureDefaultRooms();
+
+  // Initialize room deadline at nowMs + 60,000ms
+  const initTick = await workerA.tickRoomScheduler({
+    roomId,
+    nowMs,
+    workerId: 'worker_a',
+  });
+  assert.equal(initTick.ok, true);
+  assert.equal(initTick.action, 'countdown_synced');
+  assert.equal(initTick.lifecycleStage, 'WAITING');
+  assert.equal(initTick.registrationDeadlineMs, nowMs + 60_000);
+
+  // Seed 2 players (below minPlayers = 3)
+  for (let i = 1; i <= 2; i++) {
+    const uid = `tg_p${i}`;
+    store.set(`users/${uid}`, {
+      uid,
+      telegramUserId: `tg_${1000 + i}`,
+      displayName: `Player ${i}`,
+      username: `player_${i}`,
+      language: 'am',
+      phoneVerified: true,
+      demoBalanceEtb: 100,
+    });
+    const res = await workerA.reserveOrReleaseCard({
+      roomId,
+      cardId: i,
+      uid,
+      displayName: `Player ${i}`,
+      telegramUserId: `tg_${1000 + i}`,
+    });
+    assert.equal(res.ok, true);
+  }
+
+  // Advance to registration deadline with only 2 paid players (< minPlayers = 3):
+  // MUST NOT fabricate players, MUST NOT start game, MUST extend registration & preserve cards/payments!
+  nowMs += 60_000;
+  const extendTick = await workerA.tickRoomScheduler({
+    roomId,
+    nowMs,
+    workerId: 'worker_a',
+  });
+  assert.equal(extendTick.ok, true);
+  assert.equal(extendTick.action, 'registration_extended');
+  assert.equal(extendTick.status, 'countdown');
+  assert.equal(extendTick.lifecycleStage, 'REGISTRATION');
+  assert.equal(extendTick.confirmedPlayersCount, 2, 'Must never fabricate players');
+  assert.equal(extendTick.totalCardsSold, 2, 'Must preserve reserved cards');
+  assert.equal(extendTick.totalCollectedEtb, 20, 'Must preserve verified payments');
+  assert.equal(extendTick.extendedRegistrationCount, 1);
+  assert.equal(extendTick.registrationDeadlineMs, nowMs + 60_000);
+  assert.ok(extendTick.scheduleNoticeAm);
+  assert.ok(extendTick.scheduleNoticeEn);
+  assert.equal(store.has(`rooms/${roomId}/cards/1`), true);
+  assert.equal(store.has(`rooms/${roomId}/cards/2`), true);
+
+  // Simulate SERVER RESTART during registration: create brand-new workerC instance from Firestore
+  nowMs += 15_000;
+  const workerAfterRegRestart = makeSchedulerWorker('worker_restarted_reg');
+  const regRecoveryTick = await workerAfterRegRestart.tickRoomScheduler({
+    roomId,
+    nowMs,
+    workerId: 'worker_restarted_reg',
+  });
+  assert.equal(regRecoveryTick.ok, true);
+  assert.equal(regRecoveryTick.status, 'countdown');
+  assert.equal(regRecoveryTick.confirmedPlayersCount, 2);
+  assert.equal(regRecoveryTick.totalCardsSold, 2);
+
+  // =========================================================================
+  // SCENARIO 1: Game with exactly 3 paid players (Never waits for 600!)
+  // =========================================================================
+  store.set('users/tg_p3', {
+    uid: 'tg_p3',
+    telegramUserId: 'tg_1003',
+    displayName: 'Player 3',
+    username: 'player_3',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 100,
+  });
+  const join3 = await workerAfterRegRestart.reserveOrReleaseCard({
+    roomId,
+    cardId: 3,
+    uid: 'tg_p3',
+    displayName: 'Player 3',
+    telegramUserId: 'tg_1003',
+  });
+  assert.equal(join3.ok, true);
+
+  // Advance to extended registration deadline; test DUPLICATE CONCURRENT SCHEDULER EXECUTION (workerA + workerB simultaneously)
+  nowMs = extendTick.registrationDeadlineMs;
+  const [startRaceA, startRaceB] = await Promise.all([
+    workerA.tickRoomScheduler({ roomId, nowMs, workerId: 'worker_a' }),
+    workerB.tickRoomScheduler({ roomId, nowMs, workerId: 'worker_b' }),
+  ]);
+  const startedActions = [startRaceA, startRaceB].filter((r) => r.action === 'game_auto_started');
+  assert.equal(
+    startedActions.length,
+    1,
+    'Concurrent scheduler workers must never start the same game twice'
+  );
+  const startedState = startedActions[0];
+  assert.equal(startedState.status, 'live');
+  assert.equal(startedState.lifecycleStage, 'IN_PROGRESS');
+  assert.equal(startedState.roundNumber, 1);
+  assert.equal(startedState.confirmedPlayersCount, 3);
+  assert.equal(startedState.availableSpaces, 597);
+  assert.equal(startedState.totalCollectedEtb, 30);
+  assert.equal(startedState.adeyShareEtb, 6);
+  assert.equal(startedState.winnersPrizePoolEtb, 24);
+
+  // Simulate SERVER RESTART & STUCK SESSION during live game:
+  // Jump 45 seconds ahead (> 30s stuckSessionTimeoutMs) with a fresh worker instance
+  nowMs += 45_000;
+  const workerAfterLiveRestart = makeSchedulerWorker('worker_restarted_live');
+  const stuckRecoveryTick = await workerAfterLiveRestart.tickRoomScheduler({
+    roomId,
+    nowMs,
+    workerId: 'worker_restarted_live',
+  });
+  assert.equal(stuckRecoveryTick.ok, true);
+  assert.ok(
+    stuckRecoveryTick.action === 'stuck_session_recovered' ||
+      stuckRecoveryTick.action === 'winner_auto_settled'
+  );
+
+  // Continue automatic ball drawing with concurrent workers until Round #1 settles
+  let round1Result = stuckRecoveryTick;
+  while (round1Result.status === 'live') {
+    nowMs += 3_000;
+    const [tickA, tickB] = await Promise.all([
+      workerA.tickRoomScheduler({ roomId, nowMs, workerId: 'worker_a' }),
+      workerB.tickRoomScheduler({ roomId, nowMs, workerId: 'worker_b' }),
+    ]);
+    // Only one worker may draw or settle on this tick; the other must be noop/lease_busy_skipped
+    const activeTicks = [tickA, tickB].filter(
+      (t) => t.action === 'ball_auto_drawn' || t.action === 'winner_auto_settled'
+    );
+    assert.equal(activeTicks.length, 1, 'Concurrent workers must never double-draw or double-settle');
+    round1Result = activeTicks[0];
+  }
+
+  assert.equal(round1Result.action, 'winner_auto_settled');
+  assert.equal(round1Result.status, 'completed');
+  assert.equal(round1Result.lifecycleStage, 'COMPLETED');
+  assert.equal(round1Result.totalCollectedEtb, 30);
+  assert.equal(round1Result.adeyShareEtb, 6);
+  assert.equal(round1Result.winnersPrizePoolEtb, 24);
+  assert.ok(round1Result.settlement?.hasWinner);
+  const round1TotalDistributed = round1Result.settlement!.payoutsByPlayer.reduce(
+    (sum, p) => sum + p.totalPrizeEtb,
+    0
+  );
+  assert.equal(
+    Number(round1TotalDistributed.toFixed(2)),
+    24,
+    '3-player game must distribute exactly 24 ETB (80% of 30 ETB), never more'
+  );
+  assert.equal(store.has(`games/game_${roomId}_r1`), true, 'Archived game result must be saved');
+
+  // Verify AUTOMATIC CREATION OF NEXT GAME (Round #2) after intermission
+  nowMs = round1Result.intermissionEndsAtMs;
+  const nextGameTick = await workerA.tickRoomScheduler({
+    roomId,
+    nowMs,
+    workerId: 'worker_a',
+  });
+  assert.equal(nextGameTick.ok, true);
+  assert.equal(nextGameTick.action, 'next_game_auto_created');
+  assert.equal(nextGameTick.roundNumber, 2);
+  assert.equal(nextGameTick.status, 'countdown');
+  assert.equal(nextGameTick.lifecycleStage, 'WAITING');
+  assert.equal(nextGameTick.confirmedPlayersCount, 0);
+  assert.equal(nextGameTick.availableSpaces, 600);
+  assert.equal(nextGameTick.totalCardsSold, 0);
+
+  // =========================================================================
+  // Helper to run a full automated round with N paid players (5, 50, 600)
+  // =========================================================================
+  async function runAutomatedRoundForPlayerCount(
+    playerCount: number,
+    expectedRoundNumber: number,
+    expectedCollectedEtb: number,
+    expectedAdeyShareEtb: number,
+    expectedPrizePoolEtb: number
+  ) {
+    // Seed & join `playerCount` distinct verified paid players (1 card each)
+    for (let i = 1; i <= playerCount; i++) {
+      const uid = `tg_r${expectedRoundNumber}_p${i}`;
+      store.set(`users/${uid}`, {
+        uid,
+        telegramUserId: `tg_${expectedRoundNumber * 10000 + i}`,
+        displayName: `R${expectedRoundNumber} Player ${i}`,
+        username: `r${expectedRoundNumber}_p${i}`,
+        language: 'am',
+        phoneVerified: true,
+        demoBalanceEtb: 100,
+      });
+      store.set(`rooms/${roomId}/players/${uid}`, {
+        playerId: uid,
+        roomId,
+        displayName: `R${expectedRoundNumber} Player ${i}`,
+        telegramUserId: `tg_${expectedRoundNumber * 10000 + i}`,
+        cardIds: [i],
+      });
+      store.set(`rooms/${roomId}/cards/${i}`, {
+        cardId: i,
+        roomId,
+        ownerId: uid,
+        ownerName: `R${expectedRoundNumber} Player ${i}`,
+        serial: `ADB-${String(i).padStart(3, '0')}`,
+      });
+    }
+
+    // Advance clock to registration deadline -> auto-start game
+    const roomDoc = store.get(`rooms/${roomId}`)!;
+    nowMs = Number(roomDoc.registrationDeadlineMs || nowMs + 60_000);
+    const startRes = await workerA.tickRoomScheduler({
+      roomId,
+      nowMs,
+      workerId: 'worker_a',
+    });
+    assert.equal(startRes.action, 'game_auto_started');
+    assert.equal(startRes.roundNumber, expectedRoundNumber);
+    assert.equal(startRes.confirmedPlayersCount, playerCount);
+    assert.equal(startRes.availableSpaces, 600 - playerCount);
+    assert.equal(startRes.totalCollectedEtb, expectedCollectedEtb);
+    assert.equal(startRes.adeyShareEtb, expectedAdeyShareEtb);
+    assert.equal(startRes.winnersPrizePoolEtb, expectedPrizePoolEtb);
+
+    // Tick ball draws until winner is automatically validated and settled
+    let tickRes = startRes;
+    while (tickRes.status === 'live') {
+      nowMs += 3_000;
+      tickRes = await workerA.tickRoomScheduler({
+        roomId,
+        nowMs,
+        workerId: 'worker_a',
+      });
+    }
+
+    assert.equal(tickRes.action, 'winner_auto_settled');
+    assert.equal(tickRes.status, 'completed');
+    assert.equal(tickRes.confirmedPlayersCount, playerCount);
+    assert.equal(tickRes.totalCollectedEtb, expectedCollectedEtb);
+    assert.equal(tickRes.adeyShareEtb, expectedAdeyShareEtb);
+    assert.equal(tickRes.winnersPrizePoolEtb, expectedPrizePoolEtb);
+    assert.ok(tickRes.settlement?.hasWinner);
+
+    const distributed = tickRes.settlement!.payoutsByPlayer.reduce(
+      (sum, p) => sum + p.totalPrizeEtb,
+      0
+    );
+    assert.equal(
+      Number(distributed.toFixed(2)),
+      expectedPrizePoolEtb,
+      `${playerCount}-player game must distribute exact 80% prize pool (${expectedPrizePoolEtb} ETB)`
+    );
+    assert.equal(
+      store.has(`games/game_${roomId}_r${expectedRoundNumber}`),
+      true,
+      `Round #${expectedRoundNumber} result must be archived in Firestore`
+    );
+
+    // Advance past intermission -> automatically creates next round
+    nowMs = tickRes.intermissionEndsAtMs;
+    const nextRes = await workerA.tickRoomScheduler({
+      roomId,
+      nowMs,
+      workerId: 'worker_a',
+    });
+    assert.equal(nextRes.action, 'next_game_auto_created');
+    assert.equal(nextRes.roundNumber, expectedRoundNumber + 1);
+    assert.equal(nextRes.status, 'countdown');
+    assert.equal(nextRes.confirmedPlayersCount, 0);
+    assert.equal(nextRes.availableSpaces, 600);
+  }
+
+  // SCENARIO 2: 5 paid players -> 50 ETB collected, 10 ETB ADEYBINGO (20%), 40 ETB Winners (80%)
+  await runAutomatedRoundForPlayerCount(5, 2, 50, 10, 40);
+
+  // SCENARIO 3: 50 paid players -> 500 ETB collected, 100 ETB ADEYBINGO (20%), 400 ETB Winners (80%)
+  await runAutomatedRoundForPlayerCount(50, 3, 500, 100, 400);
+
+  // SCENARIO 4: 600 paid players (max capacity) -> 6,000 ETB collected, 1,200 ETB ADEYBINGO (20%), 4,800 ETB Winners (80%)
+  await runAutomatedRoundForPlayerCount(600, 4, 6000, 1200, 4800);
+
+  // Verify scheduler audit log recorded all automatic lifecycle transitions
+  const auditLogs = await workerA.listSchedulerAuditLogs(roomId, 100);
+  const recordedActions = new Set(auditLogs.map((l) => l.action));
+  assert.equal(recordedActions.has('registration_extended'), true);
+  assert.equal(recordedActions.has('game_auto_started'), true);
+  assert.equal(recordedActions.has('stuck_session_recovered'), true);
+  assert.equal(recordedActions.has('winner_auto_settled'), true);
+  assert.equal(recordedActions.has('next_game_auto_created'), true);
+});
+
+
 
 

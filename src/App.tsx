@@ -745,6 +745,20 @@ export default function App() {
     }
 
     if (activeRoom.status === 'countdown' && countdown === 0) {
+      const confirmedCount = activeRoom.confirmedPlayersCount ?? activeRoom.activePlayers ?? 0;
+      const minRequired = activeRoom.minPlayers || DEFAULT_GAME_RULES.minEligiblePlayers;
+      if (confirmedCount < minRequired) {
+        setCountdown(60);
+        if (selectedCardIds.length > 0) {
+          setToast(
+            lang === 'am'
+              ? `ዝቅተኛው የተጫዋች ቁጥር (${minRequired}) ስላልሞላ ምዝገባ ተራዝሟል። ካርድዎ ተጠብቋል።`
+              : `Minimum ${minRequired} players not reached (${confirmedCount}/${minRequired}). Registration extended; your cards are preserved.`
+          );
+        }
+        return;
+      }
+
       setRooms((prev) =>
         prev.map((rm) =>
           rm.id === activeRoomId ? { ...rm, status: 'live', countdownSeconds: 0 } : rm

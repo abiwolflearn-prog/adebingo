@@ -12,8 +12,74 @@ import {
   isRoomEligibleToStart,
   resolveGameLifecycleStage,
 } from '../../src/game/rules.ts';
+import {
+  evaluateRoundWinners,
+  type RoomCardOwnerEntry,
+  type RoundSettlementResult,
+  type RoundWinnerShare,
+} from '../../src/game/roundSettlement.ts';
 import type { GameLifecycleStage, WinResult } from '../../src/types/bingo.ts';
 import { PersistentReplayGuard } from './replayGuard.ts';
+
+export const SCHEDULER_LEASES_COLLECTION = 'schedulerLeases';
+export const SCHEDULER_AUDIT_LOGS_COLLECTION = 'schedulerAuditLogs';
+export const DEFAULT_REGISTRATION_WINDOW_MS = 60_000;
+export const DEFAULT_BALL_DRAW_INTERVAL_MS = 3_000;
+export const DEFAULT_INTERMISSION_MS = 6_000;
+export const DEFAULT_STUCK_SESSION_TIMEOUT_MS = 30_000;
+
+export type SchedulerActionType =
+  | 'noop'
+  | 'lease_busy_skipped'
+  | 'countdown_synced'
+  | 'registration_extended'
+  | 'game_auto_started'
+  | 'ball_auto_drawn'
+  | 'winner_auto_settled'
+  | 'next_game_auto_created'
+  | 'stuck_session_recovered';
+
+export interface SchedulerAuditLogEntry {
+  logId: string;
+  roomId: string;
+  gameId: string;
+  roundNumber: number;
+  action: SchedulerActionType;
+  confirmedPlayersCount: number;
+  totalCardsSold: number;
+  totalCollectedEtb: number;
+  adeyShareEtb: number;
+  winnersPrizePoolEtb: number;
+  details: string;
+  workerId: string;
+  timestampMs: number;
+}
+
+export interface SchedulerTickResult {
+  ok: boolean;
+  roomId: string;
+  gameId: string;
+  roundNumber: number;
+  action: SchedulerActionType;
+  status: 'waiting' | 'countdown' | 'live' | 'completed';
+  lifecycleStage: GameLifecycleStage;
+  confirmedPlayersCount: number;
+  availableSpaces: number;
+  totalCardsSold: number;
+  totalCollectedEtb: number;
+  adeyShareEtb: number;
+  winnersPrizePoolEtb: number;
+  registrationDeadlineMs: number;
+  nextBallDrawAtMs: number;
+  intermissionEndsAtMs: number;
+  extendedRegistrationCount: number;
+  drawnBall?: number;
+  calledNumbers?: number[];
+  settlement?: RoundSettlementResult;
+  scheduleNoticeAm?: string;
+  scheduleNoticeEn?: string;
+  reason?: string;
+}
 
 export interface PersistentGameSessionDoc {
   gameId: string;
@@ -34,6 +100,9 @@ export interface PersistentGameSessionDoc {
   totalCollectedEtb?: number;
   adeyShareEtb?: number;
   winnersPrizePoolEtb?: number;
+  winners?: RoundWinnerShare[];
+  nextBallDrawAtMs?: number;
+  intermissionEndsAtMs?: number;
 }
 
 export interface RoomSummary {
@@ -46,6 +115,13 @@ export interface RoomSummary {
   maxCardsPerPlayer: number;
   minPlayers: number;
   countdownSeconds: number;
+  roundNumber?: number;
+  registrationDeadlineMs?: number;
+  nextBallDrawAtMs?: number;
+  intermissionEndsAtMs?: number;
+  extendedRegistrationCount?: number;
+  scheduleNoticeAm?: string;
+  scheduleNoticeEn?: string;
   activePlayersCount: number;
   confirmedPlayersCount?: number;
   verifiedPaidEntriesCount?: number;
@@ -196,6 +272,16 @@ export interface GamePersistenceStore {
     isAdmin?: boolean;
     requireExplicitHostOrAdmin?: boolean;
   }): Promise<{ ok: boolean; reason?: 'unauthorized_caller' | 'room_not_found' | 'replay_detected' }>;
+  tickRoomSchedulerAtomic(params: {
+    roomId: string;
+    nowMs?: number;
+    workerId?: string;
+    registrationWindowMs?: number;
+    ballDrawIntervalMs?: number;
+    intermissionMs?: number;
+    stuckSessionTimeoutMs?: number;
+  }): Promise<SchedulerTickResult>;
+  listSchedulerAuditLogs(roomId?: string, limitCount?: number): Promise<SchedulerAuditLogEntry[]>;
 }
 
 export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
@@ -203,6 +289,9 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
   const gamesCol = db.collection('games');
   const usersCol = db.collection('users');
   const transactionsCol = db.collection('transactions');
+  const schedulerLeasesCol = db.collection(SCHEDULER_LEASES_COLLECTION);
+  const schedulerAuditCol = db.collection(SCHEDULER_AUDIT_LOGS_COLLECTION);
+  const botOutboxCol = db.collection('botOutbox');
 
   function mapRoomDoc(docId: string, data: Record<string, unknown>): RoomSummary {
     const rawStatus = String(data.status || 'countdown');
@@ -239,6 +328,13 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
       maxCardsPerPlayer: Number(data.maxCardsPerPlayer ?? 4),
       minPlayers,
       countdownSeconds,
+      roundNumber: Number(data.roundNumber ?? 1),
+      registrationDeadlineMs: Number(data.registrationDeadlineMs ?? 0),
+      nextBallDrawAtMs: Number(data.nextBallDrawAtMs ?? 0),
+      intermissionEndsAtMs: Number(data.intermissionEndsAtMs ?? 0),
+      extendedRegistrationCount: Number(data.extendedRegistrationCount ?? 0),
+      scheduleNoticeAm: data.scheduleNoticeAm ? String(data.scheduleNoticeAm) : undefined,
+      scheduleNoticeEn: data.scheduleNoticeEn ? String(data.scheduleNoticeEn) : undefined,
       activePlayersCount: financials.confirmedPlayersCount,
       confirmedPlayersCount: financials.confirmedPlayersCount,
       verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
@@ -1129,6 +1225,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         tx.update(roomRef, {
           status: 'countdown',
           lifecycleStage: nextLifecycle,
+          roundNumber: nextRound,
           currentGameId: gameId,
           hostUid,
           updatedAt: FieldValue.serverTimestamp(),
@@ -1136,6 +1233,832 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
 
         return { ok: true };
       });
+    },
+
+    async tickRoomSchedulerAtomic({
+      roomId,
+      nowMs = Date.now(),
+      workerId = 'server_scheduler',
+      registrationWindowMs = DEFAULT_REGISTRATION_WINDOW_MS,
+      ballDrawIntervalMs = DEFAULT_BALL_DRAW_INTERVAL_MS,
+      intermissionMs = DEFAULT_INTERMISSION_MS,
+      stuckSessionTimeoutMs = DEFAULT_STUCK_SESSION_TIMEOUT_MS,
+    }): Promise<SchedulerTickResult> {
+      const roomRef = roomsCol.doc(roomId);
+      const leaseRef = schedulerLeasesCol.doc(roomId);
+      const defaultGameId = `game_${roomId}_live`;
+
+      return await db.runTransaction(async (tx) => {
+        const [roomSnap, leaseSnap, playersSnap, cardsSnap] = await Promise.all([
+          tx.get(roomRef),
+          tx.get(leaseRef),
+          roomRef.collection('players').get(),
+          roomRef.collection('cards').get(),
+        ]);
+
+        if (!roomSnap.exists) {
+          return {
+            ok: false,
+            roomId,
+            gameId: defaultGameId,
+            roundNumber: 1,
+            action: 'noop',
+            status: 'countdown',
+            lifecycleStage: 'WAITING',
+            confirmedPlayersCount: 0,
+            availableSpaces: 600,
+            totalCardsSold: 0,
+            totalCollectedEtb: 0,
+            adeyShareEtb: 0,
+            winnersPrizePoolEtb: 0,
+            registrationDeadlineMs: 0,
+            nextBallDrawAtMs: 0,
+            intermissionEndsAtMs: 0,
+            extendedRegistrationCount: 0,
+            reason: 'room_not_found',
+          };
+        }
+
+        const roomData = (roomSnap.data() || {}) as Record<string, unknown>;
+        const gameId = String(roomData.currentGameId || defaultGameId);
+        const gameRef = gamesCol.doc(gameId);
+        const gameSnap = await tx.get(gameRef);
+
+        const rawStatus = String(roomData.status || 'countdown');
+        const status: 'waiting' | 'countdown' | 'live' | 'completed' =
+          rawStatus === 'waiting' ||
+          rawStatus === 'countdown' ||
+          rawStatus === 'live' ||
+          rawStatus === 'completed'
+            ? rawStatus
+            : 'countdown';
+        const cardPrice = Number(roomData.cardPrice ?? 10);
+        const minPlayers = Math.max(1, Number(roomData.minPlayers ?? 3));
+        const roundNumber = Math.max(
+          1,
+          Number(roomData.roundNumber ?? (gameSnap.exists ? gameSnap.get('roundNumber') : 1) ?? 1)
+        );
+        const hostUid = String(roomData.hostUid || 'tg_8842109');
+
+        // Recompute authoritative player and card counts from verified subcollections
+        const cardEntries: RoomCardOwnerEntry[] = [];
+        const uniqueOwnerUids = new Set<string>();
+        for (const doc of cardsSnap.docs) {
+          const d = (doc.data() || {}) as Record<string, unknown>;
+          const cid = Number(d.cardId ?? doc.id);
+          const ownerId = String(d.ownerId || '').trim();
+          const ownerName = String(d.ownerName || ownerId).trim();
+          if (Number.isInteger(cid) && cid >= 1 && cid <= 600 && ownerId) {
+            uniqueOwnerUids.add(ownerId);
+            const tgId = ownerId.startsWith('tg_') ? Number(ownerId.slice(3)) || 0 : 0;
+            cardEntries.push({
+              cardId: cid,
+              uid: ownerId,
+              telegramUserId: tgId,
+              displayName: ownerName,
+            });
+          }
+        }
+        // Fallback if room doc was seeded directly in tests without card subcollection docs
+        const authoritativePlayersCount =
+          uniqueOwnerUids.size > 0
+            ? uniqueOwnerUids.size
+            : playersSnap.size > 0
+              ? playersSnap.size
+              : Number(roomData.confirmedPlayersCount ?? roomData.activePlayersCount ?? 0);
+        const authoritativeCardsCount =
+          cardEntries.length > 0
+            ? cardEntries.length
+            : Number(roomData.reservedCardsCount ?? roomData.totalCardsSold ?? 0);
+
+        const financials = calculateAuthoritativeGameFinancials(
+          authoritativePlayersCount,
+          authoritativeCardsCount,
+          cardPrice
+        );
+
+        let registrationDeadlineMs = Number(roomData.registrationDeadlineMs ?? 0);
+        let nextBallDrawAtMs = Number(
+          roomData.nextBallDrawAtMs ??
+            (gameSnap.exists ? gameSnap.get('nextBallDrawAtMs') : 0) ??
+            0
+        );
+        let intermissionEndsAtMs = Number(
+          roomData.intermissionEndsAtMs ??
+            (gameSnap.exists ? gameSnap.get('intermissionEndsAtMs') : 0) ??
+            0
+        );
+        let extendedRegistrationCount = Number(roomData.extendedRegistrationCount ?? 0);
+
+        // Lease guard: if another worker already processed this exact tick timestamp for this room, skip
+        if (leaseSnap.exists) {
+          const leaseData = (leaseSnap.data() || {}) as Record<string, unknown>;
+          const leaseWorker = String(leaseData.workerId || '');
+          const leaseTickMs = Number(leaseData.lastTickMs ?? 0);
+          const leaseStatus = String(leaseData.status || '');
+          if (leaseWorker !== workerId && leaseTickMs === nowMs && leaseStatus === status) {
+            const currentStage = resolveGameLifecycleStage({
+              status,
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              countdownSeconds: Math.max(0, Math.ceil((registrationDeadlineMs - nowMs) / 1000)),
+              minPlayers,
+            });
+            return {
+              ok: true,
+              roomId,
+              gameId,
+              roundNumber,
+              action: 'lease_busy_skipped',
+              status,
+              lifecycleStage: currentStage,
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              availableSpaces: financials.availableSpaces,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+              registrationDeadlineMs,
+              nextBallDrawAtMs,
+              intermissionEndsAtMs,
+              extendedRegistrationCount,
+            };
+          }
+        }
+
+        const writeAudit = (action: SchedulerActionType, details: string, round = roundNumber) => {
+          const logId = `sched_${roomId}_r${round}_${action}_${nowMs}_${crypto.randomUUID().slice(0, 8)}`;
+          tx.set(schedulerAuditCol.doc(logId), {
+            logId,
+            roomId,
+            gameId,
+            roundNumber: round,
+            action,
+            confirmedPlayersCount: financials.confirmedPlayersCount,
+            totalCardsSold: financials.totalCardsSold,
+            totalCollectedEtb: financials.totalCollectedEtb,
+            adeyShareEtb: financials.adeyShareEtb,
+            winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+            details: details.slice(0, 240),
+            workerId,
+            timestampMs: nowMs,
+          });
+        };
+
+        const updateLease = (action: SchedulerActionType, nextStatus: string) => {
+          tx.set(leaseRef, {
+            roomId,
+            workerId,
+            lastTickMs: nowMs,
+            leasedUntilMs: nowMs + 2_000,
+            lastAction: action,
+            status: nextStatus,
+            updatedAtMs: nowMs,
+          });
+        };
+
+        // ====================================================================
+        // PHASE 1: WAITING FOR PLAYERS -> REGISTRATION OPEN -> DEADLINE CHECK
+        // ====================================================================
+        if (status === 'waiting' || status === 'countdown') {
+          if (registrationDeadlineMs <= 0) {
+            registrationDeadlineMs = nowMs + registrationWindowMs;
+          }
+
+          if (nowMs < registrationDeadlineMs) {
+            const remainingSeconds = Math.max(
+              1,
+              Math.ceil((registrationDeadlineMs - nowMs) / 1000)
+            );
+            const nextLifecycle = resolveGameLifecycleStage({
+              status: 'countdown',
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              countdownSeconds: remainingSeconds,
+              minPlayers,
+            });
+            updateLease('countdown_synced', 'countdown');
+            tx.update(roomRef, {
+              status: 'countdown',
+              lifecycleStage: nextLifecycle,
+              roundNumber,
+              countdownSeconds: remainingSeconds,
+              registrationDeadlineMs,
+              activePlayersCount: financials.confirmedPlayersCount,
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+              availableSpaces: financials.availableSpaces,
+              reservedCardsCount: financials.totalCardsSold,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+              lastSchedulerTickMs: nowMs,
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+
+            return {
+              ok: true,
+              roomId,
+              gameId,
+              roundNumber,
+              action: 'countdown_synced',
+              status: 'countdown',
+              lifecycleStage: nextLifecycle,
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              availableSpaces: financials.availableSpaces,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+              registrationDeadlineMs,
+              nextBallDrawAtMs: 0,
+              intermissionEndsAtMs: 0,
+              extendedRegistrationCount,
+            };
+          }
+
+          // Registration deadline reached: validate paid players against minPlayers (default 3)
+          if (financials.confirmedPlayersCount < minPlayers) {
+            // NEVER fabricate players or start an invalid game!
+            // Extend registration window and preserve all verified payments and card reservations.
+            registrationDeadlineMs = nowMs + registrationWindowMs;
+            extendedRegistrationCount += 1;
+            const remainingSeconds = Math.max(1, Math.ceil(registrationWindowMs / 1000));
+            const nextLifecycle = resolveGameLifecycleStage({
+              status: 'countdown',
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              countdownSeconds: remainingSeconds,
+              minPlayers,
+            });
+            const noticeAm = `ዝቅተኛው የተጫዋች ቁጥር (${minPlayers}) ስላልሞላ ምዝገባ ተራዝሟል። ክፍያዎ እና ካርድዎ ተጠብቋል።`;
+            const noticeEn = `Minimum ${minPlayers} paid players not yet reached (${financials.confirmedPlayersCount}/${minPlayers}). Registration extended; your verified payment & cards are preserved.`;
+
+            updateLease('registration_extended', 'countdown');
+            writeAudit(
+              'registration_extended',
+              `Extended registration window #${extendedRegistrationCount} (${financials.confirmedPlayersCount}/${minPlayers} paid players). Preserved ${financials.totalCardsSold} cards.`
+            );
+
+            // Notify registered players in botOutbox about the extended schedule
+            for (const uid of uniqueOwnerUids) {
+              const tgId = uid.startsWith('tg_') ? Number(uid.slice(3)) || 0 : 0;
+              const ntfId = `ntf_${crypto.randomUUID()}`;
+              tx.set(botOutboxCol.doc(ntfId), {
+                id: ntfId,
+                event: 'schedule_extended',
+                recipientTelegramId: tgId,
+                roomId,
+                roundNumber,
+                textAm: noticeAm,
+                textEn: noticeEn,
+                createdAt: new Date(nowMs).toISOString(),
+              });
+            }
+
+            tx.update(roomRef, {
+              status: 'countdown',
+              lifecycleStage: nextLifecycle,
+              roundNumber,
+              countdownSeconds: remainingSeconds,
+              registrationDeadlineMs,
+              extendedRegistrationCount,
+              scheduleNoticeAm: noticeAm,
+              scheduleNoticeEn: noticeEn,
+              activePlayersCount: financials.confirmedPlayersCount,
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+              availableSpaces: financials.availableSpaces,
+              reservedCardsCount: financials.totalCardsSold,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+              lastSchedulerAction: 'registration_extended',
+              lastSchedulerTickMs: nowMs,
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+
+            return {
+              ok: true,
+              roomId,
+              gameId,
+              roundNumber,
+              action: 'registration_extended',
+              status: 'countdown',
+              lifecycleStage: nextLifecycle,
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              availableSpaces: financials.availableSpaces,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+              registrationDeadlineMs,
+              nextBallDrawAtMs: 0,
+              intermissionEndsAtMs: 0,
+              extendedRegistrationCount,
+              scheduleNoticeAm: noticeAm,
+              scheduleNoticeEn: noticeEn,
+            };
+          }
+
+          // Minimum paid players met (e.g., 3, 5, 50, 600) -> START GAME AUTOMATICALLY!
+          const openingBall = crypto.randomInt(1, 76);
+          const openingCalls = [openingBall];
+          nextBallDrawAtMs = nowMs + ballDrawIntervalMs;
+
+          updateLease('game_auto_started', 'live');
+          writeAudit(
+            'game_auto_started',
+            `Auto-started Round #${roundNumber} with ${financials.confirmedPlayersCount} paid players (${financials.totalCardsSold} cards, ${financials.totalCollectedEtb} ETB collected, ${financials.winnersPrizePoolEtb} ETB 80% prize pool).`
+          );
+
+          tx.set(gameRef, {
+            gameId,
+            roomId,
+            hostUid,
+            roundNumber,
+            status: 'live',
+            lifecycleStage: 'IN_PROGRESS',
+            calledNumbers: openingCalls,
+            latestBall: openingBall,
+            winnerUid: '',
+            winnerName: '',
+            winningCardId: 0,
+            winningPattern: '',
+            confirmedPlayersCount: financials.confirmedPlayersCount,
+            availableSpaces: financials.availableSpaces,
+            totalCardsSold: financials.totalCardsSold,
+            totalCollectedEtb: financials.totalCollectedEtb,
+            adeyShareEtb: financials.adeyShareEtb,
+            winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+            nextBallDrawAtMs,
+            intermissionEndsAtMs: 0,
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+
+          tx.update(roomRef, {
+            status: 'live',
+            lifecycleStage: 'IN_PROGRESS',
+            roundNumber,
+            currentGameId: gameId,
+            countdownSeconds: 0,
+            nextBallDrawAtMs,
+            intermissionEndsAtMs: 0,
+            scheduleNoticeAm: '',
+            scheduleNoticeEn: '',
+            activePlayersCount: financials.confirmedPlayersCount,
+            confirmedPlayersCount: financials.confirmedPlayersCount,
+            verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+            availableSpaces: financials.availableSpaces,
+            reservedCardsCount: financials.totalCardsSold,
+            totalCardsSold: financials.totalCardsSold,
+            totalCollectedEtb: financials.totalCollectedEtb,
+            adeyShareEtb: financials.adeyShareEtb,
+            winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+            lastSchedulerAction: 'game_auto_started',
+            lastSchedulerTickMs: nowMs,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+
+          return {
+            ok: true,
+            roomId,
+            gameId,
+            roundNumber,
+            action: 'game_auto_started',
+            status: 'live',
+            lifecycleStage: 'IN_PROGRESS',
+            confirmedPlayersCount: financials.confirmedPlayersCount,
+            availableSpaces: financials.availableSpaces,
+            totalCardsSold: financials.totalCardsSold,
+            totalCollectedEtb: financials.totalCollectedEtb,
+            adeyShareEtb: financials.adeyShareEtb,
+            winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+            registrationDeadlineMs,
+            nextBallDrawAtMs,
+            intermissionEndsAtMs: 0,
+            extendedRegistrationCount,
+            drawnBall: openingBall,
+            calledNumbers: openingCalls,
+          };
+        }
+
+        // ====================================================================
+        // PHASE 2: IN_PROGRESS -> DRAW BINGO NUMBERS -> VALIDATE & SETTLE WINNER
+        // ====================================================================
+        if (status === 'live') {
+          const isStuckSession =
+            nextBallDrawAtMs <= 0 || nowMs - nextBallDrawAtMs >= stuckSessionTimeoutMs;
+
+          if (!isStuckSession && nowMs < nextBallDrawAtMs) {
+            return {
+              ok: true,
+              roomId,
+              gameId,
+              roundNumber,
+              action: 'noop',
+              status: 'live',
+              lifecycleStage: 'IN_PROGRESS',
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              availableSpaces: financials.availableSpaces,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+              registrationDeadlineMs,
+              nextBallDrawAtMs,
+              intermissionEndsAtMs: 0,
+              extendedRegistrationCount,
+            };
+          }
+
+          const existingCalls: number[] = gameSnap.exists && Array.isArray(gameSnap.get('calledNumbers'))
+            ? (gameSnap.get('calledNumbers') as unknown[])
+                .map(Number)
+                .filter((n) => Number.isInteger(n) && n >= 1 && n <= 75)
+            : [];
+
+          const calledSet = new Set<number>(existingCalls);
+          const remaining: number[] = [];
+          for (let n = 1; n <= 75; n++) {
+            if (!calledSet.has(n)) remaining.push(n);
+          }
+
+          const drawnBall =
+            remaining.length > 0
+              ? remaining[crypto.randomInt(0, remaining.length)]
+              : existingCalls[existingCalls.length - 1] || 75;
+          const updatedCalls =
+            remaining.length > 0 ? [...existingCalls, drawnBall] : existingCalls;
+
+          // Evaluate all reserved cards against updatedCalls using verified 80% prize pool
+          const settlement = evaluateRoundWinners({
+            entries: cardEntries,
+            calledNumbers: updatedCalls,
+            cardPrice,
+            totalCardsInRoom: financials.totalCardsSold,
+            confirmedPlayersCount: financials.confirmedPlayersCount,
+            useAuthoritative8020Split: true,
+          });
+
+          if (settlement.hasWinner || remaining.length <= 1) {
+            // READ ALL WINNER USER PROFILES BEFORE ANY WRITES (Firestore read-before-write rule!)
+            const winnerUserSnaps = await Promise.all(
+              settlement.payoutsByPlayer.map((p) => tx.get(usersCol.doc(p.uid)))
+            );
+
+            intermissionEndsAtMs = nowMs + intermissionMs;
+            nextBallDrawAtMs = 0;
+
+            updateLease('winner_auto_settled', 'completed');
+            writeAudit(
+              'winner_auto_settled',
+              `Round #${roundNumber} settled after ${updatedCalls.length} balls. Distributed ${settlement.prizePoolEtb} ETB (80% of ${financials.totalCollectedEtb} ETB) across ${settlement.payoutsByPlayer.length} winner(s). ADEYBINGO 20% share: ${financials.adeyShareEtb} ETB.`
+            );
+
+            // Credit each winner's balance with their exact share of the 80% prize pool
+            for (let i = 0; i < settlement.payoutsByPlayer.length; i++) {
+              const payout = settlement.payoutsByPlayer[i];
+              const uSnap = winnerUserSnaps[i];
+              const userRef = usersCol.doc(payout.uid);
+              const currentBal = uSnap.exists ? Number(uSnap.get('demoBalanceEtb') ?? 0) : 0;
+              const nextBal = Number((currentBal + payout.totalPrizeEtb).toFixed(2));
+              if (uSnap.exists) {
+                tx.update(userRef, {
+                  demoBalanceEtb: Math.min(1_000_000, nextBal),
+                  updatedAt: FieldValue.serverTimestamp(),
+                });
+              } else {
+                tx.set(userRef, {
+                  uid: payout.uid,
+                  telegramUserId: `tg_${payout.telegramUserId}`,
+                  displayName: payout.displayName.slice(0, 80),
+                  username: payout.uid,
+                  language: 'am',
+                  phoneVerified: true,
+                  demoBalanceEtb: Math.min(1_000_000, nextBal),
+                  createdAt: FieldValue.serverTimestamp(),
+                  updatedAt: FieldValue.serverTimestamp(),
+                });
+              }
+
+              const txId =
+                i === 0 && settlement.payoutsByPlayer.length === 1
+                  ? `tx_win_${gameId}_r${roundNumber}`
+                  : `tx_win_${gameId}_r${roundNumber}_${payout.uid}`;
+              tx.set(transactionsCol.doc(txId), {
+                transactionId: txId,
+                userId: payout.uid,
+                type: 'bingo_win',
+                amountEtb: payout.totalPrizeEtb,
+                status: 'demo_completed',
+                description: `Auto-settled Bingo Win (Card #${payout.cardIds.join(', #')} · 80% Pool)`.slice(
+                  0,
+                  160
+                ),
+                reference: `ADB-WIN-${roomId}-R${roundNumber}`.slice(0, 64),
+                createdAt: FieldValue.serverTimestamp(),
+              });
+
+              const ntfId = `ntf_${crypto.randomUUID()}`;
+              tx.set(botOutboxCol.doc(ntfId), {
+                id: ntfId,
+                event: 'winner_announcement',
+                recipientTelegramId: payout.telegramUserId,
+                roomId,
+                roundNumber,
+                winnerName: payout.displayName,
+                winningCardId: payout.cardIds[0],
+                prizeEtb: payout.totalPrizeEtb,
+                createdAt: new Date(nowMs).toISOString(),
+              });
+            }
+
+            const primaryWinner = settlement.winners[0];
+            const allWinnerNames =
+              settlement.payoutsByPlayer.map((p) => p.displayName).join(', ') || 'No Winner';
+
+            const completedGameDoc = {
+              gameId,
+              roomId,
+              hostUid,
+              roundNumber,
+              status: 'completed',
+              lifecycleStage: 'COMPLETED',
+              calledNumbers: updatedCalls,
+              latestBall: drawnBall,
+              winnerUid: primaryWinner?.uid || '',
+              winnerName: allWinnerNames.slice(0, 80),
+              winningCardId: primaryWinner?.cardId || 0,
+              winningPattern: (primaryWinner?.patternLabelEn || 'Exhausted').slice(0, 64),
+              winners: settlement.winners,
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              availableSpaces: financials.availableSpaces,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+              nextBallDrawAtMs: 0,
+              intermissionEndsAtMs,
+              updatedAt: FieldValue.serverTimestamp(),
+            };
+
+            // Save live game doc AND archive historical round result doc
+            tx.set(gameRef, {
+              ...completedGameDoc,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            tx.set(gamesCol.doc(`game_${roomId}_r${roundNumber}`), {
+              ...completedGameDoc,
+              gameId: `game_${roomId}_r${roundNumber}`,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+
+            tx.update(roomRef, {
+              status: 'completed',
+              lifecycleStage: 'COMPLETED',
+              roundNumber,
+              nextBallDrawAtMs: 0,
+              intermissionEndsAtMs,
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+              availableSpaces: financials.availableSpaces,
+              reservedCardsCount: financials.totalCardsSold,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+              lastSchedulerAction: 'winner_auto_settled',
+              lastSchedulerTickMs: nowMs,
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+
+            return {
+              ok: true,
+              roomId,
+              gameId,
+              roundNumber,
+              action: 'winner_auto_settled',
+              status: 'completed',
+              lifecycleStage: 'COMPLETED',
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              availableSpaces: financials.availableSpaces,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+              registrationDeadlineMs,
+              nextBallDrawAtMs: 0,
+              intermissionEndsAtMs,
+              extendedRegistrationCount,
+              drawnBall,
+              calledNumbers: updatedCalls,
+              settlement,
+            };
+          }
+
+          // No winner yet -> persist drawn ball and schedule next draw
+          nextBallDrawAtMs = nowMs + ballDrawIntervalMs;
+          const action: SchedulerActionType = isStuckSession
+            ? 'stuck_session_recovered'
+            : 'ball_auto_drawn';
+
+          updateLease(action, 'live');
+          if (isStuckSession) {
+            writeAudit(
+              'stuck_session_recovered',
+              `Recovered stuck live session in ${roomId} (Round #${roundNumber}) and resumed ball drawing (#${updatedCalls.length}: ${drawnBall}).`
+            );
+          }
+
+          tx.set(
+            gameRef,
+            {
+              gameId,
+              roomId,
+              hostUid,
+              roundNumber,
+              status: 'live',
+              lifecycleStage: 'IN_PROGRESS',
+              calledNumbers: updatedCalls,
+              latestBall: drawnBall,
+              winnerUid: '',
+              winnerName: '',
+              winningCardId: 0,
+              winningPattern: '',
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              availableSpaces: financials.availableSpaces,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+              nextBallDrawAtMs,
+              intermissionEndsAtMs: 0,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+
+          tx.update(roomRef, {
+            status: 'live',
+            lifecycleStage: 'IN_PROGRESS',
+            roundNumber,
+            nextBallDrawAtMs,
+            lastSchedulerAction: action,
+            lastSchedulerTickMs: nowMs,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+
+          return {
+            ok: true,
+            roomId,
+            gameId,
+            roundNumber,
+            action,
+            status: 'live',
+            lifecycleStage: 'IN_PROGRESS',
+            confirmedPlayersCount: financials.confirmedPlayersCount,
+            availableSpaces: financials.availableSpaces,
+            totalCardsSold: financials.totalCardsSold,
+            totalCollectedEtb: financials.totalCollectedEtb,
+            adeyShareEtb: financials.adeyShareEtb,
+            winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+            registrationDeadlineMs,
+            nextBallDrawAtMs,
+            intermissionEndsAtMs: 0,
+            extendedRegistrationCount,
+            drawnBall,
+            calledNumbers: updatedCalls,
+          };
+        }
+
+        // ====================================================================
+        // PHASE 3: COMPLETED -> CREATE NEXT GAME AUTOMATICALLY -> REPEAT FOREVER
+        // ====================================================================
+        if (intermissionEndsAtMs > 0 && nowMs < intermissionEndsAtMs) {
+          return {
+            ok: true,
+            roomId,
+            gameId,
+            roundNumber,
+            action: 'noop',
+            status: 'completed',
+            lifecycleStage: 'COMPLETED',
+            confirmedPlayersCount: financials.confirmedPlayersCount,
+            availableSpaces: financials.availableSpaces,
+            totalCardsSold: financials.totalCardsSold,
+            totalCollectedEtb: financials.totalCollectedEtb,
+            adeyShareEtb: financials.adeyShareEtb,
+            winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+            registrationDeadlineMs,
+            nextBallDrawAtMs: 0,
+            intermissionEndsAtMs,
+            extendedRegistrationCount,
+          };
+        }
+
+        const nextRound = roundNumber + 1;
+        const nextRegistrationDeadlineMs = nowMs + registrationWindowMs;
+        const nextCountdownSeconds = Math.max(1, Math.ceil(registrationWindowMs / 1000));
+
+        // Clear completed round's reserved cards & player session docs so the new round starts fresh
+        for (const cDoc of cardsSnap.docs) {
+          tx.delete(cDoc.ref);
+        }
+        for (const pDoc of playersSnap.docs) {
+          tx.delete(pDoc.ref);
+        }
+
+        updateLease('next_game_auto_created', 'countdown');
+        writeAudit(
+          'next_game_auto_created',
+          `Automatically created next game Round #${nextRound} for ${roomId}. Registration open (0/600 players, min ${minPlayers}).`,
+          nextRound
+        );
+
+        tx.set(gameRef, {
+          gameId,
+          roomId,
+          hostUid,
+          roundNumber: nextRound,
+          status: 'countdown',
+          lifecycleStage: 'WAITING',
+          calledNumbers: [],
+          latestBall: 0,
+          winnerUid: '',
+          winnerName: '',
+          winningCardId: 0,
+          winningPattern: '',
+          confirmedPlayersCount: 0,
+          availableSpaces: 600,
+          totalCardsSold: 0,
+          totalCollectedEtb: 0,
+          adeyShareEtb: 0,
+          winnersPrizePoolEtb: 0,
+          nextBallDrawAtMs: 0,
+          intermissionEndsAtMs: 0,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        tx.update(roomRef, {
+          status: 'countdown',
+          lifecycleStage: 'WAITING',
+          roundNumber: nextRound,
+          currentGameId: gameId,
+          countdownSeconds: nextCountdownSeconds,
+          registrationDeadlineMs: nextRegistrationDeadlineMs,
+          nextBallDrawAtMs: 0,
+          intermissionEndsAtMs: 0,
+          extendedRegistrationCount: 0,
+          scheduleNoticeAm: '',
+          scheduleNoticeEn: '',
+          activePlayersCount: 0,
+          confirmedPlayersCount: 0,
+          verifiedPaidEntriesCount: 0,
+          availableSpaces: 600,
+          reservedCardsCount: 0,
+          totalCardsSold: 0,
+          totalCollectedEtb: 0,
+          adeyShareEtb: 0,
+          winnersPrizePoolEtb: 0,
+          lastSchedulerAction: 'next_game_auto_created',
+          lastSchedulerTickMs: nowMs,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        return {
+          ok: true,
+          roomId,
+          gameId,
+          roundNumber: nextRound,
+          action: 'next_game_auto_created',
+          status: 'countdown',
+          lifecycleStage: 'WAITING',
+          confirmedPlayersCount: 0,
+          availableSpaces: 600,
+          totalCardsSold: 0,
+          totalCollectedEtb: 0,
+          adeyShareEtb: 0,
+          winnersPrizePoolEtb: 0,
+          registrationDeadlineMs: nextRegistrationDeadlineMs,
+          nextBallDrawAtMs: 0,
+          intermissionEndsAtMs: 0,
+          extendedRegistrationCount: 0,
+        };
+      });
+    },
+
+    async listSchedulerAuditLogs(
+      roomId?: string,
+      limitCount = 50
+    ): Promise<SchedulerAuditLogEntry[]> {
+      const snap = roomId
+        ? await schedulerAuditCol.where('roomId', '==', roomId).get()
+        : await schedulerAuditCol.get();
+      const entries = snap.docs.map((d) => d.data() as SchedulerAuditLogEntry);
+      entries.sort((a, b) => Number(b.timestampMs ?? 0) - Number(a.timestampMs ?? 0));
+      return entries.slice(0, limitCount);
     },
   };
 }
@@ -1315,5 +2238,55 @@ export class PersistentGameAuthorityService {
       isAdmin: params.isAdmin,
       requireExplicitHostOrAdmin: params.requireExplicitHostOrAdmin,
     });
+  }
+
+  public async tickRoomScheduler(params: {
+    roomId: string;
+    nowMs?: number;
+    workerId?: string;
+    registrationWindowMs?: number;
+    ballDrawIntervalMs?: number;
+    intermissionMs?: number;
+    stuckSessionTimeoutMs?: number;
+  }): Promise<SchedulerTickResult> {
+    await this.store.ensureDefaultRooms();
+    return await this.store.tickRoomSchedulerAtomic(params);
+  }
+
+  public async tickAllRooms(params: {
+    nowMs?: number;
+    workerId?: string;
+    roomIds?: string[];
+    registrationWindowMs?: number;
+    ballDrawIntervalMs?: number;
+    intermissionMs?: number;
+    stuckSessionTimeoutMs?: number;
+  } = {}): Promise<SchedulerTickResult[]> {
+    await this.store.ensureDefaultRooms();
+    const targetRoomIds =
+      params.roomIds && params.roomIds.length > 0
+        ? params.roomIds
+        : (await this.store.listRooms()).map((r) => r.roomId);
+    const results: SchedulerTickResult[] = [];
+    for (const roomId of targetRoomIds) {
+      const res = await this.store.tickRoomSchedulerAtomic({
+        roomId,
+        nowMs: params.nowMs,
+        workerId: params.workerId,
+        registrationWindowMs: params.registrationWindowMs,
+        ballDrawIntervalMs: params.ballDrawIntervalMs,
+        intermissionMs: params.intermissionMs,
+        stuckSessionTimeoutMs: params.stuckSessionTimeoutMs,
+      });
+      results.push(res);
+    }
+    return results;
+  }
+
+  public async listSchedulerAuditLogs(
+    roomId?: string,
+    limitCount = 50
+  ): Promise<SchedulerAuditLogEntry[]> {
+    return await this.store.listSchedulerAuditLogs(roomId, limitCount);
   }
 }

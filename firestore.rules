@@ -581,5 +581,13 @@ service cloud.firestore {
     match /botOutbox/{notificationId} {
       allow read, write: if false;
     }
+
+    match /schedulerLeases/{roomId} {
+      allow read, write: if false;
+    }
+
+    match /schedulerAuditLogs/{logId} {
+      allow read, write: if false;
+    }
   }
 }
