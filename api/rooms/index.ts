@@ -73,6 +73,7 @@ export function createRoomsHandler(deps: RoomsHandlerDeps = {}) {
         }
         sendJson(res, 200, {
           ok: true,
+          serverNowMs: Date.now(),
           room: detail.room,
           myCardIds: detail.myCardIds ?? [],
           takenCardIds: detail.takenCardIds ?? [],
@@ -84,6 +85,7 @@ export function createRoomsHandler(deps: RoomsHandlerDeps = {}) {
       const rooms = await service.listAvailableRooms();
       sendJson(res, 200, {
         ok: true,
+        serverNowMs: Date.now(),
         rooms,
       });
       return;

@@ -15,15 +15,11 @@ import {
   DEFAULT_GAME_RULES,
   calculateAuthoritativeGameFinancials,
   checkCardWin,
-  drawNextBall,
   generateDeterministicCard,
   toggleCardSelection,
 } from './game/rules';
-import {
-  evaluateRoundWinners,
-  type RoundWinnerShare,
-} from './game/roundSettlement';
-import { INITIAL_ROOMS, INITIAL_SUPPORT_TICKETS } from './data/demoData';
+import type { RoundWinnerShare } from './game/roundSettlement';
+import { INITIAL_ROOMS } from './data/demoData';
 import {
   DepositRequestSummary,
   GameHistoryItem,
@@ -46,6 +42,7 @@ import {
 } from './utils/telegram';
 import { auth, testFirestoreConnection } from './lib/firebase';
 import {
+  buildAuthenticatedHeaders,
   drawBallViaServerApi,
   ensureDefaultRoomsInFirestore,
   ensureUserProfileInFirestore,
@@ -111,6 +108,58 @@ function buildEmptyInitialRooms(): RoomConfig[] {
 }
 
 const ALL_CARD_NUMBERS = Array.from({ length: DEFAULT_GAME_RULES.maxCardsPerRoom }, (_, i) => i + 1);
+const TG_SESSION_STORAGE_KEY = 'adeybingo_verified_session_v1';
+
+interface PersistedTelegramSession {
+  sessionToken: string;
+  verifiedTelegramId: number;
+  initDataHash: string;
+}
+
+function extractInitDataHash(rawInitData: string): string {
+  try {
+    return new URLSearchParams(rawInitData).get('hash') || '';
+  } catch {
+    return '';
+  }
+}
+
+function loadPersistedTelegramSession(): PersistedTelegramSession | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(TG_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PersistedTelegramSession>;
+    if (
+      typeof parsed.sessionToken === 'string' &&
+      parsed.sessionToken.trim() &&
+      typeof parsed.verifiedTelegramId === 'number' &&
+      parsed.verifiedTelegramId > 0
+    ) {
+      return {
+        sessionToken: parsed.sessionToken.trim(),
+        verifiedTelegramId: parsed.verifiedTelegramId,
+        initDataHash: typeof parsed.initDataHash === 'string' ? parsed.initDataHash : '',
+      };
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+  return null;
+}
+
+function savePersistedTelegramSession(session: PersistedTelegramSession | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!session) {
+      window.sessionStorage.removeItem(TG_SESSION_STORAGE_KEY);
+    } else {
+      window.sessionStorage.setItem(TG_SESSION_STORAGE_KEY, JSON.stringify(session));
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
 
 export default function App() {
   const [user] = useState(() => initTelegramMiniApp());
@@ -148,6 +197,7 @@ export default function App() {
   const [phoneNumber, setPhoneNumber] = useState<string>('');
   const [phoneVerified, setPhoneVerified] = useState<boolean>(false);
   const [serverVerifiedTelegramId, setServerVerifiedTelegramId] = useState<number | null>(null);
+  const [activeSessionToken, setActiveSessionToken] = useState<string>('');
   const [telegramBackendStatus, setTelegramBackendStatus] = useState<string>(
     'Ready to validate Telegram WebApp initData on /api/telegram/auth'
   );
@@ -162,7 +212,9 @@ export default function App() {
 
   // Configurable card price from active room
   const [cardPrice, setCardPrice] = useState<number>(DEFAULT_GAME_RULES.defaultCardPrice);
-  const [countdown, setCountdown] = useState<number>(60);
+  const [countdown, setCountdown] = useState<number>(0);
+  const serverClockOffsetMsRef = useRef<number>(0);
+  const roomDeadlineMsRef = useRef<number>(0);
   const hasServerRoomSyncRef = useRef<boolean>(false);
   const prevRoomStatusRef = useRef<RoomConfig['status']>('countdown');
   const localWinnerSettledRoundRef = useRef<boolean>(false);
@@ -192,29 +244,18 @@ export default function App() {
   const activeTgIdRef = useRef<number>(serverVerifiedTelegramId ?? user.id);
   activeTgIdRef.current = serverVerifiedTelegramId ?? user.id;
 
-  // Every player who joins gets 15 Birr (15 ETB) welcome balance; invited friends grant +20 Birr (20 ETB)
-  const [demoBalance, setDemoBalance] = useState<number>(15);
+  // Account & financial state — hydrated strictly from persistent backend / Firestore (never fabricated locally)
+  const [demoBalance, setDemoBalance] = useState<number>(0);
   const [winningsBalance, setWinningsBalance] = useState<number>(0);
   const [referralCode, setReferralCode] = useState<string>(`ADEY-${user.id}`);
   const [referredByCode, setReferredByCode] = useState<string>('');
-  const [transactions, setTransactions] = useState<WalletTransaction[]>([
-    {
-      id: 'tx_welcome_join',
-      type: 'referral_bonus',
-      amount: 15,
-      status: 'demo_completed',
-      labelAm: 'የመቀላቀያ እንኳን ደህና መጡ ቦነስ (+15 ብር)',
-      labelEn: 'Welcome Join Bonus (+15 ETB)',
-      timestamp: 'Just now',
-      reference: `WELCOME-${user.id}`,
-    },
-  ]);
+  const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [depositRequests, setDepositRequests] = useState<DepositRequestSummary[]>([]);
   const [payoutRequests, setPayoutRequests] = useState<PayoutRequestSummary[]>([]);
   const [referrals, setReferrals] = useState<ReferralRecord[]>([]);
   const [gameHistory, setGameHistory] = useState<GameHistoryItem[]>([]);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
-  const [tickets, setTickets] = useState<SupportTicket[]>(INITIAL_SUPPORT_TICKETS);
+  const [tickets, setTickets] = useState<SupportTicket[]>([]);
 
   // Audio, Voice, Motion & Toast state
   const [sound, setSound] = useState<boolean>(true);
@@ -228,7 +269,10 @@ export default function App() {
   const hydratePlayerState = useCallback(async () => {
     try {
       const state = await fetchPlayerStateFromApi();
-      if (!state || !state.ok) return;
+      if (!state || !state.ok) return false;
+      if (typeof state.serverNowMs === 'number' && Number.isFinite(state.serverNowMs)) {
+        serverClockOffsetMsRef.current = state.serverNowMs - Date.now();
+      }
       setDemoBalance(Number(state.wallet.availableBalanceEtb ?? 0));
       setWinningsBalance(Number(state.wallet.winningsBalanceEtb ?? 0));
       setTransactions(Array.isArray(state.transactions) ? state.transactions : []);
@@ -237,6 +281,9 @@ export default function App() {
       setReferrals(Array.isArray(state.referrals) ? state.referrals : []);
       setGameHistory(Array.isArray(state.gameHistory) ? state.gameHistory : []);
       setLeaderboard(Array.isArray(state.leaderboard) ? state.leaderboard : []);
+      if (Array.isArray(state.supportTickets)) {
+        setTickets(state.supportTickets);
+      }
       if (state.profile?.referralCode) {
         setReferralCode(state.profile.referralCode);
       }
@@ -247,8 +294,9 @@ export default function App() {
       if (state.profile?.language === 'am' || state.profile?.language === 'en') {
         setLang(state.profile.language);
       }
+      return true;
     } catch {
-      // Non-fatal when unauthenticated
+      return false;
     }
   }, []);
 
@@ -415,7 +463,26 @@ export default function App() {
         }
         prevRoomStatusRef.current = nextStatus;
 
-        setCountdown(Number(detail.room.countdownSeconds ?? 0));
+        if (typeof detail.serverNowMs === 'number' && Number.isFinite(detail.serverNowMs)) {
+          serverClockOffsetMsRef.current = detail.serverNowMs - Date.now();
+        }
+        const deadlineMs =
+          typeof detail.room.registrationDeadlineMs === 'number' &&
+          Number.isFinite(detail.room.registrationDeadlineMs) &&
+          detail.room.registrationDeadlineMs > 0
+            ? detail.room.registrationDeadlineMs
+            : 0;
+        if (nextStatus === 'countdown' && deadlineMs > 0) {
+          roomDeadlineMsRef.current = deadlineMs;
+          const syncedRemaining = Math.max(
+            0,
+            Math.ceil((deadlineMs - (Date.now() + serverClockOffsetMsRef.current)) / 1000)
+          );
+          setCountdown(syncedRemaining);
+        } else {
+          roomDeadlineMsRef.current = 0;
+          setCountdown(Number(detail.room.countdownSeconds ?? 0));
+        }
         setCardPrice(Number(detail.room.cardPrice || DEFAULT_GAME_RULES.defaultCardPrice));
         if (token) {
           setSelectedCardIds(detail.myCardIds.sort((a, b) => a - b));
@@ -518,6 +585,31 @@ export default function App() {
     void (async () => {
       const { initData: rawInitData } = await waitForTelegramWebAppInitData(1500);
       if (cancelled) return;
+
+      // 1) Reuse existing verified session across Mini App page refreshes to avoid initData replay 409
+      const savedSession = loadPersistedTelegramSession();
+      const incomingHash = rawInitData ? extractInitDataHash(rawInitData) : '';
+      if (
+        savedSession &&
+        (!incomingHash || !savedSession.initDataHash || savedSession.initDataHash === incomingHash)
+      ) {
+        setSessionBearerToken(savedSession.sessionToken);
+        const restored = await hydratePlayerState();
+        if (cancelled) return;
+        if (restored) {
+          setActiveSessionToken(savedSession.sessionToken);
+          setServerVerifiedTelegramId(savedSession.verifiedTelegramId);
+          setTelegramBackendStatus(
+            `✓ Authenticated on Server: TG User #${savedSession.verifiedTelegramId}`
+          );
+          await hydrateRoomState(activeRoomId);
+          return;
+        }
+        // Stored session expired or invalid -> clear and re-authenticate
+        setSessionBearerToken('');
+        savePersistedTelegramSession(null);
+      }
+
       if (!rawInitData) {
         setTelegramBackendStatus(
           'No window.Telegram.WebApp.initData detected (open inside @AdeyBingoBot Mini App to authenticate).'
@@ -529,7 +621,10 @@ export default function App() {
         const r = await fetch('/api/telegram/auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData: rawInitData }),
+          body: JSON.stringify({
+            initData: rawInitData,
+            ...(user.startParam ? { startParam: user.startParam } : {}),
+          }),
         });
         const d = await r.json().catch(() => ({}));
         if (cancelled) return;
@@ -540,7 +635,17 @@ export default function App() {
           if (Number.isInteger(verifiedId) && verifiedId > 0) {
             setServerVerifiedTelegramId(verifiedId);
           }
-          if (d.sessionToken) setSessionBearerToken(d.sessionToken);
+          if (d.sessionToken) {
+            setSessionBearerToken(d.sessionToken);
+            setActiveSessionToken(d.sessionToken);
+            if (Number.isInteger(verifiedId) && verifiedId > 0) {
+              savePersistedTelegramSession({
+                sessionToken: d.sessionToken,
+                verifiedTelegramId: verifiedId,
+                initDataHash: incomingHash,
+              });
+            }
+          }
           const profileBalance = d.profile?.demoBalanceEtb ?? d.demoBalanceEtb;
           if (typeof profileBalance === 'number') setDemoBalance(profileBalance);
           const profilePhoneVerified = d.profile?.phoneVerified ?? d.phoneVerified;
@@ -548,6 +653,15 @@ export default function App() {
           const profileLang = d.profile?.language;
           if (profileLang === 'am' || profileLang === 'en') {
             setLang(profileLang);
+          }
+          if (d.referralApplied?.applied) {
+            autoAppliedStartRef.current = true;
+            const bonus = Number(d.referralApplied.inviteeBonusEtb ?? 15);
+            setToast(
+              langRef.current === 'am'
+                ? `የግብዣ ቦነስ +${bonus.toFixed(2)} ብር ወደ ሂሳብዎ ተጨምሯል!`
+                : `Invitation bonus +${bonus.toFixed(2)} ETB credited to your account!`
+            );
           }
           if (d.customToken) {
             await signInWithCustomToken(auth, d.customToken).catch(() => {});
@@ -644,7 +758,23 @@ export default function App() {
         );
       },
       (roomDoc) => {
-        if (typeof roomDoc.countdownSeconds === 'number') {
+        if (
+          roomDoc.status === 'countdown' &&
+          typeof roomDoc.registrationDeadlineMs === 'number' &&
+          roomDoc.registrationDeadlineMs > 0
+        ) {
+          roomDeadlineMsRef.current = roomDoc.registrationDeadlineMs;
+          setCountdown(
+            Math.max(
+              0,
+              Math.ceil(
+                (roomDoc.registrationDeadlineMs - (Date.now() + serverClockOffsetMsRef.current)) /
+                  1000
+              )
+            )
+          );
+        } else if (typeof roomDoc.countdownSeconds === 'number') {
+          if (roomDoc.status !== 'countdown') roomDeadlineMsRef.current = 0;
           setCountdown(roomDoc.countdownSeconds);
         }
         if (typeof roomDoc.cardPrice === 'number' && roomDoc.cardPrice > 0) {
@@ -726,198 +856,108 @@ export default function App() {
     }
   }, [screen, winnerModalOpen]);
 
-  // Decrement active room countdown when > 0
+  // 2B. Real-time Server-Sent Events (SSE) push sync & visibility/reconnect re-hydration
   useEffect(() => {
-    if (countdown <= 0) return;
+    const onForegroundSync = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void hydrateRoomState(activeRoomId);
+      void hydratePlayerState();
+    };
+    window.addEventListener('focus', onForegroundSync);
+    window.addEventListener('online', onForegroundSync);
+    document.addEventListener('visibilitychange', onForegroundSync);
+
+    let es: EventSource | null = null;
+    if (activeSessionToken && typeof window !== 'undefined' && typeof EventSource !== 'undefined') {
+      try {
+        es = new EventSource(
+          `/api/realtime/stream?token=${encodeURIComponent(activeSessionToken)}`
+        );
+        es.addEventListener('sync', (ev) => {
+          try {
+            const payload = JSON.parse((ev as MessageEvent).data || '{}') as {
+              serverNowMs?: number;
+            };
+            if (typeof payload.serverNowMs === 'number') {
+              serverClockOffsetMsRef.current = payload.serverNowMs - Date.now();
+            }
+          } catch {
+            // Ignore malformed event
+          }
+          void hydrateRoomState(activeRoomId);
+          void hydratePlayerState();
+        });
+        es.addEventListener('room_update', (ev) => {
+          try {
+            const payload = JSON.parse((ev as MessageEvent).data || '{}') as {
+              roomId?: string;
+              serverNowMs?: number;
+            };
+            if (typeof payload.serverNowMs === 'number') {
+              serverClockOffsetMsRef.current = payload.serverNowMs - Date.now();
+            }
+            if (!payload.roomId || payload.roomId === activeRoomId) {
+              void hydrateRoomState(activeRoomId);
+            }
+          } catch {
+            void hydrateRoomState(activeRoomId);
+          }
+        });
+        es.addEventListener('wallet_update', () => {
+          void hydratePlayerState();
+        });
+        es.addEventListener('heartbeat', (ev) => {
+          try {
+            const payload = JSON.parse((ev as MessageEvent).data || '{}') as {
+              serverNowMs?: number;
+            };
+            if (typeof payload.serverNowMs === 'number') {
+              serverClockOffsetMsRef.current = payload.serverNowMs - Date.now();
+            }
+          } catch {
+            // Ignore
+          }
+        });
+      } catch {
+        // Fallback polling remains active when SSE is unavailable (e.g., serverless static deploy)
+      }
+    }
+
+    return () => {
+      window.removeEventListener('focus', onForegroundSync);
+      window.removeEventListener('online', onForegroundSync);
+      document.removeEventListener('visibilitychange', onForegroundSync);
+      es?.close();
+    };
+  }, [activeRoomId, activeSessionToken, hydratePlayerState, hydrateRoomState]);
+
+  // Server-authoritative countdown display computed strictly from server deadline & clock offset
+  useEffect(() => {
+    if (activeRoom.status !== 'countdown') return;
     const timer = window.setInterval(() => {
-      setCountdown((prev) => (prev > 0 ? prev - 1 : 0));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [countdown > 0]);
-
-  // Continuous unstoppable round loop: sync on countdown expiry & drive standalone preview fallback
-  useEffect(() => {
-    if (hasServerRoomSyncRef.current) {
-      if (activeRoom.status === 'countdown' && countdown === 0) {
-        void hydrateRoomState(activeRoomId);
-      }
-      return;
-    }
-
-    if (activeRoom.status === 'countdown' && countdown === 0) {
-      const confirmedCount = activeRoom.confirmedPlayersCount ?? activeRoom.activePlayers ?? 0;
-      const minRequired = activeRoom.minPlayers || DEFAULT_GAME_RULES.minEligiblePlayers;
-      if (confirmedCount < minRequired) {
-        setCountdown(60);
-        if (selectedCardIds.length > 0) {
-          setToast(
-            lang === 'am'
-              ? `ዝቅተኛው የተጫዋች ቁጥር (${minRequired}) ስላልሞላ ምዝገባ ተራዝሟል። ካርድዎ ተጠብቋል።`
-              : `Minimum ${minRequired} players not reached (${confirmedCount}/${minRequired}). Registration extended; your cards are preserved.`
-          );
-        }
-        return;
-      }
-
-      setRooms((prev) =>
-        prev.map((rm) =>
-          rm.id === activeRoomId ? { ...rm, status: 'live', countdownSeconds: 0 } : rm
-        )
-      );
-      if (selectedCardIds.length > 0) {
-        if (screen === 'home' || screen === 'lobby' || screen === 'cards') {
-          setScreen('game');
-        }
-        setAutoCallerActive(true);
-        setToast(
-          lang === 'am'
-            ? '60 ሰከንዱ አልቋል — ጨዋታው በተመረጡ ካርዶችዎ ተጀምሯል!'
-            : 'Timer finished — game started with your selected cards!'
-        );
-      } else {
-        if (screen === 'game') {
-          setScreen('home');
-        }
-        setAutoCallerActive(true);
-        setToast(
-          lang === 'am'
-            ? '60 ሰከንዱ አልቋል — ካርድ ስላልመረጡ በዚህ ዙር መጫወት አይችሉም!'
-            : 'Timer ended — you cannot play this round without a selected card!'
-        );
-      }
-      return;
-    }
-
-    if (activeRoom.status === 'live' && (calls.length >= 75 || winnerModalOpen)) {
-      setAutoCallerActive(false);
-      setRooms((prev) =>
-        prev.map((rm) => (rm.id === activeRoomId ? { ...rm, status: 'completed' } : rm))
-      );
-      return;
-    }
-
-    if (activeRoom.status === 'completed') {
-      const restartTimer = window.setTimeout(() => {
-        setAutoCallerActive(false);
-        setWinnerModalOpen(false);
-        setActiveWinResult(null);
-        setLastVerifiedPrizeEtb(0);
-        setRoundWinners([]);
-        setWinningCardOverride(null);
-        setCalls([]);
-        setMarked([]);
-        setSelectedCardIds([]);
-        setCountdown(60);
-        setRooms((prev) =>
-          prev.map((rm) =>
-            rm.id === activeRoomId
-              ? { ...rm, status: 'countdown', countdownSeconds: 60, takenCardIds: [] }
-              : rm
+      if (roomDeadlineMsRef.current > 0) {
+        const remaining = Math.max(
+          0,
+          Math.ceil(
+            (roomDeadlineMsRef.current - (Date.now() + serverClockOffsetMsRef.current)) / 1000
           )
         );
-        setToast(
-          lang === 'am'
-            ? 'አዲስ የ60 ሰከንድ ዙር ተጀምሯል — ካርድ ይምረጡ!'
-            : 'New 60s round started — pick your cards!'
-        );
-      }, 6000);
-      return () => window.clearTimeout(restartTimer);
-    }
-  }, [activeRoom.status, activeRoomId, calls.length, countdown, hydrateRoomState, lang, screen, winnerModalOpen]);
-
-  // Automatic client-side diagonal/line win detection fallback for unauthenticated preview play
-  useEffect(() => {
-    if (
-      activeRoom.status !== 'live' ||
-      calls.length === 0 ||
-      winnerModalOpen ||
-      selectedCardIds.length === 0 ||
-      serverVerifiedTelegramId !== null ||
-      fbUser !== null
-    ) {
-      return;
-    }
-
-    const entries = selectedCardIds.map((cardId) => ({
-      cardId,
-      uid: `tg_${user.id}`,
-      telegramUserId: user.id,
-      displayName: `${user.firstName} ${user.lastName || ''}`.trim() || 'Player',
-    }));
-
-    const settlement = evaluateRoundWinners({
-      entries,
-      calledNumbers: calls,
-      cardPrice,
-      totalCardsInRoom: Math.max(selectedCardIds.length, activeRoom.takenCardIds.length + selectedCardIds.length),
-    });
-
-    if (!settlement.hasWinner) return;
-
-    const primary = settlement.winners[0];
-    const totalWon = settlement.payoutsByPlayer[0]?.totalPrizeEtb ?? primary.prizeEtb;
-    const winCheck = checkCardWin(
-      generateDeterministicCard(primary.cardId),
-      calls,
-      calls,
-      true
-    );
-
-    localWinnerSettledRoundRef.current = true;
-    setAutoCallerActive(false);
-    soundFX.stopVoice();
-    setRooms((prev) =>
-      prev.map((rm) =>
-        rm.id === activeRoomId ? { ...rm, status: 'completed', countdownSeconds: 0 } : rm
-      )
-    );
-    setRoundWinners(settlement.winners);
-    setWinningCardOverride(primary.cardId);
-    setActiveWinResult(
-      winCheck.won
-        ? winCheck
-        : {
-            won: true,
-            cardId: primary.cardId,
-            patternType: primary.patternType,
-            patternLabelAm: primary.patternLabelAm,
-            patternLabelEn: primary.patternLabelEn,
-            winningCells: primary.winningCells,
+        setCountdown(remaining);
+        if (remaining === 0) {
+          void hydrateRoomState(activeRoomId);
+        }
+      } else {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            void hydrateRoomState(activeRoomId);
+            return 0;
           }
-    );
-    setLastVerifiedPrizeEtb(totalWon);
-    setDemoBalance((b) => Number((b + totalWon).toFixed(2)));
-    setWinningsBalance((w) => Number((w + totalWon).toFixed(2)));
-    setWinnerModalOpen(true);
-    soundFX.playWinFanfare(sound);
-    triggerHaptic('success');
-
-    if (hasServerRoomSyncRef.current) {
-      void verifyWinnerViaServerApi({
-        roomId: activeRoomId,
-        gameId: `game_${activeRoomId}_live`,
-        cardId: primary.cardId,
-        markedNumbers: calls,
-        calledNumbers: calls,
-        claimantTelegramId: user.id,
-        playerName: `${user.firstName} ${user.lastName || ''}`.trim() || 'Player',
-      }).catch(() => {});
-    }
-  }, [
-    activeRoom.status,
-    activeRoom.takenCardIds.length,
-    activeRoomId,
-    calls,
-    cardPrice,
-    fbUser,
-    selectedCardIds,
-    serverVerifiedTelegramId,
-    sound,
-    user.firstName,
-    user.id,
-    user.lastName,
-    winnerModalOpen,
-  ]);
+          return prev - 1;
+        });
+      }
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [activeRoom.status, activeRoomId, hydrateRoomState]);
 
   // Auto-dismiss toast notifications after 3.2 seconds
   useEffect(() => {
@@ -982,12 +1022,16 @@ export default function App() {
   // Handler: Authenticate via Telegram Mini App initData (/api/telegram/auth)
   async function handleSignInGoogle() {
     const { initData: rawInitData } = await waitForTelegramWebAppInitData(500);
+    const incomingHash = rawInitData ? extractInitDataHash(rawInitData) : '';
 
     try {
       const resp = await fetch('/api/telegram/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData: rawInitData }),
+        body: JSON.stringify({
+          initData: rawInitData,
+          ...(user.startParam ? { startParam: user.startParam } : {}),
+        }),
       });
       const data = await resp.json().catch(() => ({}));
       if (resp.ok && data.ok) {
@@ -999,6 +1043,14 @@ export default function App() {
         }
         if (data.sessionToken) {
           setSessionBearerToken(data.sessionToken);
+          setActiveSessionToken(data.sessionToken);
+          if (Number.isInteger(verifiedId) && verifiedId > 0) {
+            savePersistedTelegramSession({
+              sessionToken: data.sessionToken,
+              verifiedTelegramId: verifiedId,
+              initDataHash: incomingHash,
+            });
+          }
         }
         const profileBalance = data.profile?.demoBalanceEtb ?? data.demoBalanceEtb;
         if (typeof profileBalance === 'number') {
@@ -1007,6 +1059,9 @@ export default function App() {
         const profileLang = data.profile?.language;
         if (profileLang === 'am' || profileLang === 'en') {
           setLang(profileLang);
+        }
+        if (data.referralApplied?.applied) {
+          autoAppliedStartRef.current = true;
         }
         if (data.customToken) {
           await signInWithCustomToken(auth, data.customToken);
@@ -1051,6 +1106,8 @@ export default function App() {
   // Handler: Firebase Sign-Out
   async function handleSignOutFirebase() {
     await signOutFromFirebase();
+    savePersistedTelegramSession(null);
+    setActiveSessionToken('');
     setServerVerifiedTelegramId(null);
     setDemoBalance(0);
     setWinningsBalance(0);
@@ -1059,6 +1116,7 @@ export default function App() {
     setPayoutRequests([]);
     setReferrals([]);
     setGameHistory([]);
+    setTickets([]);
     setToast(lang === 'am' ? 'ከFirebase ወጥተዋል' : 'Signed out from Firebase');
   }
 
@@ -1119,31 +1177,43 @@ export default function App() {
     cleanedPhone: string,
     method: 'telegram_contact' | 'sms_otp_demo'
   ) {
+    const token = await getActiveBearerToken();
+    if (!token) {
+      soundFX.playError(sound);
+      setToast(
+        lang === 'am'
+          ? 'ስልክ ቁጥር ለማረጋገጥ መጀመሪያ በቴሌግራም Mini App ይግቡ'
+          : 'Authenticate inside Telegram Mini App to verify your phone number.'
+      );
+      return;
+    }
     try {
+      const headers = await buildAuthenticatedHeaders();
       const resp = await fetch('/api/telegram/bot-command', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
-          senderTelegramId: user.id,
+          senderTelegramId: serverVerifiedTelegramId ?? user.id,
           firstName: user.firstName,
           lastName: user.lastName || '',
           username: user.username.replace(/^@/, ''),
-          firebaseUid: fbUser?.uid || `tg_${user.id}`,
+          firebaseUid: fbUser?.uid || `tg_${serverVerifiedTelegramId ?? user.id}`,
           text: '',
           contact:
             method === 'telegram_contact'
               ? {
                   phone_number: cleanedPhone,
                   first_name: user.firstName,
-                  user_id: user.id,
+                  user_id: serverVerifiedTelegramId ?? user.id,
                 }
               : null,
         }),
       });
-      const data = await resp.json();
+      const data = await resp.json().catch(() => ({}));
       if (resp.ok && data.registrationStatus === 'verified') {
         setPhoneNumber(cleanedPhone);
         setPhoneVerified(true);
+        await hydratePlayerState();
         setToast(
           lang === 'am'
             ? `ስልክ ቁጥር (${cleanedPhone}) በሰርቨር እና Firestore /private/contact ተረጋግጧል!`
@@ -1151,17 +1221,21 @@ export default function App() {
         );
         return;
       }
+      soundFX.playError(sound);
+      setToast(
+        data.message ||
+          (lang === 'am'
+            ? 'የስልክ ቁጥር ማረጋገጫ አልተሳካም — ከቴሌግራም ቦት ያጋሩ'
+            : 'Phone verification failed on server. Share your contact via Telegram Bot.')
+      );
     } catch {
-      // Fall through
+      soundFX.playError(sound);
+      setToast(
+        lang === 'am'
+          ? 'የስልክ ቁጥር ማረጋገጫ ኔትወርክ ስህተት'
+          : 'Network error while verifying phone number on server.'
+      );
     }
-
-    setPhoneNumber(cleanedPhone);
-    setPhoneVerified(true);
-    setToast(
-      lang === 'am'
-        ? `ስልክ ቁጥር (${cleanedPhone}) በሙከራ ሁኔታ ተረጋግጧል`
-        : `Phone (${cleanedPhone}) verified in sandbox session`
-    );
   }
 
   // Handler: Server-Authoritative Call Next Ball (POST /api/game/draw-ball)
@@ -1175,36 +1249,32 @@ export default function App() {
       return;
     }
     const token = await getActiveBearerToken();
-    if (token) {
-      try {
-        const res = await drawBallViaServerApi({
-          roomId: activeRoom.id,
-          gameId: `game_${activeRoom.id}_live`,
-          callerTelegramId: user.id,
-        });
-        triggerHaptic('light');
-        setCalls(res.calledNumbers);
-        return;
-      } catch (err) {
-        soundFX.playError(sound);
-        setToast(err instanceof Error ? err.message : 'Server ball draw failed');
-        return;
-      }
-    }
-
-    // Local preview draw when unauthenticated
-    const nextNum = drawNextBall(calls);
-    if (nextNum === null) {
+    if (!token) {
       setAutoCallerActive(false);
-      setToast(lang === 'am' ? 'ሁሉም 75 ቁጥሮች ተጠርተዋል!' : 'All 75 numbers have been called!');
+      soundFX.playError(sound);
+      setToast(
+        lang === 'am'
+          ? 'ቁጥር ለመጥራት በቴሌግራም Mini App መግባት ያስፈልጋል'
+          : 'Authentication required to request server ball draws.'
+      );
       return;
     }
-
-    triggerHaptic('light');
-    setCalls([...calls, nextNum]);
+    try {
+      const res = await drawBallViaServerApi({
+        roomId: activeRoom.id,
+        gameId: `game_${activeRoom.id}_live`,
+        callerTelegramId: serverVerifiedTelegramId ?? user.id,
+      });
+      triggerHaptic('light');
+      setCalls(res.calledNumbers);
+    } catch (err) {
+      setAutoCallerActive(false);
+      soundFX.playError(sound);
+      setToast(err instanceof Error ? err.message : 'Server ball draw failed');
+    }
   }
 
-  // Handler: Toggle card selection (1..600, max 4) via POST /api/cards/reserve when authenticated
+  // Handler: Toggle card selection (1..600, max 4) strictly via server-authoritative POST /api/cards/reserve
   async function handleToggleCardId(cardId: number) {
     if (isCardsLocked) {
       soundFX.playError(sound);
@@ -1216,6 +1286,18 @@ export default function App() {
       );
       return;
     }
+    const token = await getActiveBearerToken();
+    if (!token) {
+      soundFX.playError(sound);
+      triggerHaptic('error');
+      setToast(
+        lang === 'am'
+          ? 'ካርድ ለመምረጥ እባክዎ በቴሌግራም Mini App ይግቡ'
+          : 'Please open inside Telegram Mini App to reserve cards with your verified balance.'
+      );
+      return;
+    }
+
     const isRemoving = selectedCardIds.includes(cardId);
     if (!isRemoving && demoBalance < cardPrice) {
       soundFX.playError(sound);
@@ -1251,61 +1333,73 @@ export default function App() {
       return;
     }
 
-    const token = await getActiveBearerToken();
-    if (token) {
-      try {
-        const txRes = await toggleCardReservationAtomic({
-          roomId: activeRoom.id,
-          cardId,
-          uid: fbUser?.uid,
-          displayName: fbUser?.displayName || `${user.firstName} ${user.lastName || ''}`.trim(),
-          telegramUserId: `tg_${user.id}`,
-        });
-        soundFX.playDaub(sound);
-        triggerHaptic('light');
-        setSelectedCardIds(txRes.updatedCardIds);
-        if (typeof txRes.updatedBalanceEtb === 'number') {
-          setDemoBalance(txRes.updatedBalanceEtb);
-        }
-        setToast(
-          lang === 'am'
-            ? `ካርድ #${cardId} ${txRes.action === 'reserved' ? 'ተመርጧል (-10 ብር)' : 'ተመልሷል (+10 ብር)'}`
-            : `Card #${cardId} ${txRes.action === 'reserved' ? 'selected (-10 ETB)' : 'released (+10 ETB)'}`
-        );
-        await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoom.id)]);
-      } catch (err) {
-        soundFX.playError(sound);
-        triggerHaptic('error');
-        setSelectedCardIds(previousCardIds);
-        setToast(err instanceof Error ? err.message : 'Card reservation rejected by server');
+    try {
+      const txRes = await toggleCardReservationAtomic({
+        roomId: activeRoom.id,
+        cardId,
+        uid: fbUser?.uid,
+        displayName: fbUser?.displayName || `${user.firstName} ${user.lastName || ''}`.trim(),
+        telegramUserId: `tg_${serverVerifiedTelegramId ?? user.id}`,
+      });
+      soundFX.playDaub(sound);
+      triggerHaptic('light');
+      setSelectedCardIds(txRes.updatedCardIds);
+      if (typeof txRes.updatedBalanceEtb === 'number') {
+        setDemoBalance(txRes.updatedBalanceEtb);
       }
+      setToast(
+        lang === 'am'
+          ? `ካርድ #${cardId} ${txRes.action === 'reserved' ? `ተመርጧል (-${cardPrice} ብር)` : `ተመልሷል (+${cardPrice} ብር)`}`
+          : `Card #${cardId} ${txRes.action === 'reserved' ? `selected (-${cardPrice} ETB)` : `released (+${cardPrice} ETB)`}`
+      );
+      await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoom.id)]);
+    } catch (err) {
+      soundFX.playError(sound);
+      triggerHaptic('error');
+      setSelectedCardIds(previousCardIds);
+      setToast(err instanceof Error ? err.message : 'Card reservation rejected by server');
+    }
+  }
+
+  async function handleClearSelectedCards() {
+    if (isCardsLocked || selectedCardIds.length === 0) return;
+    const token = await getActiveBearerToken();
+    if (!token) {
+      soundFX.playError(sound);
+      setToast(
+        lang === 'am'
+          ? 'ካርድ ለመሰረዝ በቴሌግራም Mini App ይግቡ'
+          : 'Authenticate inside Telegram Mini App to modify reserved cards.'
+      );
       return;
     }
-
-    soundFX.playDaub(sound);
-    triggerHaptic('light');
-    setSelectedCardIds(result.selectedIds);
-    setDemoBalance((b) =>
-      isRemoving
-        ? Number((b + cardPrice).toFixed(2))
-        : Math.max(0, Number((b - cardPrice).toFixed(2)))
-    );
+    let releasedCount = 0;
+    for (const cid of [...selectedCardIds]) {
+      try {
+        await toggleCardReservationAtomic({
+          roomId: activeRoom.id,
+          cardId: cid,
+          action: 'release',
+        });
+        releasedCount += 1;
+      } catch {
+        // Stop on first server error and re-sync authoritative state
+        break;
+      }
+    }
+    await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoom.id)]);
+    if (releasedCount > 0) {
+      const refund = releasedCount * cardPrice;
+      setToast(
+        lang === 'am'
+          ? `የተመረጡ ካርዶች ተሰርዘዋል (+${refund.toFixed(2)} ብር ተመልሷል)`
+          : `Cleared selected cards (+${refund.toFixed(2)} ETB refunded)`
+      );
+    }
   }
 
-  function handleClearSelectedCards() {
-    if (isCardsLocked || selectedCardIds.length === 0) return;
-    const refund = selectedCardIds.length * cardPrice;
-    setSelectedCardIds([]);
-    setDemoBalance((b) => Number((b + refund).toFixed(2)));
-    setToast(
-      lang === 'am'
-        ? `የተመረጡ ካርዶች ተሰርዘዋል (+${refund.toFixed(2)} ብር ተመልሷል)`
-        : `Cleared selected cards (+${refund.toFixed(2)} ETB refunded)`
-    );
-  }
-
-  // Handler: Quick pick N available cards (strictly bounded by player's available balance)
-  function handleQuickPickCards(targetCount: number) {
+  // Handler: Quick pick N available cards atomically via server /api/cards/reserve
+  async function handleQuickPickCards(targetCount: number) {
     if (isCardsLocked) {
       soundFX.playError(sound);
       triggerHaptic('error');
@@ -1316,6 +1410,18 @@ export default function App() {
       );
       return;
     }
+    const token = await getActiveBearerToken();
+    if (!token) {
+      soundFX.playError(sound);
+      triggerHaptic('error');
+      setToast(
+        lang === 'am'
+          ? 'ካርድ ለመምረጥ እባክዎ በቴሌግራም Mini App ይግቡ'
+          : 'Please open inside Telegram Mini App to reserve cards.'
+      );
+      return;
+    }
+
     const totalPoolEtb = demoBalance + selectedCardIds.length * cardPrice;
     const maxAffordable = Math.floor(totalPoolEtb / cardPrice);
     if (maxAffordable <= 0) {
@@ -1332,26 +1438,54 @@ export default function App() {
       1,
       Math.min(DEFAULT_GAME_RULES.maxCardsPerPlayer, maxAffordable, targetCount)
     );
+
+    // Release excess cards if targetCount < current count
+    if (selectedCardIds.length > clamped) {
+      for (const cid of selectedCardIds.slice(clamped)) {
+        await toggleCardReservationAtomic({
+          roomId: activeRoom.id,
+          cardId: cid,
+          action: 'release',
+        }).catch(() => {});
+      }
+    }
+
+    const currentIds = new Set(selectedCardIds.slice(0, clamped));
     const available: number[] = [];
     for (let id = 1; id <= DEFAULT_GAME_RULES.maxCardsPerRoom; id++) {
-      if (!activeRoom.takenCardIds.includes(id)) {
+      if (!activeRoom.takenCardIds.includes(id) && !currentIds.has(id)) {
         available.push(id);
       }
     }
-    const picked: number[] = [];
-    while (picked.length < clamped && available.length > 0) {
+    const newlyReserved: number[] = [];
+    while (currentIds.size < clamped && available.length > 0) {
       const idx = Math.floor(Math.random() * available.length);
-      picked.push(available[idx]);
+      const candidateId = available[idx];
       available.splice(idx, 1);
+      try {
+        await toggleCardReservationAtomic({
+          roomId: activeRoom.id,
+          cardId: candidateId,
+          action: 'reserve',
+        });
+        currentIds.add(candidateId);
+        newlyReserved.push(candidateId);
+      } catch {
+        // Skip taken/rejected card and try another
+      }
     }
-    soundFX.playDaub(sound);
-    setSelectedCardIds(picked.sort((a, b) => a - b));
-    setDemoBalance(Math.max(0, Number((totalPoolEtb - picked.length * cardPrice).toFixed(2))));
-    setToast(
-      lang === 'am'
-        ? `${picked.length} ካርድ ተመርጧል (${picked.join(', ')})`
-        : `Selected ${picked.length} card${picked.length === 1 ? '' : 's'} (${picked.join(', ')})`
-    );
+    await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoom.id)]);
+    const finalPicked = Array.from(currentIds).sort((a, b) => a - b);
+    if (finalPicked.length > 0) {
+      soundFX.playDaub(sound);
+      setToast(
+        lang === 'am'
+          ? `${finalPicked.length} ካርድ ተመርጧል (${finalPicked.join(', ')})`
+          : `Selected ${finalPicked.length} card${finalPicked.length === 1 ? '' : 's'} (${finalPicked.join(', ')})`
+      );
+    } else if (newlyReserved.length === 0) {
+      soundFX.playError(sound);
+    }
   }
 
   // Handler: Add 1 card quickly (up to 4)
@@ -1492,33 +1626,30 @@ export default function App() {
     );
   }
 
-  // Handler: Reset live round (POST /api/game/reset-round when authenticated)
+  // Handler: Reset live round strictly via server-authoritative POST /api/game/reset-round
   async function handleResetRound() {
     localWinnerSettledRoundRef.current = false;
     soundFX.stopVoice();
     const token = await getActiveBearerToken();
-    if (token) {
-      try {
-        await resetRoundViaServerApi({
-          roomId: activeRoom.id,
-          gameId: `game_${activeRoom.id}_live`,
-        });
-        await hydrateRoomState(activeRoom.id);
-      } catch (err) {
-        soundFX.playError(sound);
-        setToast(err instanceof Error ? err.message : 'Server round reset failed');
-        return;
-      }
-    } else {
-      setCountdown(60);
-      setSelectedCardIds([]);
-      setRooms((prev) =>
-        prev.map((rm) =>
-          rm.id === activeRoom.id
-            ? { ...rm, status: 'countdown', countdownSeconds: 60, takenCardIds: [] }
-            : rm
-        )
+    if (!token) {
+      soundFX.playError(sound);
+      setToast(
+        lang === 'am'
+          ? 'ዙር ለመጀመር በቴሌግራም Mini App መግባት ያስፈልጋል'
+          : 'Authentication required to reset the game round.'
       );
+      return;
+    }
+    try {
+      await resetRoundViaServerApi({
+        roomId: activeRoom.id,
+        gameId: `game_${activeRoom.id}_live`,
+      });
+      await hydrateRoomState(activeRoom.id);
+    } catch (err) {
+      soundFX.playError(sound);
+      setToast(err instanceof Error ? err.message : 'Server round reset failed');
+      return;
     }
     setAutoCallerActive(false);
     setWinnerModalOpen(false);
@@ -1573,81 +1704,21 @@ export default function App() {
     setToast(lang === 'am' ? `ወደ ${activeRoom.nameAm} ገብተዋል!` : `Joined ${activeRoom.nameEn}!`);
   }
 
-  // Handler: Apply Promo or Referral Code via POST /api/player/wallet (+20 ETB for invited friends)
+  // Handler: Apply Promo or Referral Code strictly via persistent server POST /api/player/wallet
   async function handleApplyPromoCode(code: string): Promise<{ ok: boolean; message: string }> {
     const cleaned = code.trim().toUpperCase();
     const res = await submitPlayerWalletAction({ action: 'apply_promo', code: cleaned });
     if (res.ok) {
       soundFX.playWinFanfare(sound);
+      triggerHaptic('success');
       await hydratePlayerState();
-      const bonus = Number(res.bonusEtb ?? 20);
+      const bonus = Number(res.bonusEtb ?? 15);
       const msg =
         lang === 'am'
           ? `የግብዣ ኮዱ ተረጋግጧል! (+${bonus.toFixed(2)} ብር ቦነስ)`
           : `Referral code verified! (+${bonus.toFixed(2)} ETB bonus)`;
       setToast(msg);
       return { ok: true, message: msg };
-    }
-
-    // Local session fallback when testing without Telegram Bearer token
-    const token = await getActiveBearerToken();
-    if (!token) {
-      if (referredByCode) {
-        soundFX.playError(sound);
-        const dupMsg =
-          lang === 'am'
-            ? 'የግብዣ ኮድ ቀደም ብሎ ተጠቅመዋል'
-            : 'A referral code has already been applied';
-        setToast(dupMsg);
-        return { ok: false, message: dupMsg };
-      }
-      if (cleaned === referralCode.toUpperCase()) {
-        soundFX.playError(sound);
-        const selfMsg =
-          lang === 'am'
-            ? 'የራስዎን የግብዣ ኮድ መጠቀም አይችሉም'
-            : 'You cannot apply your own referral code';
-        setToast(selfMsg);
-        return { ok: false, message: selfMsg };
-      }
-      if (/^ADEY-[A-Z0-9_-]{2,}$/.test(cleaned)) {
-        const friendBonus = 20;
-        soundFX.playWinFanfare(sound);
-        triggerHaptic('success');
-        setReferredByCode(cleaned);
-        setDemoBalance((b) => Number((b + friendBonus).toFixed(2)));
-        setTransactions((prev) => [
-          {
-            id: `tx_ref_${Date.now()}`,
-            type: 'referral_bonus',
-            amount: friendBonus,
-            status: 'demo_completed',
-            labelAm: `የተጋበዘ ጓደኛ ቦነስ (+20 ብር · ${cleaned})`,
-            labelEn: `Invited Friend Bonus (+20 ETB · ${cleaned})`,
-            timestamp: lang === 'am' ? 'አሁን' : 'Just now',
-            reference: `ADB-REF-${Date.now().toString(36).toUpperCase()}`,
-          },
-          ...prev,
-        ]);
-        setReferrals((prev) => [
-          {
-            id: `ref_${Date.now()}`,
-            friendName: `Friend (${cleaned})`,
-            handle: `@${cleaned.toLowerCase()}`,
-            joinedAt: lang === 'am' ? 'አሁን' : 'Just now',
-            status: 'qualified',
-            inviterBonus: 20,
-            inviteeBonus: 20,
-          },
-          ...prev,
-        ]);
-        const msg =
-          lang === 'am'
-            ? `የጓደኛ ግብዣ ቦነስ +20.00 ብር ወደ ሂሳብዎ ተጨምሯል!`
-            : `Invited friend bonus +20.00 ETB added to your balance!`;
-        setToast(msg);
-        return { ok: true, message: msg };
-      }
     }
 
     soundFX.playError(sound);
@@ -1705,20 +1776,31 @@ export default function App() {
     return false;
   }
 
-  // Handler: Support Ticket
-  function handleSubmitSupportTicket(category: string, subject: string, message: string) {
-    soundFX.playDaub(sound);
-    const newTkt: SupportTicket = {
-      id: `TKT-${Math.floor(1000 + Math.random() * 9000)}`,
+  // Handler: Persistent Support Ticket via POST /api/player/wallet
+  async function handleSubmitSupportTicket(category: string, subject: string, message: string) {
+    const res = await submitPlayerWalletAction({
+      action: 'support_ticket',
       category,
       subject,
       message,
-      createdAt: lang === 'am' ? 'አሁን' : 'Just now',
-      status: 'received',
-    };
-    setTickets((prev) => [newTkt, ...prev]);
+    });
+    if (res.ok && res.ticket) {
+      soundFX.playDaub(sound);
+      setTickets((prev) => [res.ticket!, ...prev.filter((t) => t.id !== res.ticket!.id)]);
+      await hydratePlayerState();
+      setToast(
+        lang === 'am'
+          ? `የድጋፍ ጥያቄዎ (${res.ticket.id}) ተልኳል!`
+          : `Support ticket (${res.ticket.id}) submitted!`
+      );
+      return;
+    }
+    soundFX.playError(sound);
     setToast(
-      lang === 'am' ? `የድጋፍ ጥያቄዎ (${newTkt.id}) ተልኳል!` : `Support ticket (${newTkt.id}) submitted!`
+      res.message ||
+        (lang === 'am'
+          ? 'የድጋፍ ጥያቄ ለመላክ መጀመሪያ በቴሌግራም Mini App ይግቡ'
+          : 'Authenticate inside Telegram Mini App to submit a support ticket.')
     );
   }
 
@@ -1735,16 +1817,17 @@ export default function App() {
   }
 
   // Automatically attribute invited player referral code (?start=ADEY-... or Telegram start_param)
-  // while keeping the player on the exact same unified ADEYBINGO visual theme
+  // AFTER authentication completes (if not already applied during /api/telegram/auth)
   useEffect(() => {
     if (autoAppliedStartRef.current) return;
+    if (!fbUser && !serverVerifiedTelegramId) return;
     const rawStart = (user.startParam || '').trim().toUpperCase();
     if (!rawStart || !/^ADEY-[A-Z0-9_-]{2,}$/.test(rawStart)) return;
     if (rawStart === referralCode.toUpperCase() || referredByCode) return;
     autoAppliedStartRef.current = true;
     void handleApplyPromoCode(rawStart);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user.startParam, referralCode, referredByCode]);
+  }, [fbUser, serverVerifiedTelegramId, user.startParam, referralCode, referredByCode]);
 
   if (isAdminRoute) {
     return (

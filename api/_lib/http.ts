@@ -257,7 +257,8 @@ export function extractIdempotencyKey(
   req: VercelRequest,
   body?: Record<string, unknown>
 ): string | undefined {
-  const headerKey = getHeaderValue(req, 'x-idempotency-key');
+  const headerKey =
+    getHeaderValue(req, 'x-idempotency-key') ?? getHeaderValue(req, 'idempotency-key');
   const bodyKey =
     body && typeof body.idempotencyKey === 'string'
       ? body.idempotencyKey

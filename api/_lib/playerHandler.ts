@@ -7,12 +7,14 @@ import {
   BoundedRateLimiter,
   enforceMethod,
   enforceRateLimit,
+  extractIdempotencyKey,
   extractSubRoute,
   findForbiddenOverrideFields,
   parseJsonBody,
   sendError,
   sendJson,
 } from './http.ts';
+import { createFirestoreReplayAdapter, PersistentReplayGuard } from './replayGuard.ts';
 import { createFirestoreTelegramStore } from './telegramPersistence.ts';
 
 export interface PlayerHandlerDeps {
@@ -132,6 +134,7 @@ export function createPlayerStateHandler(deps: PlayerStateHandlerDeps = {}) {
       depositSnap,
       payoutSnap,
       wonGamesSnap,
+      supportSnap,
       leaderboard,
     ] = await Promise.all([
       db.collection('users').doc(caller.uid).get(),
@@ -143,6 +146,7 @@ export function createPlayerStateHandler(deps: PlayerStateHandlerDeps = {}) {
       db.collection('depositRequests').where('uid', '==', caller.uid).get(),
       db.collection('payoutRequests').where('uid', '==', caller.uid).get(),
       db.collection('games').where('winnerUid', '==', caller.uid).get(),
+      db.collection('supportTickets').where('uid', '==', caller.uid).get(),
       store.getLeaderboard ? store.getLeaderboard(15) : Promise.resolve([]),
     ]);
 
@@ -284,8 +288,34 @@ export function createPlayerStateHandler(deps: PlayerStateHandlerDeps = {}) {
       (botPlayerSnap?.exists ? botPlayerSnap.get('language') : undefined) ||
       (userSnap.exists ? userSnap.get('language') : undefined);
 
+    const supportTickets = supportSnap.docs
+      .map((d) => {
+        const data = d.data() || {};
+        return {
+          id: String(data.id || d.id),
+          subject: String(data.subject || ''),
+          category: (data.category === 'wallet' ||
+          data.category === 'game' ||
+          data.category === 'account' ||
+          data.category === 'referral'
+            ? data.category
+            : 'game') as 'wallet' | 'game' | 'account' | 'referral',
+          message: String(data.message || ''),
+          status:
+            data.status === 'resolved'
+              ? ('resolved' as const)
+              : data.status === 'in_review'
+                ? ('in_review' as const)
+                : ('open' as const),
+          createdAt: String(data.createdAt || toIsoString(data.updatedAt)),
+          reply: typeof data.reply === 'string' ? data.reply : undefined,
+        };
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
     sendJson(res, 200, {
       ok: true,
+      serverNowMs: Date.now(),
       profile: {
         uid: caller.uid,
         telegramUserId: resolvedTgId,
@@ -313,6 +343,7 @@ export function createPlayerStateHandler(deps: PlayerStateHandlerDeps = {}) {
       payoutRequests,
       referrals,
       gameHistory,
+      supportTickets,
       leaderboard,
     });
   };
@@ -358,13 +389,14 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
     if (
       action !== 'apply_promo' &&
       action !== 'deposit_request' &&
-      action !== 'withdraw_request'
+      action !== 'withdraw_request' &&
+      action !== 'support_ticket'
     ) {
       sendError(
         res,
         400,
         'invalid_wallet_action',
-        'action must be apply_promo, deposit_request, or withdraw_request.'
+        'action must be apply_promo, deposit_request, withdraw_request, or support_ticket.'
       );
       return;
     }
@@ -382,9 +414,61 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
       return;
     }
 
+    const idempotencyKey = extractIdempotencyKey(req, body);
+    if (idempotencyKey) {
+      const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 3600);
+      const fresh = await replayGuard.consumeOnce(
+        'card_tx',
+        `wallet:${caller.uid}:${action}:${idempotencyKey}`,
+        { ttlSeconds: 3600 }
+      );
+      if (!fresh.fresh) {
+        sendError(
+          res,
+          409,
+          'duplicate_request',
+          'This wallet request has already been processed.'
+        );
+        return;
+      }
+    }
+
     const tgMatch = /^tg_([1-9]\d*)$/.exec(caller.uid);
     const resolvedTgId = caller.telegramId || (tgMatch ? Number(tgMatch[1]) : 0);
     const store = createFirestoreTelegramStore(db);
+
+    if (action === 'support_ticket') {
+      const subject = typeof body.subject === 'string' ? body.subject.trim().slice(0, 120) : '';
+      const message = typeof body.message === 'string' ? body.message.trim().slice(0, 1200) : '';
+      const rawCat = typeof body.category === 'string' ? body.category.trim() : 'game';
+      const category =
+        rawCat === 'wallet' || rawCat === 'game' || rawCat === 'account' || rawCat === 'referral'
+          ? rawCat
+          : 'game';
+      if (!subject || !message) {
+        sendError(res, 400, 'invalid_support_ticket', 'Subject and message are required.');
+        return;
+      }
+      const nowIso = new Date().toISOString();
+      const ticketId = `SUP-${Date.now().toString(36).toUpperCase()}`;
+      const ticket = {
+        id: ticketId,
+        uid: caller.uid,
+        telegramUserId: resolvedTgId,
+        subject,
+        category,
+        message,
+        status: 'open' as const,
+        createdAt: nowIso,
+      };
+      await db.collection('supportTickets').doc(ticketId).set(ticket);
+      sendJson(res, 201, {
+        ok: true,
+        action: 'support_ticket',
+        ticket,
+      });
+      return;
+    }
 
     if (action === 'apply_promo') {
       const rawCode = typeof body.code === 'string' ? body.code.trim().toUpperCase() : '';
@@ -437,6 +521,10 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
           action: 'apply_promo',
           code: rawCode,
           bonusEtb: refRes.inviteeBonusEtb ?? 15,
+          inviterBonusEtb: refRes.inviterBonusEtb ?? 20,
+          ...(typeof refRes.inviteeBalanceEtb === 'number'
+            ? { updatedBalanceEtb: refRes.inviteeBalanceEtb }
+            : {}),
           demoSandboxOnly: true,
         });
         return;
@@ -446,14 +534,17 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
       const promoRef = db.collection('promoCodes').doc(rawCode);
       const claimRef = db.collection('promoClaims').doc(`${rawCode}_${caller.uid}`);
       const userRef = db.collection('users').doc(caller.uid);
-      const txId = `tx_promo_${rawCode}_${caller.uid}_${Date.now()}`;
+      const botPlayerRef =
+        resolvedTgId > 0 ? db.collection('botPlayers').doc(String(resolvedTgId)) : null;
+      const txId = `tx_promo_${rawCode}_${caller.uid}`;
       const txRef = db.collection('transactions').doc(txId);
 
       const promoTx = await db.runTransaction(async (tx) => {
-        const [promoSnap, claimSnap, userSnap] = await Promise.all([
+        const [promoSnap, claimSnap, userSnap, botPlayerSnap] = await Promise.all([
           tx.get(promoRef),
           tx.get(claimRef),
           tx.get(userRef),
+          botPlayerRef ? tx.get(botPlayerRef) : Promise.resolve(null),
         ]);
 
         if (!promoSnap.exists || promoSnap.get('active') === false) {
@@ -473,8 +564,12 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
           return { ok: false as const, status: 409, code: 'promo_code_exhausted' };
         }
 
-        const currentBal = userSnap.exists ? Number(userSnap.get('demoBalanceEtb') ?? 0) : 0;
-        const nextBal = currentBal + bonusEtb;
+        const currentBal = userSnap.exists
+          ? Number(userSnap.get('demoBalanceEtb') ?? 0)
+          : botPlayerSnap?.exists
+            ? Number(botPlayerSnap.get('demoBalanceEtb') ?? 0)
+            : 0;
+        const nextBal = Number((currentBal + bonusEtb).toFixed(2));
         const nowIso = new Date().toISOString();
 
         if (!userSnap.exists) {
@@ -495,6 +590,12 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
             updatedAt: FieldValue.serverTimestamp(),
           });
         }
+        if (botPlayerRef && botPlayerSnap?.exists) {
+          tx.update(botPlayerRef, {
+            demoBalanceEtb: nextBal,
+            updatedAt: nowIso,
+          });
+        }
 
         tx.set(claimRef, {
           code: rawCode,
@@ -511,9 +612,13 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
           userId: caller.uid,
           type: 'referral_bonus',
           amountEtb: bonusEtb,
+          balanceBeforeEtb: currentBal,
+          balanceAfterEtb: nextBal,
           status: 'demo_completed',
           description: `Promo Code (${rawCode})`,
           reference: `PROMO-${rawCode}`,
+          relatedId: rawCode,
+          idempotencyKey: txId,
           createdAt: nowIso,
         });
 
@@ -620,8 +725,10 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
     const userRef = db.collection('users').doc(caller.uid);
     const botPlayerRef =
       resolvedTgId > 0 ? db.collection('botPlayers').doc(String(resolvedTgId)) : null;
-    const requestId = `PO-WEB-${Date.now().toString(36).toUpperCase()}`;
+    const requestId = `PO-WEB-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
     const payoutRef = db.collection('payoutRequests').doc(requestId);
+    const txId = `tx_wdr_${requestId}`;
+    const txRef = db.collection('transactions').doc(txId);
 
     const wdrTx = await db.runTransaction(async (tx) => {
       const [userSnap, botPlayerSnap] = await Promise.all([
@@ -643,6 +750,7 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
         };
       }
 
+      const nextBalanceEtb = Number(Math.max(0, availableBalanceEtb - amountEtb).toFixed(2));
       const nowIso = new Date().toISOString();
       const withdrawal = {
         requestId,
@@ -653,6 +761,35 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
         reviewNotes: 'Submitted via ADEYBINGO Mini App (Demo Sandbox)',
       };
 
+      // Atomically hold/deduct withdrawal amount from BOTH users and botPlayers
+      if (userSnap.exists) {
+        tx.update(userRef, {
+          demoBalanceEtb: nextBalanceEtb,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      if (botPlayerRef && botPlayerSnap?.exists) {
+        tx.update(botPlayerRef, {
+          demoBalanceEtb: nextBalanceEtb,
+          updatedAt: nowIso,
+        });
+      }
+
+      tx.set(txRef, {
+        transactionId: txId,
+        userId: caller.uid,
+        type: 'withdraw_demo',
+        amountEtb: -amountEtb,
+        balanceBeforeEtb: availableBalanceEtb,
+        balanceAfterEtb: nextBalanceEtb,
+        status: 'demo_pending',
+        description: `Demo Withdrawal Hold (${method})`,
+        reference: requestId,
+        relatedId: requestId,
+        idempotencyKey: idempotencyKey || txId,
+        createdAt: nowIso,
+      });
+
       tx.set(payoutRef, {
         ...withdrawal,
         uid: caller.uid,
@@ -660,18 +797,19 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
         telegramUserId: resolvedTgId,
         destinationMasked: resolvedTgId > 0 ? `TG #${resolvedTgId}` : caller.uid,
         demoSandboxOnly: true,
+        fundsHeldAtSubmission: true,
         auditTrail: [
           {
             timestamp: nowIso,
             fromStatus: 'Created',
             toStatus: 'Pending',
             reviewedBy: `player:${caller.uid}`,
-            notes: 'Demo withdrawal requested in Mini App wallet',
+            notes: 'Demo withdrawal requested in Mini App wallet (funds held atomically)',
           },
         ],
       });
 
-      return { ok: true as const, withdrawal };
+      return { ok: true as const, withdrawal, updatedBalanceEtb: nextBalanceEtb };
     });
 
     if (!wdrTx.ok) {
@@ -689,6 +827,7 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
       ok: true,
       action: 'withdraw_request',
       withdrawal: wdrTx.withdrawal,
+      updatedBalanceEtb: wdrTx.updatedBalanceEtb,
       demoSandboxOnly: true,
     });
   };

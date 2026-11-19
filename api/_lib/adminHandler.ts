@@ -28,6 +28,7 @@ import {
   sendError,
   sendJson,
 } from './http.ts';
+import { createFirestoreGameStore, PersistentGameAuthorityService } from './gamePersistence.ts';
 import { createFirestoreReplayAdapter, PersistentReplayGuard } from './replayGuard.ts';
 import { verifyTelegramInitDataPersistent } from './telegramPersistence.ts';
 
@@ -459,6 +460,139 @@ export function createAdminUserStatusHandler(deps: AdminHandlerDeps = {}) {
 }
 
 /**
+ * POST /api/admin/users/:uid/wallet
+ */
+export function createAdminUserWalletHandler(deps: AdminHandlerDeps = {}) {
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    if (!enforceMethod(req, res, ['POST'])) return;
+    const actor = await requireVerifiedAdminActor(req, res, deps);
+    if (!actor) return;
+    const db = resolveDbOrSend503(res, deps);
+    if (!db) return;
+
+    const body = await parseJsonBody(req, res, { maxBytes: 8 * 1024, required: true });
+    if (!body) return;
+
+    const targetUid =
+      extractPathParam(req, 'uid', /\/api\/admin\/users\/([^/?#]+)\/wallet/) ||
+      (typeof body.uid === 'string' ? body.uid.trim() : '');
+    if (!targetUid) {
+      sendError(res, 400, 'missing_uid', 'Target user uid is required.');
+      return;
+    }
+
+    const rawDelta = body.deltaEtb !== undefined ? Number(body.deltaEtb) : undefined;
+    const operation: 'credit' | 'debit' =
+      rawDelta !== undefined && Number.isFinite(rawDelta)
+        ? rawDelta < 0
+          ? 'debit'
+          : 'credit'
+        : body.operation === 'debit'
+          ? 'debit'
+          : 'credit';
+    const amountEtb =
+      rawDelta !== undefined && Number.isFinite(rawDelta)
+        ? Math.abs(rawDelta)
+        : Number(body.amountEtb);
+    const reason = typeof body.reason === 'string' ? body.reason : '';
+
+    const service = new PersistentAdminService(db);
+    const result = await service.adjustUserWallet({
+      uid: targetUid,
+      operation,
+      amountEtb,
+      reason,
+      adminActor: actor,
+    });
+
+    if (!result.ok) {
+      const status = result.reason === 'user_not_found' ? 404 : 400;
+      sendError(
+        res,
+        status,
+        result.reason || 'wallet_adjust_failed',
+        `Cannot adjust wallet (${result.reason}).`
+      );
+      return;
+    }
+
+    sendJson(res, 200, result);
+  };
+}
+
+/**
+ * POST /api/admin/rooms/:roomId/round-action
+ */
+export function createAdminRoomRoundActionHandler(deps: AdminHandlerDeps = {}) {
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    if (!enforceMethod(req, res, ['POST'])) return;
+    const actor = await requireVerifiedAdminActor(req, res, deps);
+    if (!actor) return;
+    const db = resolveDbOrSend503(res, deps);
+    if (!db) return;
+
+    const body = await parseJsonBody(req, res, { maxBytes: 8 * 1024, required: true });
+    if (!body) return;
+
+    const roomId =
+      extractPathParam(req, 'roomId', /\/api\/admin\/rooms\/([^/?#]+)\/round-action/) ||
+      (typeof body.roomId === 'string' ? body.roomId.trim() : '');
+    const rawAction = typeof body.action === 'string' ? body.action.trim() : '';
+    const action = rawAction === 'force_start' ? 'start' : rawAction;
+
+    if (!roomId || !['start', 'draw', 'reset'].includes(action)) {
+      sendError(res, 400, 'invalid_round_action', 'roomId and action (start | force_start | draw | reset) are required.');
+      return;
+    }
+
+    const gameStore = createFirestoreGameStore(db);
+    const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300);
+    const gameService = new PersistentGameAuthorityService(gameStore, replayGuard);
+
+    if (action === 'start') {
+      const started = await gameService.startGame({
+        roomId,
+        callerUid: actor.uid,
+        isAdmin: true,
+      });
+      if (!started.ok) {
+        sendError(res, 409, started.reason || 'start_failed', `Cannot start round (${started.reason}).`);
+        return;
+      }
+      sendJson(res, 200, { ok: true, action, game: started.game });
+      return;
+    }
+
+    if (action === 'draw') {
+      const drawn = await gameService.drawNextBall({
+        roomId,
+        callerUid: actor.uid,
+        isAdmin: true,
+        requireExplicitHostOrAdmin: true,
+      });
+      if (!drawn.ok) {
+        sendError(res, 409, drawn.reason || 'draw_failed', `Cannot draw ball (${drawn.reason}).`);
+        return;
+      }
+      sendJson(res, 200, { ok: true, action, draw: drawn });
+      return;
+    }
+
+    const reset = await gameService.resetRound({
+      roomId,
+      callerUid: actor.uid,
+      isAdmin: true,
+      requireExplicitHostOrAdmin: true,
+    });
+    if (!reset.ok) {
+      sendError(res, 409, reset.reason || 'reset_failed', `Cannot reset round (${reset.reason}).`);
+      return;
+    }
+    sendJson(res, 200, { ok: true, action, roomId, status: 'countdown' });
+  };
+}
+
+/**
  * GET /api/admin/payouts
  */
 export function createAdminPayoutsHandler(deps: AdminHandlerDeps = {}) {
@@ -865,12 +999,14 @@ export function createAdminRouterHandler(deps: AdminHandlerDeps = {}) {
   const overviewHandler = createAdminOverviewHandler(deps);
   const usersHandler = createAdminUsersHandler(deps);
   const userStatusHandler = createAdminUserStatusHandler(deps);
+  const userWalletHandler = createAdminUserWalletHandler(deps);
   const payoutsHandler = createAdminPayoutsHandler(deps);
   const payoutReviewHandler = createAdminPayoutReviewHandler(deps);
   const depositsHandler = createAdminDepositsHandler(deps);
   const depositReviewHandler = createAdminDepositReviewHandler(deps);
   const roomsHandler = createAdminRoomsHandler(deps);
   const roomUpdateHandler = createAdminRoomUpdateHandler(deps);
+  const roomRoundActionHandler = createAdminRoomRoundActionHandler(deps);
   const referralsHandler = createAdminReferralsHandler(deps);
   const botConfigHandler = createAdminBotConfigHandler(deps);
   const botAnnounceHandler = createAdminBotAnnounceHandler(deps);
@@ -918,6 +1054,12 @@ export function createAdminRouterHandler(deps: AdminHandlerDeps = {}) {
       return await userStatusHandler(req, res);
     }
 
+    const userWalletMatch = /^users\/([^/]+)\/wallet$/.exec(subRoute);
+    if (userWalletMatch) {
+      req.query = { ...req.query, uid: decodeURIComponent(userWalletMatch[1]) };
+      return await userWalletHandler(req, res);
+    }
+
     const payoutReviewMatch = /^payouts\/([^/]+)\/review$/.exec(subRoute);
     if (payoutReviewMatch) {
       req.query = { ...req.query, requestId: decodeURIComponent(payoutReviewMatch[1]) };
@@ -928,6 +1070,12 @@ export function createAdminRouterHandler(deps: AdminHandlerDeps = {}) {
     if (depositReviewMatch) {
       req.query = { ...req.query, depositId: decodeURIComponent(depositReviewMatch[1]) };
       return await depositReviewHandler(req, res);
+    }
+
+    const roomRoundActionMatch = /^rooms\/([^/]+)\/round-action$/.exec(subRoute);
+    if (roomRoundActionMatch) {
+      req.query = { ...req.query, roomId: decodeURIComponent(roomRoundActionMatch[1]) };
+      return await roomRoundActionHandler(req, res);
     }
 
     const roomUpdateMatch = /^rooms\/([^/]+)$/.exec(subRoute);

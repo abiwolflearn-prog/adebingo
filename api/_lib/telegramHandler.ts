@@ -347,6 +347,49 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
       return;
     }
 
+    // Process invitation / referral deep link atomically during Telegram Mini App authentication
+    const candidateStartParam =
+      validation.startParam ||
+      (typeof body.startParam === 'string' && /^ADEY-[1-9]\d*$/i.test(body.startParam.trim())
+        ? body.startParam.trim().toUpperCase()
+        : undefined);
+    let referralApplied:
+      | {
+          applied: boolean;
+          reason?: string;
+          code: string;
+          inviterTelegramId?: number;
+          inviterBonusEtb?: number;
+          inviteeBonusEtb?: number;
+        }
+      | undefined;
+    let finalBalanceEtb = persisted.player.demoBalanceEtb;
+
+    if (
+      candidateStartParam &&
+      /^ADEY-[1-9]\d*$/i.test(candidateStartParam) &&
+      store.processReferralDeepLink
+    ) {
+      const normalizedRefCode = candidateStartParam.toUpperCase();
+      const refRes = await store.processReferralDeepLink({
+        inviteeTelegramId: tgUser.id,
+        inviteeName: `${persisted.player.firstName} ${persisted.player.lastName || ''}`.trim(),
+        inviteeUsername: persisted.player.username,
+        referralCode: normalizedRefCode,
+      });
+      referralApplied = {
+        applied: refRes.applied,
+        reason: refRes.reason,
+        code: normalizedRefCode,
+        inviterTelegramId: refRes.inviterTelegramId,
+        inviterBonusEtb: refRes.inviterBonusEtb,
+        inviteeBonusEtb: refRes.inviteeBonusEtb,
+      };
+      if (refRes.applied && typeof refRes.inviteeBalanceEtb === 'number') {
+        finalBalanceEtb = refRes.inviteeBalanceEtb;
+      }
+    }
+
     const mintFn = deps.mintCustomToken ?? createTelegramCustomToken;
     let minted: { uid: string; customToken: string };
     try {
@@ -391,6 +434,7 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
       verifiedTelegramId: tgUser.id,
       customToken: minted.customToken,
       ...(sessionToken ? { sessionToken } : {}),
+      ...(referralApplied ? { referralApplied } : {}),
       profile: {
         uid: minted.uid,
         telegramUserId: tgUser.id,
@@ -400,7 +444,7 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
         language: persisted.player.language,
         phoneVerified: persisted.player.phoneVerified,
         verifiedPhoneMasked: persisted.player.verifiedPhoneMasked,
-        demoBalanceEtb: persisted.player.demoBalanceEtb,
+        demoBalanceEtb: finalBalanceEtb,
         referralCode: persisted.player.referralCode,
       },
     });

@@ -1,5 +1,6 @@
 import express from 'express';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
@@ -357,21 +358,54 @@ async function startServer() {
     const tgUser = result.telegramUser;
     const uid = `tg_${tgUser.id}`;
 
-    // Ensure player profile exists in backend bot registry bound to uid with 15 ETB Welcome Join Bonus
+    // Ensure player profile exists in backend bot registry bound to uid with authoritative initial sandbox balance (250 ETB)
     let playerProfile = botEngine.getPlayerByTelegramId(tgUser.id);
     if (!playerProfile) {
-      const regUpdate = botEngine.handleIncomingUpdate({
-        senderTelegramId: tgUser.id,
-        firstName: tgUser.first_name || 'Player',
-        lastName: tgUser.last_name || '',
+      playerProfile = ensureServerPlayerWithWelcomeBonus({
+        uid,
+        telegramUserId: tgUser.id,
+        displayName: `${tgUser.first_name || 'Player'} ${tgUser.last_name || ''}`.trim(),
         username: tgUser.username || `tg_${tgUser.id}`,
-        firebaseUid: uid,
-        text: '/start',
       });
-      playerProfile = regUpdate.profile;
-      if (playerProfile) {
-        playerProfile.demoBalanceEtb = 15;
-      }
+    }
+
+    // Auto-apply cryptographically signed start_param (or safe ADEY-* referral code) atomically on authentication
+    const candidateStartParam =
+      result.startParam ||
+      (typeof req.body?.startParam === 'string' && /^ADEY-[1-9]\d*$/i.test(req.body.startParam.trim())
+        ? req.body.startParam.trim().toUpperCase()
+        : undefined);
+    let referralApplied:
+      | {
+          applied: boolean;
+          reason?: string;
+          code: string;
+          inviterTelegramId?: number;
+          inviterBonusEtb?: number;
+          inviteeBonusEtb?: number;
+        }
+      | undefined;
+
+    if (candidateStartParam && /^ADEY-[1-9]\d*$/i.test(candidateStartParam)) {
+      const refOutcome = applyServerReferralAtomic(
+        {
+          uid,
+          telegramUserId: tgUser.id,
+          displayName: playerProfile
+            ? `${playerProfile.firstName} ${playerProfile.lastName || ''}`.trim()
+            : `${tgUser.first_name || 'Adey'} ${tgUser.last_name || ''}`.trim(),
+          username: playerProfile?.username || tgUser.username || `tg_${tgUser.id}`,
+        },
+        candidateStartParam.toUpperCase()
+      );
+      referralApplied = {
+        applied: refOutcome.ok,
+        reason: refOutcome.ok ? undefined : refOutcome.error,
+        code: candidateStartParam.toUpperCase(),
+        inviterTelegramId: refOutcome.inviterTelegramId,
+        inviterBonusEtb: refOutcome.inviterBonusEtb,
+        inviteeBonusEtb: refOutcome.inviteeBonusEtb,
+      };
     }
 
     // Mint Firebase Custom Token using Firebase Admin SDK
@@ -393,6 +427,8 @@ async function startServer() {
       resolveAdminSessionSecret()
     );
 
+    persistLocalStateSnapshot();
+
     res.json({
       ok: true,
       authenticated: true,
@@ -403,6 +439,7 @@ async function startServer() {
       customToken,
       customTokenStatus,
       sessionToken: mintedSession.token,
+      ...(referralApplied ? { referralApplied } : {}),
       telegramUser: tgUser,
       profile: playerProfile
         ? {
@@ -778,40 +815,40 @@ async function startServer() {
     }
   });
 
-  // 4. Interactive Bot Command & Contact Verification Endpoint (for Mini App Bot Console & Testing)
+  // 4. Interactive Bot Command & Contact Verification Endpoint (Authenticated — blocks identity spoofing)
   app.post('/api/telegram/bot-command', (req, res) => {
-    const authHeader =
-      typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
-    const bearerToken = authHeader.startsWith('Bearer ')
-      ? authHeader.slice('Bearer '.length).trim()
-      : undefined;
-    const headerSessionToken =
-      typeof req.headers['x-adey-session-token'] === 'string'
-        ? req.headers['x-adey-session-token'].trim()
-        : undefined;
-    const rawToken = bearerToken || headerSessionToken;
-    let sessionActor: VerifiedSessionActor | null = null;
-    if (rawToken) {
-      const check = authorizeAdminRequest({
-        sessionToken: rawToken,
-        botToken: resolveConfiguredBotToken() || '',
-        sessionSecret: resolveAdminSessionSecret(),
+    const sessionActor = extractPlayerSession(req);
+    if (!sessionActor || !sessionActor.telegramUserId) {
+      res.status(401).json({
+        ok: false,
+        error: 'unauthenticated_request',
+        message: 'A valid authenticated Telegram session token is required.',
       });
-      sessionActor = check.actor || null;
+      return;
     }
 
-    const senderTelegramId = Number(
-      sessionActor?.telegramUserId || req.body?.senderTelegramId || 8842109
-    );
-    const firstName = String(req.body?.firstName || sessionActor?.displayName || 'Abebe');
-    const lastName = String(req.body?.lastName || 'Bikila');
-    const username = String(req.body?.username || sessionActor?.username || 'abebe_adey');
-    const firebaseUid =
-      sessionActor?.uid ||
-      (typeof req.body?.firebaseUid === 'string' ? req.body.firebaseUid : undefined);
-    const text = typeof req.body?.text === 'string' ? req.body.text : '';
+    if (
+      req.body?.senderTelegramId !== undefined ||
+      req.body?.telegramUserId !== undefined ||
+      req.body?.firebaseUid !== undefined ||
+      req.body?.uid !== undefined
+    ) {
+      res.status(403).json({
+        ok: false,
+        error: 'client_identity_override_rejected',
+        message: 'Caller-supplied Telegram or Firebase IDs are forbidden on this endpoint.',
+      });
+      return;
+    }
+
+    const senderTelegramId = sessionActor.telegramUserId;
+    const firstName = sessionActor.displayName || 'Player';
+    const lastName = '';
+    const username = sessionActor.username || `tg_${senderTelegramId}`;
+    const firebaseUid = sessionActor.uid;
+    const text = typeof req.body?.text === 'string' ? req.body.text.slice(0, 256) : '';
     const callbackData =
-      typeof req.body?.callbackData === 'string' ? req.body.callbackData : '';
+      typeof req.body?.callbackData === 'string' ? req.body.callbackData.slice(0, 128) : '';
     const contact = req.body?.contact ?? null;
     const updateId =
       typeof req.body?.updateId === 'number' ? req.body.updateId : undefined;
@@ -831,14 +868,37 @@ async function startServer() {
       contact,
     });
 
+    persistLocalStateSnapshot();
+
     res.json({
       ...botResponse,
-      outbox: botEngine.getNotificationOutbox().slice(0, 12),
+      outbox: botEngine
+        .getNotificationOutbox()
+        .filter((m) => m.telegramUserId === senderTelegramId)
+        .slice(0, 12),
     });
   });
 
-  // 5. Secure Notification Preparation & Dispatch Endpoint (Part E)
+  // 5. Secure Notification Preparation & Dispatch Endpoint (Admin or Webhook Secret Required)
   app.post('/api/telegram/notify', (req, res) => {
+    const secretHeader =
+      typeof req.headers['x-telegram-bot-api-secret-token'] === 'string'
+        ? req.headers['x-telegram-bot-api-secret-token']
+        : undefined;
+    const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+    const hasValidSecret = verifyWebhookSecretHeader(secretHeader, expectedSecret);
+    if (!hasValidSecret) {
+      const adminCheck = extractAdminAuthFromRequest(req);
+      if (!adminCheck.authorized) {
+        res.status(adminCheck.statusCode || 401).json({
+          ok: false,
+          error: adminCheck.statusCode === 403 ? 'admin_required' : 'unauthenticated_request',
+          message: 'Administrator authorization or valid webhook secret is required.',
+        });
+        return;
+      }
+    }
+
     const event = req.body?.event as NotificationEventType;
     const allowedEvents: NotificationEventType[] = [
       'registration_success',
@@ -854,7 +914,11 @@ async function startServer() {
       return;
     }
 
-    const telegramUserId = Number(req.body?.telegramUserId || 8842109);
+    const telegramUserId = Number(req.body?.telegramUserId);
+    if (!Number.isInteger(telegramUserId) || telegramUserId <= 0) {
+      res.status(400).json({ ok: false, reason: 'invalid_telegram_user_id' });
+      return;
+    }
     const payload = typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {};
     const notification = botEngine.queueNotification(event, telegramUserId, payload, false);
 
@@ -889,11 +953,30 @@ async function startServer() {
     });
   });
 
-  // 7. Server-Authoritative Number Calling Endpoint (Cryptographic CSPRNG 1..75)
+  // 7. Server-Authoritative Number Calling Endpoint (Cryptographic CSPRNG 1..75 — Host/Admin Only)
   app.post('/api/game/draw-ball', (req, res) => {
+    const actor = extractPlayerSession(req);
+    if (!actor) {
+      res.status(401).json({
+        ok: false,
+        error: 'unauthenticated_request',
+        message: 'A valid Bearer token is required to draw Bingo balls.',
+      });
+      return;
+    }
     const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId : 'adey-main';
-    const cycle = ensureRoomCycle(roomId);
     const existingGame = localLiveGames.get(roomId);
+    const hostUid = existingGame?.hostUid || 'tg_8842109';
+    if (actor.role !== 'admin' && actor.uid !== hostUid) {
+      res.status(403).json({
+        ok: false,
+        error: 'unauthorized_caller',
+        message: 'Only the room host or administrator may draw Bingo balls.',
+      });
+      return;
+    }
+
+    const cycle = ensureRoomCycle(roomId);
     if (
       cycle.status === 'completed' ||
       cycle.settledRoundNumber === cycle.roundNumber ||
@@ -907,19 +990,13 @@ async function startServer() {
       return;
     }
 
-    const callerTelegramId = Number(req.body?.callerTelegramId || 8842109);
     const requestNonce =
       typeof req.body?.requestNonce === 'string' ? req.body.requestNonce : undefined;
-    const clientCalledNumbers: number[] | undefined = Array.isArray(req.body?.calledNumbers)
-      ? req.body.calledNumbers
-          .map(Number)
-          .filter((n: number) => Number.isInteger(n) && n >= 1 && n <= 75)
-      : undefined;
 
+    // Never trust client-supplied calledNumbers or callerTelegramId
     const drawResult = gameAuthority.drawNextBallAuthoritative({
       roomId,
-      callerTelegramId,
-      clientCalledNumbers,
+      callerTelegramId: actor.telegramUserId,
       requestNonce,
     });
 
@@ -941,7 +1018,7 @@ async function startServer() {
       localLiveGames.set(roomId, {
         gameId: `game_${roomId}_live`,
         roomId,
-        hostUid: `tg_${callerTelegramId}`,
+        hostUid: actor.uid,
         roundNumber: ensureRoomCycle(roomId).roundNumber,
         status: 'live',
         calledNumbers: updatedCalls,
@@ -959,126 +1036,172 @@ async function startServer() {
     settleRoomIfWinnerFound(roomId, updatedCalls, drawResult.ball);
 
     // Queue Part E notification for new Bingo number
-    botEngine.queueNotification('new_bingo_number', callerTelegramId, {
+    botEngine.queueNotification('new_bingo_number', actor.telegramUserId, {
       ballNumber: drawResult.ball,
       totalCalls: drawResult.totalCalled,
     });
 
+    broadcastRoomUpdate(roomId);
+    persistLocalStateSnapshot();
     res.json(drawResult);
   });
 
-  // 8. Server-Authoritative Winner Verification Endpoint
+  // 8. Server-Authoritative Winner Verification Endpoint (Authenticated, Owns Card, Server Calls Only)
   app.post('/api/game/verify-winner', (req, res) => {
+    const actor = extractPlayerSession(req);
+    if (!actor) {
+      res.status(401).json({
+        ok: false,
+        verified: false,
+        error: 'unauthenticated_request',
+        message: 'A valid Bearer token is required to claim a Bingo win.',
+      });
+      return;
+    }
+
     const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId : 'adey-main';
-    const claimantTelegramId = Number(req.body?.claimantTelegramId || 8842109);
-    const playerName = String(req.body?.playerName || 'Abebe Bikila');
     const cardId = Number(req.body?.cardId);
-    const calledNumbers: number[] = Array.isArray(req.body?.calledNumbers)
-      ? req.body.calledNumbers
-          .map(Number)
-          .filter((n: number) => Number.isInteger(n) && n >= 1 && n <= 75)
-      : [];
     const markedNumbers: number[] = Array.isArray(req.body?.markedNumbers)
       ? req.body.markedNumbers
           .map(Number)
           .filter((n: number) => Number.isInteger(n) && n >= 1 && n <= 75)
       : [];
 
+    if (!Number.isInteger(cardId) || cardId < 1 || cardId > 600) {
+      res.status(400).json({ ok: false, verified: false, reason: 'invalid_card_id', cardId });
+      return;
+    }
+
+    const cycle = ensureRoomCycle(roomId);
     const activeGame = localLiveGames.get(roomId);
-    const effectiveCalledNumbers =
-      activeGame && activeGame.calledNumbers.length > 0 ? activeGame.calledNumbers : calledNumbers;
+    if (
+      cycle.status === 'completed' ||
+      cycle.settledRoundNumber === cycle.roundNumber ||
+      activeGame?.status === 'completed'
+    ) {
+      res.status(409).json({
+        ok: false,
+        verified: false,
+        reason: 'game_already_completed',
+        cardId,
+      });
+      return;
+    }
+
+    // Enforce verified card ownership for the authenticated caller
+    const roomCards = localRoomCardOwnership.get(roomId);
+    const cardOwner = roomCards?.get(cardId);
+    if (!cardOwner || cardOwner !== actor.uid) {
+      res.status(403).json({
+        ok: false,
+        verified: false,
+        reason: 'card_not_owned_by_claimant',
+        cardId,
+        message: 'You do not own the claimed Bingo card in this room.',
+      });
+      return;
+    }
+
+    // Strictly use server-authoritative called numbers (never trust client-submitted calls)
+    const authoritativeCalls = activeGame?.calledNumbers || [];
+    if (authoritativeCalls.length === 0) {
+      res.status(400).json({
+        ok: false,
+        verified: false,
+        reason: 'pattern_not_satisfied',
+        cardId,
+      });
+      return;
+    }
 
     const verifyRes = gameAuthority.verifyWinnerAuthoritative({
       roomId,
-      claimantTelegramId,
-      playerName,
+      claimantTelegramId: actor.telegramUserId,
+      playerName: actor.displayName,
       cardId,
       markedNumbers,
-      enforceServerCallsOnly: false,
-      fallbackClientCalls: effectiveCalledNumbers,
+      enforceServerCallsOnly: true,
     });
 
-    if (!verifyRes.verified && verifyRes.reason === 'invalid_card_id') {
+    if (!verifyRes.verified) {
       res.status(400).json(verifyRes);
       return;
     }
 
-    if (verifyRes.verified) {
-      const winnerUid = `tg_${claimantTelegramId}`;
-      const prizeEtb = 50;
-      const winList = localTransactionsByUid.get(winnerUid) || [];
-      winList.unshift({
-        id: `tx_win_${Date.now()}`,
-        type: 'bingo_win',
-        amount: prizeEtb,
-        status: 'demo_completed',
-        labelAm: `የቢንጎ ድል ሽልማት (ካርድ #${cardId})`,
-        labelEn: `Bingo Win Prize (Card #${cardId})`,
-        timestamp: new Date().toISOString(),
-        reference: `WIN-${roomId.toUpperCase()}-${cardId}`,
-      });
-      localTransactionsByUid.set(winnerUid, winList.slice(0, 30));
+    const winnerUid = actor.uid;
+    const roomObj = adminAuthority.getRooms().find((r) => r.id === roomId);
+    const cardPrice = roomObj ? roomObj.cardPriceEtb : 10;
+    const distinctOwners = roomCards ? new Set(roomCards.values()).size : 1;
+    const totalCards = roomCards ? roomCards.size : 1;
+    const financials = calculateAuthoritativeGameFinancials(distinctOwners, totalCards, cardPrice);
+    const prizeEtb = Math.max(financials.winnersPrizePoolEtb, cardPrice);
 
-      const p = botEngine.getPlayerByTelegramId(claimantTelegramId);
-      if (p) {
-        p.demoBalanceEtb += prizeEtb;
-      }
-
-      const cycle = ensureRoomCycle(roomId);
-      cycle.settledRoundNumber = cycle.roundNumber;
-      cycle.status = 'completed';
-      cycle.phaseEndsAtMs = Date.now() + ROUND_INTERMISSION_MS;
-
-      const winShare: RoundWinnerShare = {
-        uid: winnerUid,
-        telegramUserId: claimantTelegramId,
-        displayName: playerName,
-        cardId,
-        patternType: verifyRes.winResult?.patternType || 'diagonal',
-        patternLabelAm: verifyRes.winResult?.patternLabelAm || 'መስመር ቢንጎ',
-        patternLabelEn: verifyRes.winResult?.patternLabelEn || 'Bingo Line',
-        winningCells: verifyRes.winResult?.winningCells || [],
-        prizeEtb,
-      };
-      const finishedGame = localLiveGames.get(roomId);
-      if (finishedGame) {
-        finishedGame.status = 'completed';
-        finishedGame.winnerUid = winnerUid;
-        finishedGame.winnerName = playerName;
-        finishedGame.winningCardId = cardId;
-        finishedGame.winningPattern = verifyRes.winResult?.patternLabelEn || 'Bingo Line';
-        finishedGame.prizePoolEtb = prizeEtb;
-        finishedGame.winners = [winShare];
-      } else {
-        localLiveGames.set(roomId, {
-          gameId: `game_${roomId}_live`,
-          roomId,
-          hostUid: winnerUid,
-          roundNumber: cycle.roundNumber,
-          status: 'completed',
-          calledNumbers: effectiveCalledNumbers,
-          latestBall: effectiveCalledNumbers[effectiveCalledNumbers.length - 1] || 0,
-          winnerUid,
-          winnerName: playerName,
-          winningCardId: cardId,
-          winningPattern: verifyRes.winResult?.patternLabelEn || 'Bingo Line',
-          prizePoolEtb: prizeEtb,
-          winners: [winShare],
-        });
-      }
-
-      botEngine.queueNotification('winner_announcement', claimantTelegramId, {
-        winnerName: playerName,
-        winningCardId: cardId,
-        winningPattern: verifyRes.winResult?.patternLabelEn || 'Bingo Line',
-        demoPrizeEtb: prizeEtb,
-      });
-      botEngine.queueNotification('game_completion', claimantTelegramId, {
-        totalCalls: effectiveCalledNumbers.length,
-      });
+    const p = ensureServerPlayerWithWelcomeBonus(actor);
+    const balBefore = p ? Number(p.demoBalanceEtb ?? 0) : 0;
+    const balAfter = Number((balBefore + prizeEtb).toFixed(2));
+    if (p) {
+      p.demoBalanceEtb = balAfter;
     }
 
-    res.json(verifyRes);
+    const winList = localTransactionsByUid.get(winnerUid) || [];
+    winList.unshift({
+      id: `tx_win_${roomId}_r${cycle.roundNumber}_${winnerUid}`,
+      type: 'bingo_win',
+      amount: prizeEtb,
+      balanceBeforeEtb: balBefore,
+      balanceAfterEtb: balAfter,
+      relatedId: activeGame?.gameId || `game_${roomId}_live`,
+      status: 'demo_completed',
+      labelAm: `የቢንጎ ድል ሽልማት (ካርድ #${cardId})`,
+      labelEn: `Bingo Win Prize (Card #${cardId})`,
+      timestamp: new Date().toISOString(),
+      reference: `WIN-${roomId.toUpperCase()}-R${cycle.roundNumber}-${cardId}`,
+    });
+    localTransactionsByUid.set(winnerUid, winList.slice(0, 50));
+
+    cycle.settledRoundNumber = cycle.roundNumber;
+    cycle.status = 'completed';
+    cycle.phaseEndsAtMs = Date.now() + ROUND_INTERMISSION_MS;
+
+    const winShare: RoundWinnerShare = {
+      uid: winnerUid,
+      telegramUserId: actor.telegramUserId,
+      displayName: actor.displayName,
+      cardId,
+      patternType: verifyRes.winResult?.patternType || 'diagonal',
+      patternLabelAm: verifyRes.winResult?.patternLabelAm || 'መስመር ቢንጎ',
+      patternLabelEn: verifyRes.winResult?.patternLabelEn || 'Bingo Line',
+      winningCells: verifyRes.winResult?.winningCells || [],
+      prizeEtb,
+    };
+    if (activeGame) {
+      activeGame.status = 'completed';
+      activeGame.winnerUid = winnerUid;
+      activeGame.winnerName = actor.displayName;
+      activeGame.winningCardId = cardId;
+      activeGame.winningPattern = verifyRes.winResult?.patternLabelEn || 'Bingo Line';
+      activeGame.prizePoolEtb = prizeEtb;
+      activeGame.winners = [winShare];
+    }
+
+    botEngine.queueNotification('winner_announcement', actor.telegramUserId, {
+      winnerName: actor.displayName,
+      winningCardId: cardId,
+      winningPattern: verifyRes.winResult?.patternLabelEn || 'Bingo Line',
+      demoPrizeEtb: prizeEtb,
+    });
+    botEngine.queueNotification('game_completion', actor.telegramUserId, {
+      totalCalls: authoritativeCalls.length,
+    });
+
+    broadcastWalletUpdate(winnerUid);
+    broadcastRoomUpdate(roomId);
+    persistLocalStateSnapshot();
+    res.json({
+      ...verifyRes,
+      demoPrizeEtb: prizeEtb,
+      updatedBalanceEtb: balAfter,
+    });
   });
 
   // 8B. Server-Authoritative Card Reservation, Game Start, Round Reset, and Rooms Endpoints
@@ -1136,6 +1259,9 @@ async function startServer() {
       id: string;
       type: 'deposit_demo' | 'withdraw_demo' | 'card_entry' | 'bingo_win' | 'referral_bonus';
       amount: number;
+      balanceBeforeEtb?: number;
+      balanceAfterEtb?: number;
+      relatedId?: string;
       provider?: string;
       status: 'demo_completed' | 'demo_pending';
       labelAm: string;
@@ -1179,6 +1305,194 @@ async function startServer() {
       inviteeBonus: number;
     }>
   >();
+  const localSupportTicketsByUid = new Map<
+    string,
+    Array<{
+      id: string;
+      subject: string;
+      category: 'wallet' | 'game' | 'account' | 'referral';
+      message: string;
+      status: 'open' | 'in_review' | 'resolved';
+      createdAt: string;
+      reply?: string;
+    }>
+  >();
+  const localIdempotencyKeys = new Set<string>();
+
+  // Authenticated Real-Time SSE Hub (user-scoped wallet updates + room/game state push)
+  const sseClients = new Set<{ uid: string; res: express.Response }>();
+  const broadcastSseEvent = (
+    event: 'room_update' | 'wallet_update',
+    payload: Record<string, unknown>,
+    targetUid?: string
+  ) => {
+    const serialized = `event: ${event}\ndata: ${JSON.stringify({
+      ...payload,
+      serverNowMs: Date.now(),
+    })}\n\n`;
+    for (const client of sseClients) {
+      if (targetUid && client.uid !== targetUid) continue;
+      try {
+        client.res.write(serialized);
+      } catch {
+        sseClients.delete(client);
+      }
+    }
+  };
+  const broadcastWalletUpdate = (uid: string) => {
+    const tgId = uid.startsWith('tg_') ? Number(uid.slice(3)) || 0 : 0;
+    const p = tgId > 0 ? botEngine.getPlayerByTelegramId(tgId) : undefined;
+    const txs = localTransactionsByUid.get(uid) || [];
+    const winningsBalanceEtb = txs
+      .filter((tx) => tx.type === 'bingo_win' && tx.amount > 0)
+      .reduce((sum, tx) => sum + tx.amount, 0);
+    broadcastSseEvent(
+      'wallet_update',
+      {
+        uid,
+        availableBalanceEtb: p ? Math.max(0, Number(p.demoBalanceEtb ?? 0)) : 0,
+        winningsBalanceEtb,
+        transactions: txs.slice(0, 30),
+        referrals: localReferralsByUid.get(uid) || [],
+        depositRequests: localDepositsByUid.get(uid) || [],
+        payoutRequests: localPayoutsByUid.get(uid) || [],
+      },
+      uid
+    );
+  };
+  const broadcastRoomUpdate = (roomId: string) => {
+    const targetRoom = adminAuthority.getRooms().find((r) => r.id === roomId);
+    if (!targetRoom) return;
+    const roomDto = getLocalRoomDto(targetRoom);
+    const liveGame = localLiveGames.get(roomId) || null;
+    const roomCards = localRoomCardOwnership.get(roomId);
+    const takenCardIds = roomCards ? Array.from(roomCards.keys()).sort((a, b) => a - b) : [];
+    broadcastSseEvent('room_update', {
+      roomId,
+      room: roomDto,
+      game: liveGame,
+      takenCardIds,
+    });
+  };
+
+  // Lightweight local disk snapshot so server restarts preserve accounts, balances, referrals, and active countdowns
+  const LOCAL_SNAPSHOT_PATH = path.join(__dirname, '.adeybingo-local-state.json');
+  const persistLocalStateSnapshot = () => {
+    try {
+      const players = botEngine.getAllPlayers();
+      const snapshot = {
+        savedAtMs: Date.now(),
+        players,
+        transactions: Array.from(localTransactionsByUid.entries()),
+        deposits: Array.from(localDepositsByUid.entries()),
+        payouts: Array.from(localPayoutsByUid.entries()),
+        appliedPromos: Array.from(localAppliedPromoByUid.entries()),
+        referrals: Array.from(localReferralsByUid.entries()),
+        supportTickets: Array.from(localSupportTicketsByUid.entries()),
+        roomCycles: Array.from(localRoomCycleState.entries()),
+        roomCards: Array.from(localRoomCardOwnership.entries()).map(([rid, m]) => [
+          rid,
+          Array.from(m.entries()),
+        ]),
+        liveGames: Array.from(localLiveGames.entries()),
+      };
+      const tmpPath = `${LOCAL_SNAPSHOT_PATH}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(snapshot), 'utf8');
+      fs.renameSync(tmpPath, LOCAL_SNAPSHOT_PATH);
+    } catch {
+      // Ignore snapshot errors on read-only filesystems
+    }
+  };
+
+  const restoreLocalStateSnapshot = () => {
+    try {
+      if (!fs.existsSync(LOCAL_SNAPSHOT_PATH)) return;
+      const raw = fs.readFileSync(LOCAL_SNAPSHOT_PATH, 'utf8');
+      const snap = JSON.parse(raw) as Record<string, unknown>;
+      if (Array.isArray(snap.players)) {
+        for (const p of snap.players as Array<{
+          uid?: string;
+          telegramUserId?: number;
+          firstName?: string;
+          lastName?: string;
+          username?: string;
+          demoBalanceEtb?: number;
+          referredByCode?: string;
+          phoneVerified?: boolean;
+          verifiedPhoneMasked?: string;
+        }>) {
+          if (!p.telegramUserId || !Number.isInteger(p.telegramUserId)) continue;
+          let existing = botEngine.getPlayerByTelegramId(p.telegramUserId);
+          if (!existing) {
+            const reg = botEngine.handleIncomingUpdate({
+              senderTelegramId: p.telegramUserId,
+              firstName: p.firstName || 'Player',
+              lastName: p.lastName || '',
+              username: p.username || `tg_${p.telegramUserId}`,
+              firebaseUid: p.uid || `tg_${p.telegramUserId}`,
+              text: '/start',
+            });
+            existing = reg.profile;
+          }
+          if (existing) {
+            if (typeof p.demoBalanceEtb === 'number' && Number.isFinite(p.demoBalanceEtb)) {
+              existing.demoBalanceEtb = p.demoBalanceEtb;
+            }
+            if (p.referredByCode) existing.referredByCode = p.referredByCode;
+            if (typeof p.phoneVerified === 'boolean') existing.phoneVerified = p.phoneVerified;
+            if (p.verifiedPhoneMasked) existing.verifiedPhoneMasked = p.verifiedPhoneMasked;
+          }
+        }
+      }
+      if (Array.isArray(snap.transactions)) {
+        for (const [k, v] of snap.transactions as [string, typeof localTransactionsByUid extends Map<string, infer V> ? V : never][]) {
+          localTransactionsByUid.set(k, v);
+        }
+      }
+      if (Array.isArray(snap.deposits)) {
+        for (const [k, v] of snap.deposits as [string, typeof localDepositsByUid extends Map<string, infer V> ? V : never][]) {
+          localDepositsByUid.set(k, v);
+        }
+      }
+      if (Array.isArray(snap.payouts)) {
+        for (const [k, v] of snap.payouts as [string, typeof localPayoutsByUid extends Map<string, infer V> ? V : never][]) {
+          localPayoutsByUid.set(k, v);
+        }
+      }
+      if (Array.isArray(snap.appliedPromos)) {
+        for (const [k, v] of snap.appliedPromos as [string, string][]) {
+          localAppliedPromoByUid.set(k, v);
+        }
+      }
+      if (Array.isArray(snap.referrals)) {
+        for (const [k, v] of snap.referrals as [string, typeof localReferralsByUid extends Map<string, infer V> ? V : never][]) {
+          localReferralsByUid.set(k, v);
+        }
+      }
+      if (Array.isArray(snap.supportTickets)) {
+        for (const [k, v] of snap.supportTickets as [string, typeof localSupportTicketsByUid extends Map<string, infer V> ? V : never][]) {
+          localSupportTicketsByUid.set(k, v);
+        }
+      }
+      if (Array.isArray(snap.roomCycles)) {
+        for (const [k, v] of snap.roomCycles as [string, typeof localRoomCycleState extends Map<string, infer V> ? V : never][]) {
+          localRoomCycleState.set(k, v);
+        }
+      }
+      if (Array.isArray(snap.roomCards)) {
+        for (const [rid, entries] of snap.roomCards as [string, [number, string][]][]) {
+          localRoomCardOwnership.set(rid, new Map(entries));
+        }
+      }
+      if (Array.isArray(snap.liveGames)) {
+        for (const [k, v] of snap.liveGames as [string, typeof localLiveGames extends Map<string, infer V> ? V : never][]) {
+          localLiveGames.set(k, v);
+        }
+      }
+    } catch {
+      // Ignore corrupt snapshot and start cleanly
+    }
+  };
 
   const ROUND_CARD_WINDOW_MS = 60_000;
   const ROUND_DRAW_INTERVAL_MS = 3_000;
@@ -1335,10 +1649,14 @@ async function startServer() {
 
     // Distribute exact 80% prize pool across all simultaneous winners and add directly to their account balances
     for (const payout of settlement.payoutsByPlayer) {
+      let balBefore = 0;
+      let balAfter = payout.totalPrizeEtb;
       if (payout.telegramUserId > 0) {
         const p = botEngine.getPlayerByTelegramId(payout.telegramUserId);
         if (p) {
-          p.demoBalanceEtb = Number((p.demoBalanceEtb + payout.totalPrizeEtb).toFixed(2));
+          balBefore = Number(p.demoBalanceEtb ?? 0);
+          balAfter = Number((balBefore + payout.totalPrizeEtb).toFixed(2));
+          p.demoBalanceEtb = balAfter;
         }
       }
       const winList = localTransactionsByUid.get(payout.uid) || [];
@@ -1347,6 +1665,9 @@ async function startServer() {
         id: `tx_win_${cycle.roundNumber}_${payout.uid}_${Date.now()}`,
         type: 'bingo_win',
         amount: payout.totalPrizeEtb,
+        balanceBeforeEtb: balBefore,
+        balanceAfterEtb: balAfter,
+        relatedId: `game_${roomId}_live`,
         status: 'demo_completed',
         labelAm:
           settlement.winners.length > 1
@@ -1359,7 +1680,8 @@ async function startServer() {
         timestamp: new Date().toISOString(),
         reference: `WIN-${roomId.toUpperCase()}-R${cycle.roundNumber}`,
       });
-      localTransactionsByUid.set(payout.uid, winList.slice(0, 30));
+      localTransactionsByUid.set(payout.uid, winList.slice(0, 50));
+      broadcastWalletUpdate(payout.uid);
 
       if (payout.telegramUserId > 0) {
         const firstWin = settlement.winners.find((w) => w.uid === payout.uid);
@@ -1404,6 +1726,8 @@ async function startServer() {
       prizePoolEtb: settlement.prizePoolEtb,
       winners: settlement.winners,
     });
+    broadcastRoomUpdate(roomId);
+    persistLocalStateSnapshot();
     return true;
   };
 
@@ -1443,6 +1767,8 @@ async function startServer() {
             winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
             details: `Extended registration window #${cycle.extendedRegistrationCount} (${confirmedPlayersCount}/${minPlayers} paid players). Preserved ${reservedCardsCount} cards.`,
           });
+          broadcastRoomUpdate(roomId);
+          persistLocalStateSnapshot();
           continue;
         }
 
@@ -1485,7 +1811,10 @@ async function startServer() {
           prizePoolEtb: financials.winnersPrizePoolEtb,
           winners: [],
         });
-        settleRoomIfWinnerFound(roomId, called, latest);
+        if (!settleRoomIfWinnerFound(roomId, called, latest)) {
+          broadcastRoomUpdate(roomId);
+          persistLocalStateSnapshot();
+        }
       } else if (cycle.status === 'live' && now - cycle.lastDrawAtMs >= ROUND_DRAW_INTERVAL_MS) {
         if (cycle.settledRoundNumber === cycle.roundNumber || currentGame?.status === 'completed') {
           cycle.status = 'completed';
@@ -1516,13 +1845,17 @@ async function startServer() {
             prizePoolEtb: financials.winnersPrizePoolEtb,
             winners: [],
           });
-          settleRoomIfWinnerFound(roomId, called, drawRes.ball);
+          if (!settleRoomIfWinnerFound(roomId, called, drawRes.ball)) {
+            broadcastRoomUpdate(roomId);
+          }
         } else {
           cycle.status = 'completed';
           cycle.phaseEndsAtMs = now + ROUND_INTERMISSION_MS;
           if (currentGame) {
             currentGame.status = 'completed';
           }
+          broadcastRoomUpdate(roomId);
+          persistLocalStateSnapshot();
         }
       } else if (cycle.status === 'completed' && now >= cycle.phaseEndsAtMs) {
         cycle.roundNumber += 1;
@@ -1561,15 +1894,66 @@ async function startServer() {
           prizePoolEtb: 0,
           winners: [],
         });
+        broadcastRoomUpdate(roomId);
+        persistLocalStateSnapshot();
       }
     }
   };
 
+  restoreLocalStateSnapshot();
   for (const r of adminAuthority.getRooms()) {
     ensureRoomCycle(r.id);
   }
   const roomCycleTimer = setInterval(tickRoomCycles, 1000);
   roomCycleTimer.unref?.();
+
+  // Authenticated Server-Sent Events (SSE) real-time stream (strictly scoped to caller's uid for wallet updates)
+  app.get('/api/realtime/stream', (req, res) => {
+    const queryToken = typeof req.query.token === 'string' ? req.query.token.trim() : undefined;
+    if (queryToken && !req.headers.authorization) {
+      req.headers.authorization = `Bearer ${queryToken}`;
+    }
+    const actor = extractPlayerSession(req);
+    if (!actor) {
+      res.status(401).json({
+        ok: false,
+        error: 'unauthenticated_request',
+        message: 'A valid session token is required for real-time updates.',
+      });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    const client = { uid: actor.uid, res };
+    sseClients.add(client);
+
+    // Immediately push current server clock + rooms snapshot on connect
+    const rooms = adminAuthority.getRooms().map(getLocalRoomDto);
+    res.write(
+      `event: sync\ndata: ${JSON.stringify({
+        serverNowMs: Date.now(),
+        rooms,
+      })}\n\n`
+    );
+
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(`event: heartbeat\ndata: ${JSON.stringify({ serverNowMs: Date.now() })}\n\n`);
+      } catch {
+        clearInterval(heartbeat);
+        sseClients.delete(client);
+      }
+    }, 15_000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      sseClients.delete(client);
+    });
+  });
 
   const getLocalRoomDto = (r: ReturnType<typeof adminAuthority.getRooms>[number]) => {
     const cycle = ensureRoomCycle(r.id);
@@ -1637,6 +2021,7 @@ async function startServer() {
     const rooms = adminAuthority.getRooms().map(getLocalRoomDto);
     res.json({
       ok: true,
+      serverNowMs: Date.now(),
       mode: '24_7_autonomous',
       results: rooms,
     });
@@ -1650,6 +2035,7 @@ async function startServer() {
       : localSchedulerAuditLogs;
     res.json({
       ok: true,
+      serverNowMs: Date.now(),
       mode: '24_7_autonomous',
       minPlayersDefault: 3,
       maxCapacityPlayers: 600,
@@ -1679,6 +2065,7 @@ async function startServer() {
       takenCardIds.sort((a, b) => a - b);
       res.json({
         ok: true,
+        serverNowMs: Date.now(),
         room: getLocalRoomDto(target),
         myCardIds,
         takenCardIds,
@@ -1687,7 +2074,7 @@ async function startServer() {
       return;
     }
 
-    res.json({ ok: true, rooms: allRooms.map(getLocalRoomDto) });
+    res.json({ ok: true, serverNowMs: Date.now(), rooms: allRooms.map(getLocalRoomDto) });
   });
 
   const ensureServerPlayerWithWelcomeBonus = (actor: {
@@ -1708,24 +2095,138 @@ async function startServer() {
       });
       player = reg.profile;
       if (player) {
-        player.demoBalanceEtb = 15;
+        player.demoBalanceEtb = 250;
       }
     }
     if (!localTransactionsByUid.has(actor.uid)) {
+      const initBal = player ? Number(player.demoBalanceEtb ?? 250) : 250;
       localTransactionsByUid.set(actor.uid, [
         {
-          id: `tx_welcome_${actor.telegramUserId}`,
-          type: 'referral_bonus',
-          amount: 15,
+          id: `tx_init_${actor.uid}`,
+          type: 'deposit_demo',
+          amount: initBal,
+          balanceBeforeEtb: 0,
+          balanceAfterEtb: initBal,
+          relatedId: actor.uid,
           status: 'demo_completed',
-          labelAm: 'የመቀላቀያ እንኳን ደህና መጡ ቦነስ (+15 ብር)',
-          labelEn: 'Welcome Join Bonus (+15 ETB)',
+          labelAm: 'የመጀመሪያ የሙከራ ሂሳብ (250 ብር)',
+          labelEn: 'Initial Sandbox Account Balance (250 ETB)',
           timestamp: new Date().toISOString(),
-          reference: `WELCOME-${actor.telegramUserId}`,
+          reference: `ADB-INIT-${actor.telegramUserId}`,
         },
       ]);
+      persistLocalStateSnapshot();
     }
     return player;
+  };
+
+  const applyServerReferralAtomic = (
+    actor: { uid: string; telegramUserId: number; displayName: string; username: string },
+    rawCode: string
+  ): {
+    ok: boolean;
+    status: number;
+    error?: string;
+    message?: string;
+    inviterTelegramId?: number;
+    inviterBonusEtb?: number;
+    inviteeBonusEtb?: number;
+    updatedBalanceEtb?: number;
+  } => {
+    const normalized = rawCode.trim().toUpperCase();
+    const match = /^ADEY-([1-9]\d*)$/.exec(normalized);
+    if (!match) {
+      return { ok: false, status: 400, error: 'invalid_promo_code', message: 'Invalid referral code format.' };
+    }
+    const inviterId = Number(match[1]);
+    if (inviterId === actor.telegramUserId) {
+      return { ok: false, status: 400, error: 'self_referral_forbidden', message: 'You cannot apply your own referral code.' };
+    }
+    const player = ensureServerPlayerWithWelcomeBonus(actor);
+    if (localAppliedPromoByUid.has(actor.uid) || player?.referredByCode) {
+      return { ok: false, status: 409, error: 'promo_already_applied', message: 'A referral code has already been applied to your account.' };
+    }
+    // Never fabricate a nonexistent inviter!
+    const inviterPlayer = botEngine.getPlayerByTelegramId(inviterId);
+    if (!inviterPlayer) {
+      return { ok: false, status: 404, error: 'inviter_not_found', message: 'No registered player matches this referral code.' };
+    }
+
+    const inviterBonus = 20;
+    const inviteeBonus = 15;
+    const nowIso = new Date().toISOString();
+    const refId = `ref_tg_${actor.telegramUserId}`;
+
+    const inviteeBefore = player ? Number(player.demoBalanceEtb ?? 0) : 0;
+    const inviteeAfter = Number((inviteeBefore + inviteeBonus).toFixed(2));
+    if (player) {
+      player.demoBalanceEtb = inviteeAfter;
+      player.referredByCode = normalized;
+    }
+
+    const inviterBefore = Number(inviterPlayer.demoBalanceEtb ?? 0);
+    const inviterAfter = Number((inviterBefore + inviterBonus).toFixed(2));
+    inviterPlayer.demoBalanceEtb = inviterAfter;
+
+    localAppliedPromoByUid.set(actor.uid, normalized);
+
+    const actorTxs = localTransactionsByUid.get(actor.uid) || [];
+    actorTxs.unshift({
+      id: `tx_ref_invitee_${actor.telegramUserId}`,
+      type: 'referral_bonus',
+      amount: inviteeBonus,
+      balanceBeforeEtb: inviteeBefore,
+      balanceAfterEtb: inviteeAfter,
+      relatedId: refId,
+      status: 'demo_completed',
+      labelAm: `የተጋበዘ ጓደኛ ቦነስ (+15 ብር · ${normalized})`,
+      labelEn: `Welcome Referral Bonus (+15 ETB · ${normalized})`,
+      timestamp: nowIso,
+      reference: `ADB-REF-W-${actor.telegramUserId}`,
+    });
+    localTransactionsByUid.set(actor.uid, actorTxs.slice(0, 50));
+
+    const inviterUid = inviterPlayer.uid || `tg_${inviterId}`;
+    const inviterTxs = localTransactionsByUid.get(inviterUid) || [];
+    inviterTxs.unshift({
+      id: `tx_ref_inviter_${actor.telegramUserId}`,
+      type: 'referral_bonus',
+      amount: inviterBonus,
+      balanceBeforeEtb: inviterBefore,
+      balanceAfterEtb: inviterAfter,
+      relatedId: refId,
+      status: 'demo_completed',
+      labelAm: `ጓደኛ በመጋበዝ የተገኘ ቦነስ (+20 ብር · ${actor.displayName})`,
+      labelEn: `Referral Bonus (+20 ETB · ${actor.displayName})`,
+      timestamp: nowIso,
+      reference: `ADB-REF-${actor.telegramUserId}`,
+    });
+    localTransactionsByUid.set(inviterUid, inviterTxs.slice(0, 50));
+
+    const inviterRefs = localReferralsByUid.get(inviterUid) || [];
+    inviterRefs.unshift({
+      id: refId,
+      friendName: actor.displayName,
+      handle: `@${actor.username.replace(/^@/, '')}`,
+      joinedAt: nowIso,
+      status: 'qualified',
+      inviterBonus,
+      inviteeBonus,
+    });
+    localReferralsByUid.set(inviterUid, inviterRefs);
+
+    broadcastWalletUpdate(actor.uid);
+    broadcastWalletUpdate(inviterUid);
+    persistLocalStateSnapshot();
+
+    return {
+      ok: true,
+      status: 200,
+      inviterTelegramId: inviterId,
+      inviterBonusEtb: inviterBonus,
+      inviteeBonusEtb: inviteeBonus,
+      updatedBalanceEtb: inviteeAfter,
+    };
   };
 
   app.get('/api/player/state', (req, res) => {
@@ -1739,7 +2240,7 @@ async function startServer() {
       return;
     }
     const player = ensureServerPlayerWithWelcomeBonus(actor);
-    const availableBalanceEtb = player ? Math.max(0, Number(player.demoBalanceEtb ?? 15)) : 15;
+    const availableBalanceEtb = player ? Math.max(0, Number(player.demoBalanceEtb ?? 0)) : 0;
     const txs = localTransactionsByUid.get(actor.uid) || [];
     const winningsBalanceEtb = txs
       .filter((tx) => tx.type === 'bingo_win' && tx.amount > 0)
@@ -1765,6 +2266,7 @@ async function startServer() {
 
     res.json({
       ok: true,
+      serverNowMs: Date.now(),
       profile: {
         uid: actor.uid,
         telegramUserId: actor.telegramUserId,
@@ -1788,6 +2290,7 @@ async function startServer() {
       depositRequests: localDepositsByUid.get(actor.uid) || [],
       payoutRequests: localPayoutsByUid.get(actor.uid) || [],
       referrals: localReferralsByUid.get(actor.uid) || [],
+      supportTickets: localSupportTicketsByUid.get(actor.uid) || [],
       gameHistory: [],
       leaderboard,
     });
@@ -1821,8 +2324,53 @@ async function startServer() {
     }
 
     const action = req.body?.action;
+    const rawIdemKey =
+      (typeof req.headers['x-idempotency-key'] === 'string' && req.headers['x-idempotency-key'].trim()) ||
+      (typeof req.body?.idempotencyKey === 'string' && req.body.idempotencyKey.trim()) ||
+      '';
+    if (rawIdemKey) {
+      const scopedKey = `${actor.uid}:${String(action)}:${rawIdemKey}`;
+      if (localIdempotencyKeys.has(scopedKey)) {
+        res.status(409).json({
+          ok: false,
+          error: 'duplicate_request',
+          message: 'This wallet request has already been processed.',
+        });
+        return;
+      }
+      localIdempotencyKeys.add(scopedKey);
+    }
+
     const player = ensureServerPlayerWithWelcomeBonus(actor);
     const nowIso = new Date().toISOString();
+
+    if (action === 'support_ticket') {
+      const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim().slice(0, 120) : '';
+      const message = typeof req.body?.message === 'string' ? req.body.message.trim().slice(0, 1200) : '';
+      const rawCat = typeof req.body?.category === 'string' ? req.body.category.trim() : 'game';
+      const category =
+        rawCat === 'wallet' || rawCat === 'game' || rawCat === 'account' || rawCat === 'referral'
+          ? rawCat
+          : 'game';
+      if (!subject || !message) {
+        res.status(400).json({ ok: false, error: 'invalid_support_ticket', message: 'Subject and message are required.' });
+        return;
+      }
+      const ticket = {
+        id: `SUP-${Date.now().toString(36).toUpperCase()}`,
+        subject,
+        category,
+        message,
+        status: 'open' as const,
+        createdAt: nowIso,
+      };
+      const existingTickets = localSupportTicketsByUid.get(actor.uid) || [];
+      existingTickets.unshift(ticket);
+      localSupportTicketsByUid.set(actor.uid, existingTickets.slice(0, 20));
+      persistLocalStateSnapshot();
+      res.status(201).json({ ok: true, action: 'support_ticket', ticket });
+      return;
+    }
 
     if (action === 'apply_promo') {
       const rawCode = typeof req.body?.code === 'string' ? req.body.code.trim().toUpperCase() : '';
@@ -1830,75 +2378,23 @@ async function startServer() {
         res.status(400).json({ ok: false, error: 'invalid_promo_code', message: 'Invalid promo or referral code.' });
         return;
       }
-      if (localAppliedPromoByUid.has(actor.uid)) {
-        res.status(409).json({ ok: false, error: 'promo_already_applied', message: 'A promo or referral code was already applied.' });
-        return;
-      }
       if (/^ADEY-[1-9]\d*$/.test(rawCode)) {
-        const inviterId = Number(rawCode.slice(5));
-        if (inviterId === actor.telegramUserId) {
-          res.status(400).json({ ok: false, error: 'self_referral_forbidden', message: 'You cannot apply your own referral code.' });
+        const refRes = applyServerReferralAtomic(actor, rawCode);
+        if (!refRes.ok) {
+          res.status(refRes.status).json({
+            ok: false,
+            error: refRes.error,
+            message: refRes.message,
+          });
           return;
         }
-        let inviterPlayer = botEngine.getPlayerByTelegramId(inviterId);
-        if (!inviterPlayer) {
-          inviterPlayer = ensureServerPlayerWithWelcomeBonus({
-            uid: `tg_${inviterId}`,
-            telegramUserId: inviterId,
-            displayName: `Friend #${inviterId}`,
-            username: `tg_${inviterId}`,
-          });
-        }
-        const inviteeBonus = 20;
-        const inviterBonus = 20;
-        if (player) player.demoBalanceEtb += inviteeBonus;
-        if (inviterPlayer) inviterPlayer.demoBalanceEtb += inviterBonus;
-        localAppliedPromoByUid.set(actor.uid, rawCode);
-        const actorTxs = localTransactionsByUid.get(actor.uid) || [];
-        actorTxs.unshift({
-          id: `tx_ref_${Date.now()}`,
-          type: 'referral_bonus',
-          amount: inviteeBonus,
-          status: 'demo_completed',
-          labelAm: `የተጋበዘ ጓደኛ ቦነስ (+20 ብር · ${rawCode})`,
-          labelEn: `Invited Friend Bonus (+20 ETB · ${rawCode})`,
-          timestamp: nowIso,
-          reference: `ADB-REF-${actor.telegramUserId}`,
-        });
-        localTransactionsByUid.set(actor.uid, actorTxs);
-
-        const inviterUid = inviterPlayer?.uid || `tg_${inviterId}`;
-        const inviterTxs = localTransactionsByUid.get(inviterUid) || [];
-        inviterTxs.unshift({
-          id: `tx_ref_inviter_${Date.now()}`,
-          type: 'referral_bonus',
-          amount: inviterBonus,
-          status: 'demo_completed',
-          labelAm: `ጓደኛ በመጋበዝ የተገኘ ቦነስ (+20 ብር · ${actor.displayName})`,
-          labelEn: `Friend Invite Bonus (+20 ETB · ${actor.displayName})`,
-          timestamp: nowIso,
-          reference: `ADB-INV-${actor.telegramUserId}`,
-        });
-        localTransactionsByUid.set(inviterUid, inviterTxs);
-
-        const inviterRefs = localReferralsByUid.get(inviterUid) || [];
-        inviterRefs.unshift({
-          id: `ref_${Date.now()}`,
-          friendName: actor.displayName,
-          handle: `@${actor.username}`,
-          joinedAt: nowIso,
-          status: 'qualified',
-          inviterBonus,
-          inviteeBonus,
-        });
-        localReferralsByUid.set(inviterUid, inviterRefs);
-
         res.json({
           ok: true,
           action: 'apply_promo',
           code: rawCode,
-          bonusEtb: inviteeBonus,
-          updatedBalanceEtb: player ? player.demoBalanceEtb : 35,
+          bonusEtb: refRes.inviteeBonusEtb ?? 15,
+          inviterBonusEtb: refRes.inviterBonusEtb ?? 20,
+          updatedBalanceEtb: refRes.updatedBalanceEtb,
           demoSandboxOnly: true,
         });
         return;
@@ -1945,13 +2441,15 @@ async function startServer() {
         requestDate: nowIso.slice(0, 16).replace('T', ' '),
       });
 
+      broadcastWalletUpdate(actor.uid);
+      persistLocalStateSnapshot();
       res.status(201).json({ ok: true, action: 'deposit_request', deposit, demoSandboxOnly: true });
       return;
     }
 
     if (action === 'withdraw_request') {
       const amountEtb = Number(req.body?.amountEtb);
-      if (!Number.isFinite(amountEtb) || amountEtb < 20) {
+      if (!Number.isFinite(amountEtb) || amountEtb < 20 || amountEtb > 50000) {
         res.status(400).json({ ok: false, error: 'invalid_withdraw_amount', message: 'Minimum withdrawal request is 20 ETB.' });
         return;
       }
@@ -1965,14 +2463,15 @@ async function startServer() {
         });
         return;
       }
+      const nextBalanceEtb = Math.max(0, Number((availableBalanceEtb - amountEtb).toFixed(2)));
       if (player) {
-        player.demoBalanceEtb = Math.max(0, Number((availableBalanceEtb - amountEtb).toFixed(2)));
+        player.demoBalanceEtb = nextBalanceEtb;
       }
       const method =
         req.body?.method === 'CBE Birr (Demo)' || req.body?.method === 'Chapa Sandbox (Demo)'
           ? req.body.method
           : 'Telebirr (Demo)';
-      const requestId = `PO-WEB-${Date.now().toString(36).toUpperCase()}`;
+      const requestId = `PO-WEB-${Date.now().toString(36).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
       const withdrawal = {
         requestId,
         requestedAmountEtb: amountEtb,
@@ -1990,6 +2489,9 @@ async function startServer() {
         id: `tx_wd_${requestId}`,
         type: 'withdraw_demo',
         amount: -amountEtb,
+        balanceBeforeEtb: availableBalanceEtb,
+        balanceAfterEtb: nextBalanceEtb,
+        relatedId: requestId,
         provider: method,
         status: 'demo_pending',
         labelAm: `${method} የወጪ ጥያቄ (${requestId})`,
@@ -1997,7 +2499,7 @@ async function startServer() {
         timestamp: nowIso,
         reference: requestId,
       });
-      localTransactionsByUid.set(actor.uid, txList.slice(0, 30));
+      localTransactionsByUid.set(actor.uid, txList.slice(0, 50));
 
       adminAuthority.registerPlayerPayoutOrder({
         requestId,
@@ -2011,11 +2513,13 @@ async function startServer() {
         reviewNotes: withdrawal.reviewNotes,
       });
 
+      broadcastWalletUpdate(actor.uid);
+      persistLocalStateSnapshot();
       res.status(201).json({
         ok: true,
         action: 'withdraw_request',
         withdrawal,
-        updatedBalanceEtb: player ? player.demoBalanceEtb : availableBalanceEtb - amountEtb,
+        updatedBalanceEtb: nextBalanceEtb,
         demoSandboxOnly: true,
       });
       return;
@@ -2104,6 +2608,24 @@ async function startServer() {
         totalCardsSold: financials.totalCardsSold,
         status: cycle.status,
       });
+      const txList = localTransactionsByUid.get(actor.uid) || [];
+      txList.unshift({
+        id: `tx_rel_${roomId}_${cardId}_${Date.now()}`,
+        type: 'card_entry',
+        amount: cardPrice,
+        balanceBeforeEtb: currentBal,
+        balanceAfterEtb: updatedBal,
+        relatedId: roomId,
+        status: 'demo_completed',
+        labelAm: `የካርድ #${cardId} መመለሻ ተመላሽ`,
+        labelEn: `Card #${cardId} Release Refund (${roomId})`,
+        timestamp: new Date().toISOString(),
+        reference: `ADB-REL-${cardId}`,
+      });
+      localTransactionsByUid.set(actor.uid, txList.slice(0, 50));
+      broadcastWalletUpdate(actor.uid);
+      broadcastRoomUpdate(roomId);
+      persistLocalStateSnapshot();
       res.json({
         ok: true,
         action: 'released',
@@ -2147,7 +2669,7 @@ async function startServer() {
 
     roomCards.set(cardId, actor.uid);
     const nextCards = [...myCards, cardId].sort((a, b) => a - b);
-    const updatedBal = currentBal - cardPrice;
+    const updatedBal = Number((currentBal - cardPrice).toFixed(2));
     if (player) player.demoBalanceEtb = updatedBal;
     const confirmedPlayers = new Set(roomCards.values()).size;
     const financials = calculateAuthoritativeGameFinancials(
@@ -2161,6 +2683,24 @@ async function startServer() {
       totalCardsSold: financials.totalCardsSold,
       status: cycle.status,
     });
+    const entryTxList = localTransactionsByUid.get(actor.uid) || [];
+    entryTxList.unshift({
+      id: `tx_ent_${roomId}_${cardId}_${Date.now()}`,
+      type: 'card_entry',
+      amount: -cardPrice,
+      balanceBeforeEtb: currentBal,
+      balanceAfterEtb: updatedBal,
+      relatedId: roomId,
+      status: 'demo_completed',
+      labelAm: `የካርድ #${cardId} መግቢያ`,
+      labelEn: `Card #${cardId} Entry (${roomId})`,
+      timestamp: new Date().toISOString(),
+      reference: `ADB-ENT-${cardId}`,
+    });
+    localTransactionsByUid.set(actor.uid, entryTxList.slice(0, 50));
+    broadcastWalletUpdate(actor.uid);
+    broadcastRoomUpdate(roomId);
+    persistLocalStateSnapshot();
     res.json({
       ok: true,
       action: 'reserved',
@@ -2198,9 +2738,19 @@ async function startServer() {
     }
     const cycle = ensureRoomCycle(roomId);
     const existing = localLiveGames.get(roomId);
-    if (cycle.status === 'countdown' && !req.body?.forceStart) {
+    const allowForceStart = Boolean(req.body?.forceStart) && actor.role === 'admin';
+    if (Boolean(req.body?.forceStart) && actor.role !== 'admin') {
+      res.status(403).json({
+        ok: false,
+        error: 'admin_required',
+        message: 'Only administrators may force-start a round early.',
+      });
+      return;
+    }
+    if (cycle.status === 'countdown' && !allowForceStart) {
       res.json({
         ok: true,
+        serverNowMs: Date.now(),
         game: existing || {
           gameId,
           roomId,
@@ -2217,8 +2767,8 @@ async function startServer() {
       });
       return;
     }
-    if ((cycle.status === 'live' || cycle.status === 'completed') && existing && !req.body?.forceStart) {
-      res.json({ ok: true, game: existing });
+    if ((cycle.status === 'live' || cycle.status === 'completed') && existing && !allowForceStart) {
+      res.json({ ok: true, serverNowMs: Date.now(), game: existing });
       return;
     }
     gameAuthority.resetRoomCalls(roomId, []);
@@ -2243,8 +2793,11 @@ async function startServer() {
       winningPattern: '',
     };
     localLiveGames.set(roomId, nextGame);
+    broadcastRoomUpdate(roomId);
+    persistLocalStateSnapshot();
     res.json({
       ok: true,
+      serverNowMs: Date.now(),
       game: nextGame,
     });
   });
@@ -2260,6 +2813,16 @@ async function startServer() {
       return;
     }
     const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim() : 'adey-main';
+    const existingGame = localLiveGames.get(roomId);
+    const hostUid = existingGame?.hostUid || 'tg_8842109';
+    if (actor.role !== 'admin' && actor.uid !== hostUid) {
+      res.status(403).json({
+        ok: false,
+        error: 'unauthorized_caller',
+        message: 'Only the room host or administrator may reset this round.',
+      });
+      return;
+    }
     const gameId = typeof req.body?.gameId === 'string' ? req.body.gameId.trim() : `game_${roomId}_live`;
     const cycle = ensureRoomCycle(roomId);
     cycle.roundNumber += 1;
@@ -2284,8 +2847,11 @@ async function startServer() {
       prizePoolEtb: 0,
       winners: [],
     });
+    broadcastRoomUpdate(roomId);
+    persistLocalStateSnapshot();
     res.json({
       ok: true,
+      serverNowMs: Date.now(),
       roomId,
       gameId,
       status: 'countdown',
@@ -2487,46 +3053,13 @@ async function startServer() {
         });
         return;
       } catch {
-        // Fallback: inspect Firebase JWT payload if Admin SDK cert fetch fails in container
-        try {
-          const parts = bearerToken.split('.');
-          if (parts.length === 3) {
-            const payload = JSON.parse(
-              Buffer.from(parts[1], 'base64url').toString('utf8')
-            ) as Record<string, unknown>;
-            const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '';
-            const sub = typeof payload.sub === 'string' ? payload.sub : typeof payload.user_id === 'string' ? payload.user_id : '';
-            if (email && sub) {
-              const minted = mintServerSessionToken(
-                {
-                  uid: sub,
-                  telegramUserId: email === 'abiwolfcode@gmail.com' || email === 'abelbimrew868@gmail.com' ? 8842109 : 0,
-                  displayName: typeof payload.name === 'string' ? payload.name : email,
-                  username: email.split('@')[0],
-                  email,
-                },
-                sessionSecret
-              );
-              const isAdmin = minted.actor.role === 'admin';
-              res.status(isAdmin ? 200 : 403).json({
-                ok: isAdmin,
-                authorized: isAdmin,
-                token: minted.token,
-                actor: minted.actor,
-                reason: isAdmin ? 'authorized_admin' : 'forbidden_not_admin',
-              });
-              return;
-            }
-          }
-        } catch {
-          // Fall through to 401
-        }
+        // Security invariant: NEVER trust an unverified base64-decoded JWT payload!
         res.status(401).json({
           ok: false,
           authorized: false,
           statusCode: 401,
           reason: 'invalid_or_expired_token',
-          message: 'Firebase ID token or session token verification failed.',
+          message: 'Cryptographic Firebase ID token or session token verification failed.',
         });
         return;
       }
@@ -2541,30 +3074,35 @@ async function startServer() {
     });
   });
 
-  // 9A-2. Owner Preview Session Endpoint for Owner (abiwolfcode@gmail.com / TG #8842109)
-  app.post('/api/admin/owner-preview-session', (req, res) => {
-    const requestedOwnerEmail =
-      typeof req.body?.ownerEmail === 'string'
-        ? req.body.ownerEmail.trim().toLowerCase()
-        : 'abiwolfcode@gmail.com';
-    const sessionSecret = resolveAdminSessionSecret();
+  // 9A-2. Owner Session Endpoint — STRICTLY requires verified cryptographic identity (never unauthenticated!)
+  app.post('/api/admin/owner-preview-session', async (req, res) => {
+    const authRes = extractAdminAuthFromRequest(req);
+    if (!authRes.authorized || !authRes.actor) {
+      res.status(authRes.statusCode || 401).json({
+        ok: false,
+        authorized: false,
+        statusCode: authRes.statusCode || 401,
+        reason: authRes.reason || 'unauthenticated',
+        message: 'Cryptographically verified owner credentials are required. Unauthenticated admin minting is disabled.',
+      });
+      return;
+    }
     const minted = mintServerSessionToken(
       {
-        uid: 'tg_8842109',
-        telegramUserId: 8842109,
-        displayName: 'Owner Admin (abiwolfcode@gmail.com)',
-        username: 'abiwolfcode_owner',
-        email: requestedOwnerEmail,
+        uid: authRes.actor.uid,
+        telegramUserId: authRes.actor.telegramUserId,
+        displayName: authRes.actor.displayName,
+        username: authRes.actor.username,
+        email: authRes.actor.email,
       },
-      sessionSecret
+      resolveAdminSessionSecret()
     );
-    const isAdmin = minted.actor.role === 'admin';
-    res.status(isAdmin ? 200 : 403).json({
-      ok: isAdmin,
-      authorized: isAdmin,
+    res.status(200).json({
+      ok: true,
+      authorized: true,
       token: minted.token,
       actor: minted.actor,
-      reason: isAdmin ? 'authorized_admin' : 'forbidden_not_admin',
+      reason: 'authorized_admin',
     });
   });
 
@@ -2660,7 +3198,9 @@ async function startServer() {
       timestamp: new Date().toISOString(),
       reference: `ADM-ADJ-${Date.now().toString(36).toUpperCase()}`,
     });
-    localTransactionsByUid.set(uid, txList.slice(0, 30));
+    localTransactionsByUid.set(uid, txList.slice(0, 50));
+    broadcastWalletUpdate(uid);
+    persistLocalStateSnapshot();
 
     res.json(result);
   });
@@ -2708,6 +3248,9 @@ async function startServer() {
         id: `tx_poref_${requestId}_${Date.now()}`,
         type: 'withdraw_demo',
         amount: result.payout.requestedAmountEtb,
+        balanceBeforeEtb: Math.max(0, result.refundedBalanceEtb - result.payout.requestedAmountEtb),
+        balanceAfterEtb: result.refundedBalanceEtb,
+        relatedId: requestId,
         provider: result.payout.paymentMethod,
         status: 'demo_completed',
         labelAm: `የወጪ ጥያቄ ተመላሽ (${requestId})`,
@@ -2715,7 +3258,7 @@ async function startServer() {
         timestamp: new Date().toISOString(),
         reference: `REFUND-${requestId}`,
       });
-      localTransactionsByUid.set(targetUid, txList.slice(0, 30));
+      localTransactionsByUid.set(targetUid, txList.slice(0, 50));
     } else if (result.payout.status === 'Completed' || result.payout.status === 'Approved') {
       const txList = localTransactionsByUid.get(targetUid) || [];
       for (const tx of txList) {
@@ -2725,6 +3268,8 @@ async function startServer() {
       }
     }
 
+    broadcastWalletUpdate(targetUid);
+    persistLocalStateSnapshot();
     res.json(result);
   });
 
@@ -2769,6 +3314,9 @@ async function startServer() {
         id: `tx_dep_${depositId}_${Date.now()}`,
         type: 'deposit_demo',
         amount: result.deposit.amountEtb,
+        balanceBeforeEtb: Math.max(0, result.creditedBalanceEtb - result.deposit.amountEtb),
+        balanceAfterEtb: result.creditedBalanceEtb,
+        relatedId: depositId,
         provider: result.deposit.provider,
         status: 'demo_completed',
         labelAm: `የጸደቀ ${result.deposit.provider} ገቢ (${result.deposit.referenceCode})`,
@@ -2776,9 +3324,11 @@ async function startServer() {
         timestamp: new Date().toISOString(),
         reference: result.deposit.referenceCode,
       });
-      localTransactionsByUid.set(targetUid, txList.slice(0, 30));
+      localTransactionsByUid.set(targetUid, txList.slice(0, 50));
     }
 
+    broadcastWalletUpdate(targetUid);
+    persistLocalStateSnapshot();
     res.json(result);
   });
 
@@ -2850,6 +3400,8 @@ async function startServer() {
         winners: [],
       };
       localLiveGames.set(roomId, nextGame);
+      broadcastRoomUpdate(roomId);
+      persistLocalStateSnapshot();
       res.json({ ok: true, action: 'force_start', roomId, roundNumber: cycle.roundNumber, status: 'live' });
       return;
     }
@@ -2876,6 +3428,8 @@ async function startServer() {
       prizePoolEtb: 0,
       winners: [],
     });
+    broadcastRoomUpdate(roomId);
+    persistLocalStateSnapshot();
     res.json({ ok: true, action: 'reset', roomId, roundNumber: cycle.roundNumber, status: 'countdown' });
   });
 

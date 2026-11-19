@@ -437,25 +437,26 @@ export function AdminDashboardScreen({
   const handleOwnerQuickUnlock = useCallback(async () => {
     setGoogleSigningIn(true);
     try {
-      const res = await fetch('/api/admin/owner-preview-session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ownerEmail: 'abiwolfcode@gmail.com' }),
-      });
-      const data = await res.json();
-      if (res.ok && data.authorized && data.token) {
-        setSessionToken(data.token);
-        setActor(data.actor);
-        setAuthStatus('authorized');
-        setAuthMessage('');
+      if (auth.currentUser) {
+        const idToken = await auth.currentUser.getIdToken(true);
+        await authenticateWithCredential(idToken);
         return;
       }
+      if (rawTokenInput.trim()) {
+        await authenticateWithCredential(rawTokenInput);
+        return;
+      }
+      setAuthStatus('unauthenticated');
+      setAuthMessage(
+        'Sign in with your authorized Owner Google account or provide a verified Telegram initData / Bearer token.'
+      );
     } catch {
-      // Fall through
+      setAuthStatus('unauthenticated');
+      setAuthMessage('Owner cryptographic authentication failed. Please sign in with Google or Telegram.');
     } finally {
       setGoogleSigningIn(false);
     }
-  }, []);
+  }, [authenticateWithCredential, rawTokenInput]);
 
   const handleGoogleOwnerSignIn = async () => {
     setGoogleSigningIn(true);
@@ -466,8 +467,10 @@ export function AdminDashboardScreen({
       const idToken = await cred.user.getIdToken(true);
       await authenticateWithCredential(idToken);
     } catch {
-      // If popup is blocked inside preview iframe, fall back to Owner Preview Session
-      await handleOwnerQuickUnlock();
+      setAuthStatus('unauthenticated');
+      setAuthMessage(
+        'Google Sign-In popup was blocked or cancelled. Please allow popups or sign in via Telegram Mini App.'
+      );
     } finally {
       setGoogleSigningIn(false);
     }

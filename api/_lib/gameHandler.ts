@@ -568,12 +568,12 @@ export function createSchedulerTickHandler(deps: GameHandlerDeps = {}) {
 
     if (roomId) {
       const result = await service.tickRoomScheduler({ roomId, workerId });
-      sendJson(res, 200, { ok: true, results: [result] });
+      sendJson(res, 200, { ok: true, serverNowMs: Date.now(), results: [result] });
       return;
     }
 
     const results = await service.tickAllRooms({ workerId });
-    sendJson(res, 200, { ok: true, results });
+    sendJson(res, 200, { ok: true, serverNowMs: Date.now(), results });
   };
 }
 
@@ -609,6 +609,7 @@ export function createSchedulerStatusHandler(deps: GameHandlerDeps = {}) {
 
     sendJson(res, 200, {
       ok: true,
+      serverNowMs: Date.now(),
       mode: '24_7_autonomous',
       minPlayersDefault: 3,
       maxCapacityPlayers: 600,

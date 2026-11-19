@@ -212,7 +212,7 @@ export async function ensureUserProfileInFirestore(
         username: safeUsername,
         language: lang,
         phoneVerified: false,
-        demoBalanceEtb: 0,
+        demoBalanceEtb: 250,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -224,7 +224,7 @@ export async function ensureUserProfileInFirestore(
         username: safeUsername,
         language: lang,
         phoneVerified: false,
-        demoBalanceEtb: 0,
+        demoBalanceEtb: 250,
       };
     });
   } catch (error) {
@@ -379,7 +379,18 @@ export function subscribeToRoomState(
           : 'countdown';
       const cardPrice = Number(d.cardPrice ?? 10);
       const minPlayers = Number(d.minPlayers ?? 3);
-      const countdownSeconds = Number(d.countdownSeconds ?? 60);
+      const registrationDeadlineMs =
+        typeof d.registrationDeadlineMs === 'number' && Number.isFinite(d.registrationDeadlineMs)
+          ? d.registrationDeadlineMs
+          : undefined;
+      const roundStartedAtMs =
+        typeof d.roundStartedAtMs === 'number' && Number.isFinite(d.roundStartedAtMs)
+          ? d.roundStartedAtMs
+          : undefined;
+      const countdownSeconds =
+        status === 'countdown' && registrationDeadlineMs && registrationDeadlineMs > 0
+          ? Math.max(0, Math.ceil((registrationDeadlineMs - Date.now()) / 1000))
+          : Number(d.countdownSeconds ?? 60);
       const activePlayersCount = Number(d.confirmedPlayersCount ?? d.activePlayersCount ?? 0);
       const reservedCardsCount = Number(d.totalCardsSold ?? d.reservedCardsCount ?? 0);
       const financials = calculateAuthoritativeGameFinancials(
@@ -407,6 +418,8 @@ export function subscribeToRoomState(
         maxCardsPerPlayer: Number(d.maxCardsPerPlayer ?? 4),
         minPlayers,
         countdownSeconds,
+        registrationDeadlineMs,
+        roundStartedAtMs,
         activePlayersCount: financials.confirmedPlayersCount,
         confirmedPlayersCount: financials.confirmedPlayersCount,
         verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
@@ -853,6 +866,9 @@ export interface ServerRoomSummary {
   maxCardsPerPlayer: number;
   minPlayers: number;
   countdownSeconds: number;
+  registrationDeadlineMs?: number;
+  roundStartedAtMs?: number;
+  roundNumber?: number;
   activePlayersCount: number;
   confirmedPlayersCount?: number;
   verifiedPaidEntriesCount?: number;
@@ -883,6 +899,7 @@ export async function fetchRoomDetailFromServerApi(roomId: string): Promise<{
   myCardIds: number[];
   takenCardIds: number[];
   game: FirestoreLiveGameSession | null;
+  serverNowMs?: number;
 } | null> {
   const headers = await buildAuthenticatedHeaders();
   const resp = await fetch(`/api/rooms?roomId=${encodeURIComponent(roomId)}`, {
@@ -897,6 +914,7 @@ export async function fetchRoomDetailFromServerApi(roomId: string): Promise<{
     myCardIds: Array.isArray(data.myCardIds) ? data.myCardIds.map(Number) : [],
     takenCardIds: Array.isArray(data.takenCardIds) ? data.takenCardIds.map(Number) : [],
     game: data.game ? (data.game as FirestoreLiveGameSession) : null,
+    serverNowMs: typeof data.serverNowMs === 'number' ? data.serverNowMs : undefined,
   };
 }
 
@@ -918,6 +936,7 @@ export async function submitPlayerWalletAction(
     | { action: 'apply_promo'; code: string }
     | { action: 'deposit_request'; amountEtb: number; provider: string }
     | { action: 'withdraw_request'; amountEtb: number; method: string }
+    | { action: 'support_ticket'; category: string; subject: string; message: string }
 ): Promise<{
   ok: boolean;
   error?: string;
@@ -927,19 +946,28 @@ export async function submitPlayerWalletAction(
   availableBalanceEtb?: number;
   deposit?: import('../types/bingo').DepositRequestSummary;
   withdrawal?: import('../types/bingo').PayoutRequestSummary;
+  ticket?: import('../types/bingo').SupportTicket;
 }> {
   const token = await getActiveBearerToken();
   if (!token) {
     return {
       ok: false,
       error: 'unauthenticated_demo_mode',
+      message: 'Please authenticate inside Telegram Mini App to perform account transactions.',
     };
   }
   const headers = await buildAuthenticatedHeaders();
+  const idempotencyKey = `wallet_${payload.action}_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
   const resp = await fetch('/api/player/wallet', {
     method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
+    headers: {
+      ...headers,
+      'Idempotency-Key': idempotencyKey,
+    },
+    body: JSON.stringify({
+      ...payload,
+      idempotencyKey,
+    }),
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.ok) {
@@ -958,5 +986,6 @@ export async function submitPlayerWalletAction(
       typeof data.updatedBalanceEtb === 'number' ? data.updatedBalanceEtb : undefined,
     deposit: data.deposit,
     withdrawal: data.withdrawal,
+    ticket: data.ticket,
   };
 }

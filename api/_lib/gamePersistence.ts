@@ -116,6 +116,7 @@ export interface RoomSummary {
   minPlayers: number;
   countdownSeconds: number;
   roundNumber?: number;
+  roundStartedAtMs?: number;
   registrationDeadlineMs?: number;
   nextBallDrawAtMs?: number;
   intermissionEndsAtMs?: number;
@@ -288,12 +289,18 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
   const roomsCol = db.collection('rooms');
   const gamesCol = db.collection('games');
   const usersCol = db.collection('users');
+  const botPlayersCol = db.collection('botPlayers');
   const transactionsCol = db.collection('transactions');
   const schedulerLeasesCol = db.collection(SCHEDULER_LEASES_COLLECTION);
   const schedulerAuditCol = db.collection(SCHEDULER_AUDIT_LOGS_COLLECTION);
   const botOutboxCol = db.collection('botOutbox');
 
-  function mapRoomDoc(docId: string, data: Record<string, unknown>): RoomSummary {
+  function extractTelegramIdFromUid(uid: string): number {
+    const m = /^tg_([1-9]\d*)$/.exec(uid);
+    return m ? Number(m[1]) : 0;
+  }
+
+  function mapRoomDoc(docId: string, data: Record<string, unknown>, nowMs: number = Date.now()): RoomSummary {
     const rawStatus = String(data.status || 'countdown');
     const status: RoomSummary['status'] =
       rawStatus === 'waiting' ||
@@ -304,7 +311,16 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         : 'countdown';
     const cardPrice = Number(data.cardPrice ?? 10);
     const minPlayers = Number(data.minPlayers ?? 3);
-    const countdownSeconds = Number(data.countdownSeconds ?? 60);
+    const registrationDeadlineMs = Number(data.registrationDeadlineMs ?? 0);
+    const roundStartedAtMs = Number(data.roundStartedAtMs ?? 0);
+    const storedCountdownSeconds = Number(data.countdownSeconds ?? 60);
+    // Server-authoritative live remaining seconds derived from persistent registrationDeadlineMs
+    const countdownSeconds =
+      status === 'live' || status === 'completed'
+        ? 0
+        : registrationDeadlineMs > 0
+          ? Math.max(0, Math.ceil((registrationDeadlineMs - nowMs) / 1000))
+          : storedCountdownSeconds;
     const activePlayersCount = Number(data.activePlayersCount ?? 0);
     const reservedCardsCount = Number(data.reservedCardsCount ?? 0);
     const financials = calculateAuthoritativeGameFinancials(
@@ -329,7 +345,8 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
       minPlayers,
       countdownSeconds,
       roundNumber: Number(data.roundNumber ?? 1),
-      registrationDeadlineMs: Number(data.registrationDeadlineMs ?? 0),
+      roundStartedAtMs,
+      registrationDeadlineMs,
       nextBallDrawAtMs: Number(data.nextBallDrawAtMs ?? 0),
       intermissionEndsAtMs: Number(data.intermissionEndsAtMs ?? 0),
       extendedRegistrationCount: Number(data.extendedRegistrationCount ?? 0),
@@ -375,6 +392,9 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
               maxCardsPerPlayer: 4,
               minPlayers: 3,
               countdownSeconds: 60,
+              roundNumber: 1,
+              roundStartedAtMs: 0,
+              registrationDeadlineMs: 0,
               activePlayersCount: 0,
               confirmedPlayersCount: 0,
               verifiedPaidEntriesCount: 0,
@@ -471,6 +491,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           return { ok: false, reason: 'room_already_exists' };
         }
 
+        const nowMs = Date.now();
         const docData = {
           roomId: cleanRoomId,
           nameAm: cleanNameAm,
@@ -481,6 +502,9 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           maxCardsPerPlayer: 4,
           minPlayers: 3,
           countdownSeconds,
+          roundNumber: 1,
+          roundStartedAtMs: nowMs,
+          registrationDeadlineMs: nowMs + Math.max(10, countdownSeconds) * 1000,
           activePlayersCount: 0,
           confirmedPlayersCount: 0,
           verifiedPaidEntriesCount: 0,
@@ -499,7 +523,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         tx.set(roomRef, docData);
         return {
           ok: true,
-          room: mapRoomDoc(cleanRoomId, docData),
+          room: mapRoomDoc(cleanRoomId, docData, nowMs),
         };
       });
     },
@@ -632,13 +656,16 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
       const cardRef = roomRef.collection('cards').doc(String(cardId));
       const playerRef = roomRef.collection('players').doc(uid);
       const userRef = usersCol.doc(uid);
+      const tgId = extractTelegramIdFromUid(uid);
+      const botPlayerRef = tgId > 0 ? botPlayersCol.doc(String(tgId)) : null;
 
       return await db.runTransaction(async (tx) => {
-        const [roomSnap, cardSnap, playerSnap, userSnap] = await Promise.all([
+        const [roomSnap, cardSnap, playerSnap, userSnap, botPlayerSnap] = await Promise.all([
           tx.get(roomRef),
           tx.get(cardRef),
           tx.get(playerRef),
           tx.get(userRef),
+          botPlayerRef ? tx.get(botPlayerRef) : Promise.resolve(null),
         ]);
 
         if (!roomSnap.exists) {
@@ -745,14 +772,24 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
             demoBalanceEtb: updatedBalance,
             updatedAt: FieldValue.serverTimestamp(),
           });
+          if (botPlayerRef && botPlayerSnap?.exists) {
+            tx.update(botPlayerRef, {
+              demoBalanceEtb: updatedBalance,
+              updatedAt: new Date().toISOString(),
+            });
+          }
           tx.set(transactionsCol.doc(txId), {
             transactionId: txId,
             userId: uid,
             type: 'card_entry',
             amountEtb: cardPrice,
+            balanceBeforeEtb: currentBalance,
+            balanceAfterEtb: updatedBalance,
             status: 'demo_completed',
             description: `Card #${cardId} Release Refund (${roomId})`.slice(0, 160),
             reference: `ADB-REL-${cardId}`,
+            relatedId: roomId,
+            idempotencyKey: txId,
             createdAt: FieldValue.serverTimestamp(),
           });
 
@@ -839,15 +876,25 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           demoBalanceEtb: updatedBalance,
           updatedAt: FieldValue.serverTimestamp(),
         });
+        if (botPlayerRef && botPlayerSnap?.exists) {
+          tx.update(botPlayerRef, {
+            demoBalanceEtb: updatedBalance,
+            updatedAt: new Date().toISOString(),
+          });
+        }
 
         tx.set(transactionsCol.doc(txId), {
           transactionId: txId,
           userId: uid,
           type: 'card_entry',
           amountEtb: -cardPrice,
+          balanceBeforeEtb: currentBalance,
+          balanceAfterEtb: updatedBalance,
           status: 'demo_completed',
           description: `Card #${cardId} Entry (${roomId})`.slice(0, 160),
           reference: `ADB-ENT-${cardId}`,
+          relatedId: roomId,
+          idempotencyKey: txId,
           createdAt: FieldValue.serverTimestamp(),
         });
 
@@ -999,14 +1046,17 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
       const cardRef = roomRef.collection('cards').doc(String(cardId));
       const playerRef = roomRef.collection('players').doc(claimantUid);
       const userRef = usersCol.doc(claimantUid);
+      const tgId = extractTelegramIdFromUid(claimantUid);
+      const botPlayerRef = tgId > 0 ? botPlayersCol.doc(String(tgId)) : null;
 
       return await db.runTransaction(async (tx) => {
-        const [roomSnap, gameSnap, cardSnap, playerSnap, userSnap] = await Promise.all([
+        const [roomSnap, gameSnap, cardSnap, playerSnap, userSnap, botPlayerSnap] = await Promise.all([
           tx.get(roomRef),
           tx.get(gameRef),
           tx.get(cardRef),
           tx.get(playerRef),
           tx.get(userRef),
+          botPlayerRef ? tx.get(botPlayerRef) : Promise.resolve(null),
         ]);
 
         if (!roomSnap.exists) {
@@ -1128,22 +1178,33 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           updatedAt: FieldValue.serverTimestamp(),
         });
 
+        const nextBal = Math.min(100000, currentBal + demoPrizeEtb);
         tx.update(userRef, {
-          demoBalanceEtb: Math.min(100000, currentBal + demoPrizeEtb),
+          demoBalanceEtb: nextBal,
           updatedAt: FieldValue.serverTimestamp(),
         });
+        if (botPlayerRef && botPlayerSnap?.exists) {
+          tx.update(botPlayerRef, {
+            demoBalanceEtb: nextBal,
+            updatedAt: nowIso,
+          });
+        }
 
         tx.set(transactionsCol.doc(txId), {
           transactionId: txId,
           userId: claimantUid,
           type: 'bingo_win',
           amountEtb: demoPrizeEtb,
+          balanceBeforeEtb: currentBal,
+          balanceAfterEtb: nextBal,
           status: 'demo_completed',
           description: `Server-verified Bingo Win (Card #${cardId} · ${patternLabel})`.slice(
             0,
             160
           ),
           reference: `ADB-WIN-${gameId}-R${roundNumber}`.slice(0, 64),
+          relatedId: gameId,
+          idempotencyKey: txId,
           createdAt: FieldValue.serverTimestamp(),
         });
 
@@ -1171,9 +1232,11 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
       const gameRef = gamesCol.doc(gameId);
 
       return await db.runTransaction(async (tx) => {
-        const [roomSnap, gameSnap] = await Promise.all([
+        const [roomSnap, gameSnap, cardsSnap, playersSnap] = await Promise.all([
           tx.get(roomRef),
           tx.get(gameRef),
+          roomRef.collection('cards').get(),
+          roomRef.collection('players').get(),
         ]);
 
         if (!roomSnap.exists) {
@@ -1196,14 +1259,22 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           ? Number(gameSnap.get('roundNumber') ?? 1) + 1
           : 1;
         const hostUid = existingHost || callerUid;
-        const activePlayersCount = Number(roomSnap.get('activePlayersCount') ?? 0);
         const minPlayers = Number(roomSnap.get('minPlayers') ?? 3);
+        const nowMs = Date.now();
+        const nextDeadlineMs = nowMs + DEFAULT_REGISTRATION_WINDOW_MS;
         const nextLifecycle = resolveGameLifecycleStage({
           status: 'countdown',
-          confirmedPlayersCount: activePlayersCount,
+          confirmedPlayersCount: 0,
           countdownSeconds: 60,
           minPlayers,
         });
+
+        for (const cDoc of cardsSnap.docs) {
+          tx.delete(cDoc.ref);
+        }
+        for (const pDoc of playersSnap.docs) {
+          tx.delete(pDoc.ref);
+        }
 
         tx.set(gameRef, {
           gameId,
@@ -1226,6 +1297,20 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           status: 'countdown',
           lifecycleStage: nextLifecycle,
           roundNumber: nextRound,
+          countdownSeconds: 60,
+          roundStartedAtMs: nowMs,
+          registrationDeadlineMs: nextDeadlineMs,
+          nextBallDrawAtMs: 0,
+          intermissionEndsAtMs: 0,
+          activePlayersCount: 0,
+          confirmedPlayersCount: 0,
+          verifiedPaidEntriesCount: 0,
+          availableSpaces: 600,
+          reservedCardsCount: 0,
+          totalCardsSold: 0,
+          totalCollectedEtb: 0,
+          adeyShareEtb: 0,
+          winnersPrizePoolEtb: 0,
           currentGameId: gameId,
           hostUid,
           updatedAt: FieldValue.serverTimestamp(),
@@ -1702,10 +1787,17 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           });
 
           if (settlement.hasWinner || remaining.length <= 1) {
-            // READ ALL WINNER USER PROFILES BEFORE ANY WRITES (Firestore read-before-write rule!)
-            const winnerUserSnaps = await Promise.all(
-              settlement.payoutsByPlayer.map((p) => tx.get(usersCol.doc(p.uid)))
-            );
+            // READ ALL WINNER USER PROFILES & BOT PLAYERS BEFORE ANY WRITES (Firestore read-before-write rule!)
+            const [winnerUserSnaps, winnerBotSnaps] = await Promise.all([
+              Promise.all(settlement.payoutsByPlayer.map((p) => tx.get(usersCol.doc(p.uid)))),
+              Promise.all(
+                settlement.payoutsByPlayer.map((p) =>
+                  p.telegramUserId > 0
+                    ? tx.get(botPlayersCol.doc(String(p.telegramUserId)))
+                    : Promise.resolve(null)
+                )
+              ),
+            ]);
 
             intermissionEndsAtMs = nowMs + intermissionMs;
             nextBallDrawAtMs = 0;
@@ -1720,12 +1812,13 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
             for (let i = 0; i < settlement.payoutsByPlayer.length; i++) {
               const payout = settlement.payoutsByPlayer[i];
               const uSnap = winnerUserSnaps[i];
+              const bSnap = winnerBotSnaps[i];
               const userRef = usersCol.doc(payout.uid);
               const currentBal = uSnap.exists ? Number(uSnap.get('demoBalanceEtb') ?? 0) : 0;
-              const nextBal = Number((currentBal + payout.totalPrizeEtb).toFixed(2));
+              const nextBal = Math.min(1_000_000, Number((currentBal + payout.totalPrizeEtb).toFixed(2)));
               if (uSnap.exists) {
                 tx.update(userRef, {
-                  demoBalanceEtb: Math.min(1_000_000, nextBal),
+                  demoBalanceEtb: nextBal,
                   updatedAt: FieldValue.serverTimestamp(),
                 });
               } else {
@@ -1736,9 +1829,15 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
                   username: payout.uid,
                   language: 'am',
                   phoneVerified: true,
-                  demoBalanceEtb: Math.min(1_000_000, nextBal),
+                  demoBalanceEtb: nextBal,
                   createdAt: FieldValue.serverTimestamp(),
                   updatedAt: FieldValue.serverTimestamp(),
+                });
+              }
+              if (payout.telegramUserId > 0 && bSnap?.exists) {
+                tx.update(botPlayersCol.doc(String(payout.telegramUserId)), {
+                  demoBalanceEtb: nextBal,
+                  updatedAt: new Date(nowMs).toISOString(),
                 });
               }
 
@@ -1751,12 +1850,16 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
                 userId: payout.uid,
                 type: 'bingo_win',
                 amountEtb: payout.totalPrizeEtb,
+                balanceBeforeEtb: currentBal,
+                balanceAfterEtb: nextBal,
                 status: 'demo_completed',
                 description: `Auto-settled Bingo Win (Card #${payout.cardIds.join(', #')} · 80% Pool)`.slice(
                   0,
                   160
                 ),
                 reference: `ADB-WIN-${roomId}-R${roundNumber}`.slice(0, 64),
+                relatedId: gameId,
+                idempotencyKey: txId,
                 createdAt: FieldValue.serverTimestamp(),
               });
 

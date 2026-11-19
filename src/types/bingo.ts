@@ -64,6 +64,8 @@ export interface RoomConfig {
   maxPlayers?: number; // 600 individual players
   minPlayers: number; // 3
   countdownSeconds: number;
+  registrationDeadlineMs?: number;
+  roundStartedAtMs?: number;
   activePlayers: number;
   confirmedPlayersCount?: number;
   verifiedPaidEntriesCount?: number;
@@ -140,6 +142,8 @@ export interface PlayerStateResponse {
   referrals: ReferralRecord[];
   gameHistory: GameHistoryItem[];
   leaderboard: LeaderboardEntry[];
+  supportTickets?: SupportTicket[];
+  serverNowMs?: number;
 }
 
 export interface ReferralRecord {

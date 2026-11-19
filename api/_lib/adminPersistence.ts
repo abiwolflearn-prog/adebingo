@@ -949,6 +949,121 @@ export class PersistentAdminService {
     };
   }
 
+  public async adjustUserWallet(params: {
+    uid: string;
+    operation: 'credit' | 'debit';
+    amountEtb: number;
+    reason: string;
+    adminActor: VerifiedSessionActor;
+  }): Promise<{
+    ok: boolean;
+    reason?: 'user_not_found' | 'invalid_amount' | 'insufficient_balance';
+    user?: AdminManagedUserRecord;
+    updatedBalanceEtb?: number;
+    auditRecord?: AdminAuditRecord;
+  }> {
+    await this.ensureSeedData();
+    const amount = Number(params.amountEtb);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 50000) {
+      return { ok: false, reason: 'invalid_amount' };
+    }
+
+    const userRef = this.db.collection('users').doc(params.uid);
+    const tgMatch = /^tg_([1-9]\d*)$/.exec(params.uid);
+    const tgId = tgMatch ? Number(tgMatch[1]) : 0;
+    const botPlayerRef = tgId > 0 ? this.db.collection('botPlayers').doc(String(tgId)) : null;
+    const chainRef = this.db.collection(ADMIN_AUDIT_META_COLLECTION).doc('chain');
+    const transactionsCol = this.db.collection('transactions');
+
+    const txRes = await this.db.runTransaction(async (tx) => {
+      const [userSnap, botPlayerSnap, chainSnap] = await Promise.all([
+        tx.get(userRef),
+        botPlayerRef ? tx.get(botPlayerRef) : Promise.resolve(null),
+        tx.get(chainRef),
+      ]);
+
+      if (!userSnap.exists && !botPlayerSnap?.exists) {
+        return { ok: false as const, reason: 'user_not_found' as const };
+      }
+
+      const currentBal = userSnap.exists
+        ? Number(userSnap.get('demoBalanceEtb') ?? 0)
+        : Number(botPlayerSnap?.get('demoBalanceEtb') ?? 0);
+
+      if (params.operation === 'debit' && amount > currentBal) {
+        return { ok: false as const, reason: 'insufficient_balance' as const };
+      }
+
+      const delta = params.operation === 'credit' ? amount : -amount;
+      const nextBal = Math.min(1_000_000, Math.max(0, Number((currentBal + delta).toFixed(2))));
+      const nowIso = new Date().toISOString();
+      const cleanReason =
+        params.reason.trim() ||
+        (params.operation === 'credit'
+          ? 'Admin Sandbox Wallet Credit'
+          : 'Admin Sandbox Wallet Debit');
+
+      if (userSnap.exists) {
+        tx.update(userRef, {
+          demoBalanceEtb: nextBal,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      if (botPlayerRef && botPlayerSnap?.exists) {
+        tx.update(botPlayerRef, {
+          demoBalanceEtb: nextBal,
+          updatedAt: nowIso,
+        });
+      }
+
+      const txId = `tx_adj_${params.uid}_${Date.now()}`;
+      tx.set(transactionsCol.doc(txId), {
+        transactionId: txId,
+        userId: params.uid,
+        type: params.operation === 'credit' ? 'deposit_demo' : 'withdraw_demo',
+        amountEtb: delta,
+        balanceBeforeEtb: currentBal,
+        balanceAfterEtb: nextBal,
+        status: 'demo_completed',
+        description: `Admin ${params.operation === 'credit' ? 'Credit' : 'Debit'}: ${cleanReason}`.slice(0, 160),
+        reference: `ADB-ADJ-${Date.now().toString(36).toUpperCase()}`,
+        relatedId: params.uid,
+        idempotencyKey: txId,
+        createdAt: nowIso,
+      });
+
+      const builtAudit = this.buildAuditRecordFromChainSnap(chainSnap, {
+        adminActor: params.adminActor,
+        action: 'WALLET_BALANCE_ADJUSTED',
+        targetId: params.uid,
+        summary: `Admin ${params.operation} ${amount} ETB for ${params.uid} (${currentBal} -> ${nextBal} ETB)`,
+        previousValue: String(currentBal),
+        newValue: String(nextBal),
+        notes: cleanReason,
+      });
+
+      this.writeAuditRecordToTx(tx, builtAudit);
+      return {
+        ok: true as const,
+        updatedBalanceEtb: nextBal,
+        auditRecord: builtAudit.auditRecord,
+      };
+    });
+
+    if (!txRes.ok) {
+      return txRes;
+    }
+
+    const updatedList = await this.searchUsers(params.uid);
+    const updatedUser = updatedList.find((u) => u.uid === params.uid);
+    return {
+      ok: true,
+      user: updatedUser,
+      updatedBalanceEtb: txRes.updatedBalanceEtb,
+      auditRecord: txRes.auditRecord,
+    };
+  }
+
   public async blockRoleEscalationAttempt(params: {
     actor: VerifiedSessionActor;
     targetUid: string;
@@ -1039,7 +1154,14 @@ export class PersistentAdminService {
 
       const order = payoutSnap.data() as AdminPayoutOrder;
       const userRef = this.db.collection('users').doc(order.uid);
-      const userSnap = await tx.get(userRef);
+      const orderTgMatch = /^tg_([1-9]\d*)$/.exec(order.uid);
+      const orderTgId = Number(order.telegramUserId || (orderTgMatch ? Number(orderTgMatch[1]) : 0));
+      const botPlayerRef =
+        orderTgId > 0 ? this.db.collection('botPlayers').doc(String(orderTgId)) : null;
+      const [userSnap, botPlayerSnap] = await Promise.all([
+        tx.get(userRef),
+        botPlayerRef ? tx.get(botPlayerRef) : Promise.resolve(null),
+      ]);
 
       const prevStatus = order.status;
       if (prevStatus === 'Rejected' || prevStatus === 'Completed') {
@@ -1077,8 +1199,11 @@ export class PersistentAdminService {
       if (params.nextStatus === 'Rejected') {
         const currentBalance = userSnap.exists
           ? Number(userSnap.get('demoBalanceEtb') ?? 250)
-          : 250;
-        const nextBalance = Math.min(100000, currentBalance + Number(order.requestedAmountEtb));
+          : botPlayerSnap?.exists
+            ? Number(botPlayerSnap.get('demoBalanceEtb') ?? 250)
+            : 250;
+        const refundAmt = Number(order.requestedAmountEtb);
+        const nextBalance = Math.min(100000, Number((currentBalance + refundAmt).toFixed(2)));
         refundedBalanceEtb = nextBalance;
 
         if (userSnap.exists) {
@@ -1099,16 +1224,26 @@ export class PersistentAdminService {
             updatedAt: FieldValue.serverTimestamp(),
           });
         }
+        if (botPlayerRef && botPlayerSnap?.exists) {
+          tx.update(botPlayerRef, {
+            demoBalanceEtb: nextBalance,
+            updatedAt: nowIso,
+          });
+        }
 
         const txId = `tx_poref_${order.requestId}`;
         tx.set(transactionsCol.doc(txId), {
           transactionId: txId,
           userId: order.uid,
           type: 'withdraw_demo',
-          amountEtb: Number(order.requestedAmountEtb),
+          amountEtb: refundAmt,
+          balanceBeforeEtb: currentBalance,
+          balanceAfterEtb: nextBalance,
           status: 'demo_completed',
           description: `Demo Payout Rejected Refund (${order.requestId})`.slice(0, 160),
           reference: `ADB-POREF-${order.requestId}`.slice(0, 64),
+          relatedId: order.requestId,
+          idempotencyKey: txId,
           createdAt: nowIso,
         });
       }
@@ -1181,7 +1316,14 @@ export class PersistentAdminService {
 
       const dep = depSnap.data() as AdminDepositRequest;
       const userRef = this.db.collection('users').doc(dep.uid);
-      const userSnap = await tx.get(userRef);
+      const depTgMatch = /^tg_([1-9]\d*)$/.exec(dep.uid);
+      const depTgId = Number(dep.telegramUserId || (depTgMatch ? Number(depTgMatch[1]) : 0));
+      const botPlayerRef =
+        depTgId > 0 ? this.db.collection('botPlayers').doc(String(depTgId)) : null;
+      const [userSnap, botPlayerSnap] = await Promise.all([
+        tx.get(userRef),
+        botPlayerRef ? tx.get(botPlayerRef) : Promise.resolve(null),
+      ]);
 
       const prevStatus = dep.status;
       if (prevStatus === 'Approved' || prevStatus === 'Rejected') {
@@ -1207,8 +1349,11 @@ export class PersistentAdminService {
       if (params.nextStatus === 'Approved') {
         const currentBalance = userSnap.exists
           ? Number(userSnap.get('demoBalanceEtb') ?? 250)
-          : 250;
-        const nextBalance = Math.min(100000, currentBalance + Number(dep.amountEtb));
+          : botPlayerSnap?.exists
+            ? Number(botPlayerSnap.get('demoBalanceEtb') ?? 250)
+            : 250;
+        const creditAmt = Number(dep.amountEtb);
+        const nextBalance = Math.min(100000, Number((currentBalance + creditAmt).toFixed(2)));
         creditedBalanceEtb = nextBalance;
 
         if (userSnap.exists) {
@@ -1229,16 +1374,26 @@ export class PersistentAdminService {
             updatedAt: FieldValue.serverTimestamp(),
           });
         }
+        if (botPlayerRef && botPlayerSnap?.exists) {
+          tx.update(botPlayerRef, {
+            demoBalanceEtb: nextBalance,
+            updatedAt: nowIso,
+          });
+        }
 
         const txId = `tx_dep_${dep.depositId}`;
         tx.set(transactionsCol.doc(txId), {
           transactionId: txId,
           userId: dep.uid,
           type: 'deposit_demo',
-          amountEtb: Number(dep.amountEtb),
+          amountEtb: creditAmt,
+          balanceBeforeEtb: currentBalance,
+          balanceAfterEtb: nextBalance,
           status: 'demo_completed',
           description: `Approved ${dep.provider} Top-Up (${dep.depositId})`.slice(0, 160),
           reference: dep.referenceCode || `ADB-DEP-${dep.depositId}`,
+          relatedId: dep.depositId,
+          idempotencyKey: txId,
           createdAt: nowIso,
         });
       }

@@ -58,6 +58,7 @@ export interface TelegramValidationResult {
     language_code?: string;
   };
   queryId?: string;
+  startParam?: string;
   authDate?: number;
   dataCheckHash?: string;
 }
@@ -482,6 +483,7 @@ export function validateTelegramWebAppInitData(
   }
 
   const queryId = params.get('query_id') || undefined;
+  const startParam = params.get('start_param')?.trim() || undefined;
   if (opts.replayGuard) {
     const replayKey = opts.actionNonce
       ? `init:${computedHash}:nonce:${opts.actionNonce}`
@@ -504,6 +506,7 @@ export function validateTelegramWebAppInitData(
     valid: true,
     telegramUser: parsedUser,
     queryId,
+    startParam,
     authDate: authDateRaw,
     dataCheckHash: computedHash,
   };

@@ -115,6 +115,8 @@ export interface TelegramBotStore {
     inviterTelegramId?: number;
     inviteeBonusEtb?: number;
     inviterBonusEtb?: number;
+    inviterBalanceEtb?: number;
+    inviteeBalanceEtb?: number;
   }>;
   createDemoDepositRequest?(params: {
     telegramUserId: number;
@@ -130,6 +132,7 @@ export interface TelegramBotStore {
     ok: boolean;
     reason?: string;
     availableBalanceEtb?: number;
+    updatedBalanceEtb?: number;
     withdrawal?: BotWithdrawalRequestView;
   }>;
   listPlayerWithdrawalRequests?(telegramUserId: number): Promise<BotWithdrawalRequestView[]>;
@@ -260,6 +263,7 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
         }
 
         if (!userSnap.exists) {
+          const initialBal = player.demoBalanceEtb;
           tx.set(userRef, {
             uid,
             telegramUserId: telegramKey,
@@ -267,9 +271,27 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
             username: `@${player.username}`.slice(0, 64),
             language: resolvedLang,
             phoneVerified: player.phoneVerified,
-            demoBalanceEtb: 250,
+            demoBalanceEtb: initialBal,
+            referralCode: player.referralCode,
+            referralsCount: 0,
+            registeredAt: player.registeredAt,
             createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
+          });
+          const initTxId = `tx_init_${uid}`;
+          tx.set(transactionsCol.doc(initTxId), {
+            transactionId: initTxId,
+            userId: uid,
+            type: 'deposit_demo',
+            amountEtb: initialBal,
+            balanceBeforeEtb: 0,
+            balanceAfterEtb: initialBal,
+            status: 'demo_completed',
+            description: 'Initial Sandbox Account Balance',
+            reference: `ADB-INIT-${telegramUserId}`,
+            relatedId: uid,
+            idempotencyKey: initTxId,
+            createdAt: nowIso,
           });
         } else {
           tx.update(userRef, {
@@ -386,7 +408,8 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
 
         if (
           existingRefSnap.exists ||
-          (inviteePlayerSnap.exists && inviteePlayerSnap.get('referredByUid'))
+          (inviteePlayerSnap.exists && inviteePlayerSnap.get('referredByUid')) ||
+          (inviteeUserSnap.exists && inviteeUserSnap.get('referredByUid'))
         ) {
           return { applied: false, reason: 'already_referred' as const };
         }
@@ -397,6 +420,7 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
         const nowIso = new Date().toISOString();
         const inviterBonusEtb = 20;
         const inviteeBonusEtb = 15;
+        const referralId = `ref_tg_${inviteeTelegramId}`;
 
         const inviterFirstName = String(
           inviterPlayerSnap.get('firstName') ||
@@ -409,10 +433,15 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
         const currentInviteeBal = inviteeUserSnap.exists
           ? Number(inviteeUserSnap.get('demoBalanceEtb') ?? 250)
           : Number(inviteePlayerSnap.get('demoBalanceEtb') ?? 250);
+        const nextInviterBal = Number((currentInviterBal + inviterBonusEtb).toFixed(2));
+        const nextInviteeBal = Number((currentInviteeBal + inviteeBonusEtb).toFixed(2));
+        const prevInviterRefCount = inviterUserSnap.exists
+          ? Number(inviterUserSnap.get('referralsCount') ?? 0)
+          : 0;
 
         tx.set(refDocRef, {
-          id: `ref_tg_${inviteeTelegramId}`,
-          referralId: `ref_tg_${inviteeTelegramId}`,
+          id: referralId,
+          referralId,
           inviterUid,
           inviterName: inviterFirstName,
           inviterTelegramId,
@@ -428,54 +457,104 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
 
         if (inviterUserSnap.exists) {
           tx.update(inviterUserRef, {
-            demoBalanceEtb: currentInviterBal + inviterBonusEtb,
+            demoBalanceEtb: nextInviterBal,
+            referralsCount: prevInviterRefCount + 1,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        } else {
+          tx.set(inviterUserRef, {
+            uid: inviterUid,
+            telegramUserId: inviterUid,
+            displayName: inviterFirstName.slice(0, 80),
+            username: `@${String(inviterPlayerSnap.get('username') || inviterUid).replace(/^@/, '')}`.slice(0, 64),
+            language: inviterPlayerSnap.get('language') === 'en' ? 'en' : 'am',
+            phoneVerified: Boolean(inviterPlayerSnap.get('phoneVerified')),
+            demoBalanceEtb: nextInviterBal,
+            referralCode: `ADEY-${inviterTelegramId}`,
+            referralsCount: 1,
+            createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
           });
         }
-        if (inviterPlayerSnap.exists) {
-          tx.update(inviterPlayerRef, {
-            demoBalanceEtb: currentInviterBal + inviterBonusEtb,
+        tx.set(
+          inviterPlayerRef,
+          {
+            demoBalanceEtb: nextInviterBal,
             updatedAt: nowIso,
-          });
-        }
+          },
+          { merge: true }
+        );
 
+        const cleanInviteeUsername = inviteeUsername.replace(/^@/, '') || inviteeUid;
         if (inviteeUserSnap.exists) {
           tx.update(inviteeUserRef, {
-            demoBalanceEtb: currentInviteeBal + inviteeBonusEtb,
+            referredByCode: referralCode.trim(),
+            referredByUid: inviterUid,
+            demoBalanceEtb: nextInviteeBal,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        } else {
+          tx.set(inviteeUserRef, {
+            uid: inviteeUid,
+            telegramUserId: inviteeUid,
+            displayName: inviteeName.slice(0, 80) || 'Adey Player',
+            username: `@${cleanInviteeUsername}`.slice(0, 64),
+            language: inviteePlayerSnap.get('language') === 'en' ? 'en' : 'am',
+            phoneVerified: Boolean(inviteePlayerSnap.get('phoneVerified')),
+            demoBalanceEtb: nextInviteeBal,
+            referralCode: `ADEY-${inviteeTelegramId}`,
+            referredByCode: referralCode.trim(),
+            referredByUid: inviterUid,
+            referralsCount: 0,
+            createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
           });
         }
         tx.set(
           inviteePlayerRef,
           {
+            uid: inviteeUid,
+            telegramUserId: inviteeTelegramId,
+            telegramKey: inviteeUid,
+            referralCode: `ADEY-${inviteeTelegramId}`,
             referredByCode: referralCode.trim(),
             referredByUid: inviterUid,
-            demoBalanceEtb: currentInviteeBal + inviteeBonusEtb,
+            demoBalanceEtb: nextInviteeBal,
             updatedAt: nowIso,
           },
           { merge: true }
         );
 
-        const inviterTxRef = transactionsCol.doc(`tx_ref_inviter_${inviteeTelegramId}`);
-        const inviteeTxRef = transactionsCol.doc(`tx_ref_invitee_${inviteeTelegramId}`);
+        const inviterTxId = `tx_ref_inviter_${inviteeTelegramId}`;
+        const inviteeTxId = `tx_ref_invitee_${inviteeTelegramId}`;
+        const inviterTxRef = transactionsCol.doc(inviterTxId);
+        const inviteeTxRef = transactionsCol.doc(inviteeTxId);
         tx.set(inviterTxRef, {
-          transactionId: `tx_ref_inviter_${inviteeTelegramId}`,
+          transactionId: inviterTxId,
           userId: inviterUid,
           type: 'referral_bonus',
           amountEtb: inviterBonusEtb,
+          balanceBeforeEtb: currentInviterBal,
+          balanceAfterEtb: nextInviterBal,
           status: 'demo_completed',
           description: `Referral Bonus (${inviteeName})`,
           reference: `ADB-REF-${inviteeTelegramId}`,
+          relatedId: referralId,
+          idempotencyKey: inviterTxId,
           createdAt: nowIso,
         });
         tx.set(inviteeTxRef, {
-          transactionId: `tx_ref_invitee_${inviteeTelegramId}`,
+          transactionId: inviteeTxId,
           userId: inviteeUid,
           type: 'referral_bonus',
           amountEtb: inviteeBonusEtb,
+          balanceBeforeEtb: currentInviteeBal,
+          balanceAfterEtb: nextInviteeBal,
           status: 'demo_completed',
           description: `Welcome Referral Bonus (${referralCode.trim()})`,
           reference: `ADB-REF-W-${inviteeTelegramId}`,
+          relatedId: referralId,
+          idempotencyKey: inviteeTxId,
           createdAt: nowIso,
         });
 
@@ -484,6 +563,8 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
           inviterTelegramId,
           inviterBonusEtb,
           inviteeBonusEtb,
+          inviterBalanceEtb: nextInviterBal,
+          inviteeBalanceEtb: nextInviteeBal,
         };
       });
     },
@@ -566,25 +647,27 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
 
     async createDemoWithdrawalRequest({ telegramUserId, method, amountEtb }) {
       assertValidTelegramUserId(telegramUserId);
-      if (!Number.isFinite(amountEtb) || amountEtb < 20) {
+      if (!Number.isFinite(amountEtb) || amountEtb < 20 || amountEtb > 50000) {
         return { ok: false, reason: 'invalid_withdraw_amount' };
       }
       const canonicalUid = getTelegramFirebaseUid(telegramUserId);
       const userRef = usersCol.doc(canonicalUid);
       const playerRef = playersCol.doc(String(telegramUserId));
-      const requestId = `PO-BOT-${Date.now().toString(36).toUpperCase()}`;
+      const requestId = `PO-BOT-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
       const payoutRef = payoutsCol.doc(requestId);
+      const txId = `tx_wdr_${requestId}`;
 
       return await db.runTransaction(async (tx) => {
         const [userSnap, playerSnap] = await Promise.all([
           tx.get(userRef),
           tx.get(playerRef),
         ]);
+        // Never fabricate balance for missing accounts
         const availableBal = userSnap.exists
-          ? Number(userSnap.get('demoBalanceEtb') ?? 250)
+          ? Math.max(0, Number(userSnap.get('demoBalanceEtb') ?? 0))
           : playerSnap.exists
-            ? Number(playerSnap.get('demoBalanceEtb') ?? 250)
-            : 250;
+            ? Math.max(0, Number(playerSnap.get('demoBalanceEtb') ?? 0))
+            : 0;
         if (amountEtb > availableBal) {
           return {
             ok: false,
@@ -592,6 +675,7 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
             availableBalanceEtb: availableBal,
           };
         }
+        const nextBalance = Number(Math.max(0, availableBal - amountEtb).toFixed(2));
         const displayName = String(
           userSnap.get('displayName') || playerSnap.get('firstName') || `TG #${telegramUserId}`
         );
@@ -599,6 +683,54 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
         const maskedDest = String(
           playerSnap.get('verifiedPhoneMasked') || `TG #${telegramUserId}`
         );
+
+        // Atomically hold/deduct balance in BOTH users and botPlayers to prevent concurrent double-spend
+        if (userSnap.exists) {
+          tx.update(userRef, {
+            demoBalanceEtb: nextBalance,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        } else {
+          tx.set(userRef, {
+            uid: canonicalUid,
+            telegramUserId: canonicalUid,
+            displayName: displayName.slice(0, 80),
+            username: `@${String(playerSnap.get('username') || canonicalUid).replace(/^@/, '')}`.slice(0, 64),
+            language: playerSnap.get('language') === 'en' ? 'en' : 'am',
+            phoneVerified: Boolean(playerSnap.get('phoneVerified')),
+            demoBalanceEtb: nextBalance,
+            referralCode: `ADEY-${telegramUserId}`,
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        }
+
+        tx.set(
+          playerRef,
+          {
+            demoBalanceEtb: nextBalance,
+            pendingAction: null,
+            pendingMethod: null,
+            updatedAt: nowIso,
+          },
+          { merge: true }
+        );
+
+        tx.set(transactionsCol.doc(txId), {
+          transactionId: txId,
+          userId: canonicalUid,
+          type: 'withdraw_demo',
+          amountEtb: -amountEtb,
+          balanceBeforeEtb: availableBal,
+          balanceAfterEtb: nextBalance,
+          status: 'demo_pending',
+          description: `Demo Withdrawal Hold (${method})`,
+          reference: requestId,
+          relatedId: requestId,
+          idempotencyKey: txId,
+          createdAt: nowIso,
+        });
+
         tx.set(payoutRef, {
           requestId,
           uid: canonicalUid,
@@ -611,27 +743,21 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
           status: 'Pending',
           reviewNotes: 'Submitted via @AdeyBingoBot (Demo Sandbox)',
           demoSandboxOnly: true,
+          fundsHeldAtSubmission: true,
           auditTrail: [
             {
               timestamp: nowIso,
               fromStatus: 'Created',
               toStatus: 'Pending',
               reviewedBy: `player:${telegramUserId}`,
-              notes: 'Demo withdrawal requested in Telegram Bot',
+              notes: 'Demo withdrawal requested in Telegram Bot (funds held atomically)',
             },
           ],
         });
-        tx.set(
-          playerRef,
-          {
-            pendingAction: null,
-            pendingMethod: null,
-            updatedAt: nowIso,
-          },
-          { merge: true }
-        );
+
         return {
           ok: true,
+          updatedBalanceEtb: nextBalance,
           withdrawal: {
             requestId,
             requestedAmountEtb: amountEtb,
