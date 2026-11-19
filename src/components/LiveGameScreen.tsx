@@ -1,13 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
-  Play,
-  Pause,
   RotateCcw,
-  CheckSquare,
-  Square,
   Plus,
   Grid,
-  Award,
   Clock,
   Users,
   Trophy,
@@ -261,28 +256,6 @@ export function LiveGameScreen({
                 <span className="hidden sm:inline">{lang === 'am' ? 'ድምፅ' : 'Voice'}</span>
               </button>
 
-              <button
-                type="button"
-                onClick={onToggleAutoCaller}
-                title={lang === 'am' ? 'አውቶ ቁጥር ጠሪ' : 'Toggle Auto Caller'}
-                className={`px-2 py-1 rounded-lg text-[10.5px] font-extrabold flex items-center gap-1 transition-colors min-h-[30px] border ${
-                  autoCallerActive
-                    ? 'bg-[#159447] border-[#08743A] text-white shadow-xs'
-                    : 'bg-[#FFF9ED] border-[#E7EDE8] text-[#183326]'
-                }`}
-              >
-                {autoCallerActive ? <Pause size={11} /> : <Play size={11} />}
-                <span>
-                  {autoCallerActive
-                    ? lang === 'am'
-                      ? 'አቁም'
-                      : 'Pause'
-                    : lang === 'am'
-                    ? 'አውቶ'
-                    : 'Auto'}
-                </span>
-              </button>
-
               {autoCallerActive && (
                 <button
                   type="button"
@@ -448,32 +421,6 @@ export function LiveGameScreen({
               </span>
               {cardPickerOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
             </button>
-
-            <div className="flex items-center gap-1.5 flex-1 sm:flex-initial justify-end">
-              <button
-                type="button"
-                onClick={onToggleAutoMark}
-                title={lang === 'am' ? 'የተጠሩ ቁጥሮችን በራስ-ሰር ምልክት አድርግ' : 'Automatically mark called numbers'}
-                className={`px-2 py-1 rounded-lg text-[10.5px] font-extrabold flex items-center gap-1 border min-h-[32px] whitespace-nowrap transition-colors ${
-                  autoMark
-                    ? 'bg-[#E6F6EB] border-[#159447]/40 text-[#08743A]'
-                    : 'bg-[#FFF9ED] border-[#E7EDE8] text-[#68776D]'
-                }`}
-              >
-                {autoMark ? <CheckSquare size={12} className="text-[#159447]" /> : <Square size={12} />}
-                <span>{lang === 'am' ? 'አውቶ' : 'Auto'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={onClaimBingo}
-                disabled={playerCards.length === 0}
-                className="flex-1 sm:flex-initial px-3.5 py-1 rounded-lg bg-gradient-to-r from-[#F5BD42] to-[#D99B20] text-[#183326] border border-[#D99B20] text-xs font-extrabold flex items-center justify-center gap-1 shadow-[0_3px_8px_rgba(245,189,66,0.28)] hover:brightness-105 active:scale-95 transition-all disabled:opacity-45 min-h-[32px] whitespace-nowrap"
-              >
-                <Award size={13} />
-                BINGO!
-              </button>
-            </div>
           </div>
 
           {/* Collapsible All-Cards Picker (8 cols mobile / 10 cols desktop) */}
