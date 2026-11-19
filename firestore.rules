@@ -355,7 +355,7 @@ service cloud.firestore {
         data.friendName is string && data.friendName.size() >= 1 && data.friendName.size() <= 80 &&
         data.friendHandle is string && data.friendHandle.size() >= 2 && data.friendHandle.size() <= 64 &&
         data.inviterBonusEtb is int && data.inviterBonusEtb == 20 &&
-        data.inviteeBonusEtb is int && data.inviteeBonusEtb == 15 &&
+        data.inviteeBonusEtb is int && (data.inviteeBonusEtb == 0 || data.inviteeBonusEtb == 15) &&
         data.status is string && data.status.size() <= 16 &&
         (data.status == 'qualified' || data.status == 'pending') &&
         data.createdAt is timestamp;
@@ -376,7 +376,7 @@ service cloud.firestore {
         isValidId(userId) &&
         isValidUserPublicProfile(incoming(), userId) &&
         incoming().telegramUserId == request.auth.uid &&
-        incoming().demoBalanceEtb == 250 &&
+        incoming().demoBalanceEtb == 15 &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         exists(/databases/$(database)/documents/telegramBindings/$(request.auth.uid)) &&

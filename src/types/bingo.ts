@@ -98,6 +98,8 @@ export interface DepositRequestSummary {
   amountEtb: number;
   provider: string;
   referenceCode: string;
+  receiptProof?: string;
+  reviewNotes?: string;
   status: 'Pending' | 'Approved' | 'Rejected';
   requestDate: string;
 }
@@ -153,7 +155,7 @@ export interface ReferralRecord {
   joinedAt: string;
   status: 'qualified' | 'pending';
   inviterBonus: number; // 20 ETB
-  inviteeBonus: number; // 15 ETB
+  inviteeBonus: number; // 0 ETB (new player receives 15 ETB initial credit once)
 }
 
 export interface GameHistoryItem {

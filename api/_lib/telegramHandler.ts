@@ -414,7 +414,7 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
       resolveAdminSessionSecret({
         getSessionSecret: () => undefined,
       }) || (botToken ? resolveAdminSessionSecret({ sessionSecret: botToken }) : null);
-    const sessionToken = sessionSecret
+    const mintedSession = sessionSecret
       ? mintServerSessionToken(
           {
             uid: minted.uid,
@@ -425,19 +425,25 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
             expiresInSeconds: 3600,
           },
           sessionSecret
-        ).token
+        )
       : undefined;
+    const sessionToken = mintedSession?.token;
+    const verifiedRole = mintedSession?.actor.role ?? 'player';
+    const isAdmin = verifiedRole === 'admin';
 
     sendJson(res, 200, {
       ok: true,
       uid: minted.uid,
       verifiedTelegramId: tgUser.id,
+      role: verifiedRole,
+      isAdmin,
       customToken: minted.customToken,
       ...(sessionToken ? { sessionToken } : {}),
       ...(referralApplied ? { referralApplied } : {}),
       profile: {
         uid: minted.uid,
         telegramUserId: tgUser.id,
+        role: verifiedRole,
         firstName: persisted.player.firstName,
         lastName: persisted.player.lastName || '',
         username: persisted.player.username,

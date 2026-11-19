@@ -23,8 +23,9 @@ export const DEFAULT_GAME_RULES = {
   winnersPrizeRatio: 0.8,
   lobbyCountdownSeconds: 60,
   minEligiblePlayers: 3,
+  initialAccountBalanceEtb: 15,
   inviterBonusEtb: 20,
-  inviteeBonusEtb: 15,
+  inviteeBonusEtb: 0,
 } as const;
 
 export interface AuthoritativeGameFinancials {
@@ -494,7 +495,7 @@ export function isRoomEligibleToStart(
 export function calculateDemoPrizePool(
   totalCardsInRoom: number,
   cardPrice: number = DEFAULT_GAME_RULES.defaultCardPrice,
-  serviceReserveRatio: number = 0.15
+  serviceReserveRatio: number = DEFAULT_GAME_RULES.adeyShareRatio
 ): {
   grossTotal: number;
   winnerPrizeDemo: number;

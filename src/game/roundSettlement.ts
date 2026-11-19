@@ -1,7 +1,6 @@
 import type { WinPatternType } from '../types/bingo.ts';
 import {
   calculateAuthoritativeGameFinancials,
-  calculateDemoPrizePool,
   checkCardWin,
   generateDeterministicCard,
 } from './rules.ts';
@@ -81,13 +80,7 @@ export function evaluateRoundWinners(params: {
     cardPrice
   );
 
-  let prizePoolEtb: number;
-  if (params.useAuthoritative8020Split || params.confirmedPlayersCount !== undefined) {
-    prizePoolEtb = Math.max(0, financials.winnersPrizePoolEtb);
-  } else {
-    const { winnerPrizeDemo } = calculateDemoPrizePool(totalCards, cardPrice);
-    prizePoolEtb = Math.max(0, winnerPrizeDemo);
-  }
+  const prizePoolEtb = Math.max(0, financials.winnersPrizePoolEtb);
 
   const rawWinners: Array<{
     entry: RoomCardOwnerEntry;

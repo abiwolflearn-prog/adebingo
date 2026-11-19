@@ -520,7 +520,7 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
           ok: true,
           action: 'apply_promo',
           code: rawCode,
-          bonusEtb: refRes.inviteeBonusEtb ?? 15,
+          bonusEtb: refRes.inviteeBonusEtb ?? 0,
           inviterBonusEtb: refRes.inviterBonusEtb ?? 20,
           ...(typeof refRes.inviteeBalanceEtb === 'number'
             ? { updatedBalanceEtb: refRes.inviteeBalanceEtb }
@@ -657,20 +657,51 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
           res,
           400,
           'invalid_deposit_amount',
-          'Demo deposit request amount must be between 10 and 10,000 ETB.'
+          'Deposit request amount must be between 10 and 10,000 ETB.'
         );
         return;
       }
       const method = resolveDemoMethod(body.provider ?? body.method);
+      const rawReceiptRef =
+        typeof body.receiptReference === 'string'
+          ? body.receiptReference.trim()
+          : typeof body.referenceCode === 'string'
+            ? body.referenceCode.trim()
+            : '';
+      const rawReceiptProof =
+        typeof body.receiptProof === 'string'
+          ? body.receiptProof.trim().slice(0, 300)
+          : typeof body.proofNote === 'string'
+            ? body.proofNote.trim().slice(0, 300)
+            : '';
+      if (rawReceiptRef && (rawReceiptRef.length < 4 || rawReceiptRef.length > 64)) {
+        sendError(
+          res,
+          400,
+          'invalid_receipt_reference',
+          'Payment receipt reference must be between 4 and 64 characters.'
+        );
+        return;
+      }
 
       if (resolvedTgId > 0 && store.createDemoDepositRequest) {
         const result = await store.createDemoDepositRequest({
           telegramUserId: resolvedTgId,
           method,
           amountEtb,
+          receiptReference: rawReceiptRef || undefined,
+          receiptProof: rawReceiptProof || undefined,
         });
         if (!result.ok || !result.deposit) {
-          sendError(res, 400, result.reason || 'deposit_request_failed', 'Unable to submit deposit request.');
+          const statusCode = result.reason === 'duplicate_receipt' ? 409 : 400;
+          sendError(
+            res,
+            statusCode,
+            result.reason || 'deposit_request_failed',
+            result.reason === 'duplicate_receipt'
+              ? 'This payment receipt reference has already been submitted.'
+              : 'Unable to submit deposit request.'
+          );
           return;
         }
         sendJson(res, 201, {
@@ -684,27 +715,58 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
 
       const nowIso = new Date().toISOString();
       const depositId = `DEP-WEB-${Date.now().toString(36).toUpperCase()}`;
-      const referenceCode = `REF-${Math.floor(100000 + Math.random() * 899999)}`;
-      const deposit = {
-        depositId,
-        amountEtb,
-        provider: method,
-        referenceCode,
-        status: 'Pending' as const,
-        requestDate: nowIso,
-      };
-      await db.collection('depositRequests').doc(depositId).set({
-        ...deposit,
-        uid: caller.uid,
-        userDisplayName: caller.displayName,
-        telegramUserId: resolvedTgId,
-        reviewNotes: 'Submitted via ADEYBINGO Mini App (Demo Sandbox)',
-        demoSandboxOnly: true,
+      const referenceCode = rawReceiptRef
+        ? rawReceiptRef.toUpperCase()
+        : `REF-${Math.floor(100000 + Math.random() * 899999)}`;
+      const lockKey = referenceCode.replace(/[^A-Z0-9_-]/g, '_').slice(0, 64);
+      const lockRef = db.collection('depositReceiptLocks').doc(lockKey);
+      const depRef = db.collection('depositRequests').doc(depositId);
+
+      const depTx = await db.runTransaction(async (tx) => {
+        const lockSnap = await tx.get(lockRef);
+        if (lockSnap.exists) {
+          return { ok: false as const, reason: 'duplicate_receipt' };
+        }
+        const deposit = {
+          depositId,
+          amountEtb,
+          provider: method,
+          referenceCode,
+          ...(rawReceiptProof ? { receiptProof: rawReceiptProof } : {}),
+          status: 'Pending' as const,
+          requestDate: nowIso,
+          reviewNotes: 'Manual payment receipt submitted — awaiting admin verification',
+        };
+        tx.set(lockRef, {
+          referenceCode,
+          depositId,
+          uid: caller.uid,
+          createdAt: nowIso,
+        });
+        tx.set(depRef, {
+          ...deposit,
+          uid: caller.uid,
+          userDisplayName: caller.displayName,
+          telegramUserId: resolvedTgId,
+          demoSandboxOnly: true,
+        });
+        return { ok: true as const, deposit };
       });
+
+      if (!depTx.ok) {
+        sendError(
+          res,
+          409,
+          'duplicate_receipt',
+          'This payment receipt reference has already been submitted.'
+        );
+        return;
+      }
+
       sendJson(res, 201, {
         ok: true,
         action: 'deposit_request',
-        deposit,
+        deposit: depTx.deposit,
         demoSandboxOnly: true,
       });
       return;

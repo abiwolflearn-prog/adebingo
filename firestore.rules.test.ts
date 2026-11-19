@@ -24,8 +24,8 @@ test('Phase 0 Dirty Dozen & Eight Pillars Audit on Firestore Security Rules', ()
   // 3. Wallet Balance Immutability on /users/{userId}
   assert.match(
     rulesContent,
-    /incoming\(\)\.demoBalanceEtb == 250/,
-    'Must lock initial demo balance to 250 ETB on creation'
+    /incoming\(\)\.demoBalanceEtb == 15/,
+    'Must lock initial balance to 15 ETB on creation'
   );
   assert.match(
     rulesContent,

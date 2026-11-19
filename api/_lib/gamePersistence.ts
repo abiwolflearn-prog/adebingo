@@ -1139,14 +1139,10 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           reservedCardsCount,
           cardPrice
         );
-        const demoPrizeEtb = Math.max(
-          50,
-          financials.winnersPrizePoolEtb,
-          playerCardIds.length * cardPrice * 4
-        );
+        const demoPrizeEtb = financials.winnersPrizePoolEtb;
         const patternLabel = (winResult.patternLabelEn || 'Bingo Line').slice(0, 64);
         const roundNumber = Number(gameData.roundNumber ?? 1);
-        const currentBal = Number(userSnap.get('demoBalanceEtb') ?? 250);
+        const currentBal = Number(userSnap.get('demoBalanceEtb') ?? 0);
         const txId = `tx_win_${gameId}_r${roundNumber}`;
 
         tx.update(gameRef, {
