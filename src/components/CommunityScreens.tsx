@@ -427,7 +427,7 @@ export function CommunityScreens({
                 {lang === 'am' ? '+20 ብር ግብዣ' : '+20 ETB INVITE'}
               </span>
               <span className="text-[10px] font-extrabold text-[#E6F6EB]">
-                +15 ETB {lang === 'am' ? 'መቀላቀያ' : 'Join'}
+                15 ETB {lang === 'am' ? 'መነሻ' : 'Start'}
               </span>
             </div>
 

@@ -40,12 +40,19 @@ const FORBIDDEN_WALLET_OVERRIDE_FIELDS = [
   'role',
 ] as const;
 
-type DemoMethod = 'Telebirr (Demo)' | 'CBE Birr (Demo)' | 'Chapa Sandbox (Demo)';
+type DemoMethod =
+  | 'Telebirr (Manual)'
+  | 'CBE Birr (Manual)'
+  | 'Bank Transfer (Manual)'
+  | 'Telebirr (Demo)'
+  | 'CBE Birr (Demo)';
 
 function resolveDemoMethod(raw: unknown): DemoMethod {
+  if (raw === 'CBE Birr (Manual)' || raw === 'cbe_birr_manual') return 'CBE Birr (Manual)';
   if (raw === 'CBE Birr (Demo)' || raw === 'cbe_birr') return 'CBE Birr (Demo)';
-  if (raw === 'Chapa Sandbox (Demo)' || raw === 'chapa') return 'Chapa Sandbox (Demo)';
-  return 'Telebirr (Demo)';
+  if (raw === 'Bank Transfer (Manual)' || raw === 'bank_transfer') return 'Bank Transfer (Manual)';
+  if (raw === 'Telebirr (Demo)' || raw === 'telebirr') return 'Telebirr (Demo)';
+  return 'Telebirr (Manual)';
 }
 
 function toIsoString(raw: unknown): string {
@@ -246,7 +253,7 @@ export function createPlayerStateHandler(deps: PlayerStateHandlerDeps = {}) {
           status:
             data.status === 'qualified' ? ('qualified' as const) : ('pending' as const),
           inviterBonus: Number(data.inviterBonusEtb ?? 20),
-          inviteeBonus: Number(data.inviteeBonusEtb ?? 15),
+          inviteeBonus: Number(data.inviteeBonusEtb ?? 0),
         };
       })
       .sort((a, b) => b.joinedAt.localeCompare(a.joinedAt));

@@ -29,15 +29,38 @@ interface WalletScreensProps {
   transactions: WalletTransaction[];
   depositRequests?: DepositRequestSummary[];
   payoutRequests?: PayoutRequestSummary[];
-  onSubmitDepositRequest: (amount: number, provider: string) => Promise<void>;
+  onSubmitDepositRequest: (
+    amount: number,
+    provider: string,
+    receiptReference: string,
+    receiptProof: string
+  ) => Promise<void>;
   onSubmitWithdrawRequest: (amount: number, method: string) => Promise<boolean>;
   onNavigate: (screen: ScreenId) => void;
 }
 
-const DEMO_PROVIDERS = [
-  { id: 'Telebirr (Demo)', nameAm: 'ቴሌብር (Demo)', nameEn: 'Telebirr (Demo)' },
-  { id: 'CBE Birr (Demo)', nameAm: 'ሲቢኢ ብር (Demo)', nameEn: 'CBE Birr (Demo)' },
-  { id: 'Chapa Sandbox (Demo)', nameAm: 'ቻፓ (Demo)', nameEn: 'Chapa Sandbox (Demo)' },
+const MANUAL_PAYMENT_METHODS = [
+  {
+    id: 'Telebirr (Manual)',
+    nameAm: 'ቴሌብር (Manual Transfer)',
+    nameEn: 'Telebirr (Manual Transfer)',
+    instructionAm: 'ወደ ADEYBINGO ቴሌብር ሂሳብ (+251 911 000 000) ከከፈሉ በኋላ የደረሰኝ ቁጥርዎን ከታች ያስገቡ።',
+    instructionEn: 'Transfer manually via Telebirr (+251 911 000 000), then enter your receipt reference below.',
+  },
+  {
+    id: 'CBE Birr (Manual)',
+    nameAm: 'ሲቢኢ ብር (Manual Transfer)',
+    nameEn: 'CBE Birr (Manual Transfer)',
+    instructionAm: 'ወደ ADEYBINGO CBE Birr ሂሳብ (1000-0000-0000) ከከፈሉ በኋላ የደረሰኝ ቁጥርዎን ያስገቡ።',
+    instructionEn: 'Transfer manually via CBE Birr (1000-0000-0000), then enter your receipt reference below.',
+  },
+  {
+    id: 'Bank Transfer (Manual)',
+    nameAm: 'የባንክ ዝውውር (Manual Transfer)',
+    nameEn: 'Bank Transfer (Manual)',
+    instructionAm: 'በባንክ ዝውውር (CBE 1000-0000-0000) ከከፈሉ በኋላ የዝውውር ማረጋገጫ ቁጥርዎን ያስገቡ።',
+    instructionEn: 'Complete a manual bank transfer (CBE 1000-0000-0000), then submit your transfer receipt below.',
+  },
 ];
 
 export function WalletScreens({
@@ -58,17 +81,21 @@ export function WalletScreens({
   );
 
   const [depositAmount, setDepositAmount] = useState('100');
-  const [depositProvider, setDepositProvider] = useState(DEMO_PROVIDERS[0].id);
+  const [depositProvider, setDepositProvider] = useState(MANUAL_PAYMENT_METHODS[0].id);
+  const [depositReceiptRef, setDepositReceiptRef] = useState('');
+  const [depositReceiptProof, setDepositReceiptProof] = useState('');
   const [depositError, setDepositError] = useState('');
   const [depositBusy, setDepositBusy] = useState(false);
 
   const [withdrawAmount, setWithdrawAmount] = useState('50');
-  const [withdrawProvider, setWithdrawProvider] = useState(DEMO_PROVIDERS[0].id);
+  const [withdrawProvider, setWithdrawProvider] = useState(MANUAL_PAYMENT_METHODS[0].id);
   const [withdrawError, setWithdrawError] = useState('');
   const [withdrawBusy, setWithdrawBusy] = useState(false);
 
   const showDepositForm = mode === 'deposit' || activeActionPanel === 'deposit';
   const showWithdrawForm = mode === 'withdraw' || activeActionPanel === 'withdraw';
+  const activeMethodInfo =
+    MANUAL_PAYMENT_METHODS.find((m) => m.id === depositProvider) ?? MANUAL_PAYMENT_METHODS[0];
 
   const handleDepositSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -81,10 +108,21 @@ export function WalletScreens({
       );
       return;
     }
+    const cleanRef = depositReceiptRef.trim();
+    if (cleanRef.length < 4) {
+      setDepositError(
+        lang === 'am'
+          ? 'እባክዎ ትክክለኛ የክፍያ ደረሰኝ / ማረጋገጫ ቁጥር (ቢያንስ 4 ፊደል/ቁጥር) ያስገቡ።'
+          : 'Please enter your payment receipt / transaction reference (at least 4 characters).'
+      );
+      return;
+    }
     setDepositError('');
     setDepositBusy(true);
     try {
-      await onSubmitDepositRequest(parsed, depositProvider);
+      await onSubmitDepositRequest(parsed, depositProvider, cleanRef, depositReceiptProof.trim());
+      setDepositReceiptRef('');
+      setDepositReceiptProof('');
       setActiveActionPanel('none');
       if (mode !== 'wallet') onNavigate('wallet');
     } catch (err) {
@@ -272,7 +310,7 @@ export function WalletScreens({
           <div className="flex items-center justify-between">
             <h3 className="font-['Outfit'] text-xs sm:text-sm font-extrabold text-[#183326] flex items-center gap-1">
               <ArrowDownLeft size={14} className="text-[#159447]" />
-              {lang === 'am' ? 'የሙከራ ተቀማጭ (Demo Deposit)' : 'Demo Deposit Request'}
+              {lang === 'am' ? 'በእጅ የተከፈለ ገቢ ማረጋገጫ' : 'Manual Deposit & Receipt Submission'}
             </h3>
             <button
               type="button"
@@ -286,6 +324,13 @@ export function WalletScreens({
             </button>
           </div>
 
+          <div className="rounded-lg bg-[#FFF9ED] border border-[#F5BD42]/60 px-2 py-1.5 text-[10.5px] text-[#183326] leading-snug">
+            <b className="text-[#08743A] block">
+              {lang === 'am' ? 'የክፍያ መመሪያ (አስተዳዳሪ የሚያረጋግጠው)፦' : 'Manual Payment Instructions (Admin Verified):'}
+            </b>
+            <span>{lang === 'am' ? activeMethodInfo.instructionAm : activeMethodInfo.instructionEn}</span>
+          </div>
+
           <div className="grid grid-cols-2 gap-1.5">
             <div>
               <label className="block text-[10px] font-bold text-[#68776D] mb-0.5">
@@ -294,10 +339,10 @@ export function WalletScreens({
               <select
                 value={depositProvider}
                 onChange={(e) => setDepositProvider(e.target.value)}
-                aria-label="Sandbox Payment Method"
+                aria-label="Manual Payment Method"
                 className="w-full px-2 py-1 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[11px] font-bold text-[#183326] min-h-[32px] focus:outline-none focus:border-[#159447]"
               >
-                {DEMO_PROVIDERS.map((p) => (
+                {MANUAL_PAYMENT_METHODS.map((p) => (
                   <option key={p.id} value={p.id}>
                     {lang === 'am' ? p.nameAm : p.nameEn}
                   </option>
@@ -313,7 +358,7 @@ export function WalletScreens({
                 type="number"
                 value={depositAmount}
                 onChange={(e) => setDepositAmount(e.target.value)}
-                aria-label="Demo deposit amount in ETB"
+                aria-label="Deposit amount in ETB"
                 className="w-full px-2 py-1 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[11px] font-bold text-[#183326] tabular-nums min-h-[32px] focus:outline-none focus:border-[#159447]"
               />
             </div>
@@ -336,14 +381,44 @@ export function WalletScreens({
             ))}
           </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+            <div>
+              <label className="block text-[10px] font-bold text-[#68776D] mb-0.5">
+                {lang === 'am' ? 'የደረሰኝ / ትራንዛክሽን ቁጥር *' : 'Payment Receipt / Ref Code *'}
+              </label>
+              <input
+                type="text"
+                required
+                value={depositReceiptRef}
+                onChange={(e) => setDepositReceiptRef(e.target.value)}
+                placeholder={lang === 'am' ? 'ምሳሌ፦ FT26109ABC' : 'e.g. FT26109ABC'}
+                aria-label="Payment receipt reference code"
+                className="w-full px-2 py-1 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[11px] font-mono font-bold text-[#183326] min-h-[32px] focus:outline-none focus:border-[#159447]"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-[#68776D] mb-0.5">
+                {lang === 'am' ? 'ተጨማሪ ማረጋገጫ (አማራጭ)' : 'Receipt Proof / Sender Note (Optional)'}
+              </label>
+              <input
+                type="text"
+                value={depositReceiptProof}
+                onChange={(e) => setDepositReceiptProof(e.target.value)}
+                placeholder={lang === 'am' ? 'የላኪ ስም / ስልክ / ማስታወሻ' : 'Sender name / SMS detail / receipt URL'}
+                aria-label="Payment receipt proof note"
+                className="w-full px-2 py-1 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[11px] font-medium text-[#183326] min-h-[32px] focus:outline-none focus:border-[#159447]"
+              />
+            </div>
+          </div>
+
           {depositError && <p className="text-[10.5px] font-bold text-[#D94B4B]">{depositError}</p>}
 
           <PrimaryButton type="submit" variant="emerald" size="sm" fullWidth disabled={depositBusy}>
             {depositBusy
               ? '...'
               : lang === 'am'
-              ? `+${depositAmount || 0} ETB ላክ`
-              : `Submit +${depositAmount || 0} ETB`}
+              ? `የ +${depositAmount || 0} ETB ደረሰኝ ላክ`
+              : `Submit +${depositAmount || 0} ETB Receipt`}
           </PrimaryButton>
         </form>
       )}
@@ -381,7 +456,7 @@ export function WalletScreens({
                 aria-label="Destination Method"
                 className="w-full px-2 py-1 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[11px] font-bold text-[#183326] min-h-[32px] focus:outline-none focus:border-[#D99B20]"
               >
-                {DEMO_PROVIDERS.map((p) => (
+                {MANUAL_PAYMENT_METHODS.map((p) => (
                   <option key={p.id} value={p.id}>
                     {lang === 'am' ? p.nameAm : p.nameEn}
                   </option>
@@ -422,18 +497,33 @@ export function WalletScreens({
             {copy.recentRequestsTitle}
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
-            {depositRequests.slice(0, 3).map((d) => (
+            {depositRequests.slice(0, 5).map((d) => (
               <div
                 key={d.depositId}
-                className="flex items-center justify-between p-2 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-[11px]"
+                className="flex items-center justify-between gap-2 p-2 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-[11px]"
               >
-                <div>
-                  <b className="text-[#183326] block">
+                <div className="min-w-0">
+                  <b className="text-[#183326] block truncate">
                     +{d.amountEtb.toFixed(2)} ETB · {d.provider}
                   </b>
-                  <span className="font-mono text-[9.5px] text-[#68776D]">{d.referenceCode}</span>
+                  <span className="font-mono text-[9.5px] text-[#68776D] block truncate">
+                    {d.referenceCode}
+                  </span>
+                  {d.reviewNotes && (
+                    <span className="text-[9.5px] text-[#68776D] block truncate">
+                      {d.reviewNotes}
+                    </span>
+                  )}
                 </div>
-                <span className="px-1.5 py-0.5 rounded bg-[#E6F6EB] text-[#08743A] font-extrabold text-[9.5px]">
+                <span
+                  className={`px-1.5 py-0.5 rounded font-extrabold text-[9.5px] shrink-0 ${
+                    d.status === 'Rejected'
+                      ? 'bg-[#FFF5F5] text-[#D94B4B] border border-[#D94B4B]/30'
+                      : d.status === 'Pending'
+                        ? 'bg-[#FEF5DC] text-[#9A6B0B] border border-[#F5BD42]/60'
+                        : 'bg-[#E6F6EB] text-[#08743A]'
+                  }`}
+                >
                   {d.status}
                 </span>
               </div>

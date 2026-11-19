@@ -74,7 +74,13 @@ export interface AdminAuditRecord {
 
 export interface AdminUserWalletEntry {
   id: string;
-  type: 'deposit_demo' | 'withdraw_demo' | 'bingo_win' | 'card_entry' | 'referral_bonus';
+  type:
+    | 'deposit_demo'
+    | 'withdraw_demo'
+    | 'bingo_win'
+    | 'card_entry'
+    | 'referral_bonus'
+    | 'admin_adjustment';
   amountEtb: number;
   description: string;
   reference: string;
@@ -119,7 +125,14 @@ export interface AdminPayoutOrder {
   telegramUserId: number;
   requestedAmountEtb: number;
   requestDate: string;
-  paymentMethod: 'Telebirr (Demo)' | 'CBE Birr (Demo)' | 'Chapa Sandbox (Demo)';
+  paymentMethod:
+    | 'Telebirr (Demo)'
+    | 'CBE Birr (Demo)'
+    | 'Chapa Sandbox (Demo)'
+    | 'Telebirr (Manual)'
+    | 'CBE Birr (Manual)'
+    | 'Bank Transfer (Manual)'
+    | string;
   destinationMasked: string;
   status: PayoutOrderStatus;
   reviewNotes: string;
@@ -136,8 +149,16 @@ export interface AdminDepositRequest {
   telegramUserId: number;
   amountEtb: number;
   requestDate: string;
-  provider: 'Telebirr (Demo)' | 'CBE Birr (Demo)' | 'Chapa Sandbox (Demo)';
+  provider:
+    | 'Telebirr (Demo)'
+    | 'CBE Birr (Demo)'
+    | 'Chapa Sandbox (Demo)'
+    | 'Telebirr (Manual)'
+    | 'CBE Birr (Manual)'
+    | 'Bank Transfer (Manual)'
+    | string;
   referenceCode: string;
+  receiptProof?: string;
   status: DepositRequestStatus;
   reviewNotes: string;
   reviewedBy?: string;
@@ -568,7 +589,7 @@ export class ServerAdminAuthority {
         phoneVerified: true,
         maskedPhone: '+25191****44',
         language: 'am',
-        demoBalanceEtb: 250.0,
+        demoBalanceEtb: 15.0,
         gamesPlayed: 18,
         gamesWon: 5,
         referralCode: 'ADEY-8842109',
@@ -882,7 +903,7 @@ export class ServerAdminAuthority {
         joinedAt: '2026-03-10 14:20 UTC',
         status: 'qualified',
         inviterBonusEtb: 20,
-        inviteeBonusEtb: 15,
+        inviteeBonusEtb: 0,
       },
       {
         id: 'ref-1002',
@@ -895,7 +916,7 @@ export class ServerAdminAuthority {
         joinedAt: '2026-03-12 11:30 UTC',
         status: 'qualified',
         inviterBonusEtb: 20,
-        inviteeBonusEtb: 15,
+        inviteeBonusEtb: 0,
       },
     ];
 
@@ -948,6 +969,17 @@ export class ServerAdminAuthority {
     }
   }
 
+  public hasDepositReferenceCode(referenceCode: string): boolean {
+    const normalized = referenceCode.trim().toUpperCase();
+    if (!normalized) return false;
+    for (const dep of this.deposits.values()) {
+      if (dep.referenceCode.trim().toUpperCase() === normalized) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   public registerPlayerDepositRequest(params: {
     depositId: string;
     uid: string;
@@ -956,6 +988,7 @@ export class ServerAdminAuthority {
     amountEtb: number;
     provider: AdminDepositRequest['provider'];
     referenceCode: string;
+    receiptProof?: string;
     requestDate?: string;
   }): AdminDepositRequest {
     this.syncBotPlayers();
@@ -967,9 +1000,10 @@ export class ServerAdminAuthority {
       amountEtb: params.amountEtb,
       requestDate: params.requestDate || new Date().toISOString().slice(0, 16).replace('T', ' '),
       provider: params.provider,
-      referenceCode: params.referenceCode,
+      referenceCode: params.referenceCode.trim().toUpperCase(),
+      ...(params.receiptProof ? { receiptProof: params.receiptProof } : {}),
       status: 'Pending',
-      reviewNotes: 'Awaiting payment reference verification',
+      reviewNotes: 'Manual payment receipt submitted — awaiting admin verification',
       demoSandboxOnly: true,
     };
     const nextMap = new Map<string, AdminDepositRequest>();
@@ -1475,18 +1509,24 @@ export class ServerAdminAuthority {
       return { ok: false, reason: 'deposit_not_found' };
     }
     const prev = dep.status;
-    if ((prev === 'Approved' || prev === 'Rejected') && prev !== params.nextStatus) {
+    if (prev === 'Approved' || prev === 'Rejected') {
       return { ok: false, reason: 'already_finalized' };
     }
     const nowIso = new Date().toISOString();
-    const cleanNotes = params.reviewNotes.trim() || `Deposit ${params.nextStatus} (Demo Sandbox)`;
+    const cleanNotes =
+      params.reviewNotes.trim() ||
+      (params.nextStatus === 'Approved'
+        ? 'Manual payment receipt verified and approved by admin'
+        : params.nextStatus === 'Rejected'
+          ? 'Manual payment receipt could not be verified'
+          : `Deposit ${params.nextStatus}`);
 
     let creditedBalanceEtb: number | undefined;
-    if (params.nextStatus === 'Approved' && prev !== 'Approved') {
+    if (params.nextStatus === 'Approved') {
       this.syncBotPlayers();
       const targetUser = this.users.get(dep.uid);
       if (targetUser) {
-        targetUser.demoBalanceEtb = Math.min(100000, targetUser.demoBalanceEtb + dep.amountEtb);
+        targetUser.demoBalanceEtb = Math.min(100000, Number((targetUser.demoBalanceEtb + dep.amountEtb).toFixed(2)));
         creditedBalanceEtb = targetUser.demoBalanceEtb;
         const bp = this.botEngine.getPlayerByTelegramId(targetUser.telegramUserId);
         if (bp) {
@@ -1496,7 +1536,7 @@ export class ServerAdminAuthority {
           id: `tx_dep_${dep.depositId}`,
           type: 'deposit_demo',
           amountEtb: dep.amountEtb,
-          description: `Approved ${dep.provider} Top-Up (${dep.depositId})`,
+          description: `Approved Manual ${dep.provider} Deposit (${dep.referenceCode})`,
           reference: dep.referenceCode || `ADB-DEP-${dep.depositId}`,
           timestamp: nowIso,
           status: 'demo_completed',
@@ -1509,17 +1549,190 @@ export class ServerAdminAuthority {
     dep.reviewedBy = params.adminActor.displayName;
     dep.reviewedAt = nowIso;
 
+    if (params.nextStatus === 'Approved' || params.nextStatus === 'Rejected') {
+      this.botEngine.queueNotification(
+        'support_response',
+        dep.telegramUserId,
+        {
+          ticketId: dep.depositId,
+          supportReply:
+            params.nextStatus === 'Approved'
+              ? `Your manual deposit of ${dep.amountEtb.toFixed(2)} ETB (${dep.referenceCode}) was approved and credited.`
+              : `Your manual deposit of ${dep.amountEtb.toFixed(2)} ETB (${dep.referenceCode}) was rejected. Reason: ${cleanNotes}`,
+        },
+        false
+      );
+    }
+
     const auditRecord = this.appendAuditRecord({
       adminActor: params.adminActor,
       action: 'DEPOSIT_STATUS_REVIEWED',
       targetId: dep.depositId,
-      summary: `Demo deposit ${dep.depositId} (${dep.amountEtb} ETB) changed from ${prev} to ${params.nextStatus}`,
+      summary: `Manual deposit ${dep.depositId} (${dep.amountEtb} ETB) changed from ${prev} to ${params.nextStatus}`,
       previousValue: prev,
       newValue: params.nextStatus,
       notes: cleanNotes,
     });
 
     return { ok: true, deposit: { ...dep }, creditedBalanceEtb, auditRecord };
+  }
+
+  public auditLegacyInitialCredits(
+    ledgerLookup?: (uid: string) => Array<{ id: string; amount: number }>
+  ): {
+    expectedInitialCreditEtb: number;
+    legacyInitialCreditEtb: number;
+    flaggedCount: number;
+    reconciledCount: number;
+    pendingReconciliationCount: number;
+    accounts: Array<{
+      uid: string;
+      telegramUserId: number;
+      displayName: string;
+      currentBalanceEtb: number;
+      recordedInitialCreditEtb: number;
+      excessCreditEtb: number;
+      alreadyReconciled: boolean;
+      recommendedAdjustmentEtb: number;
+    }>;
+  } {
+    this.syncBotPlayers();
+    const expected = 15;
+    const legacy = 250;
+    const accounts: Array<{
+      uid: string;
+      telegramUserId: number;
+      displayName: string;
+      currentBalanceEtb: number;
+      recordedInitialCreditEtb: number;
+      excessCreditEtb: number;
+      alreadyReconciled: boolean;
+      recommendedAdjustmentEtb: number;
+    }> = [];
+
+    for (const user of this.users.values()) {
+      const extLedger = ledgerLookup ? ledgerLookup(user.uid) : [];
+      const initTx =
+        extLedger.find((t) => t.id === `tx_init_${user.uid}`) ||
+        user.walletLedger.find((t) => t.id === `tx_init_${user.uid}`);
+      const recordedInit = initTx
+        ? Number('amount' in initTx ? initTx.amount : initTx.amountEtb)
+        : 0;
+      if (recordedInit > expected) {
+        const excess = Number((recordedInit - expected).toFixed(2));
+        const alreadyReconciled =
+          extLedger.some((t) => t.id === `tx_reconcile_init_${user.uid}`) ||
+          user.walletLedger.some((t) => t.id === `tx_reconcile_init_${user.uid}`);
+        const recommended = alreadyReconciled
+          ? 0
+          : Number(Math.min(user.demoBalanceEtb, excess).toFixed(2));
+        accounts.push({
+          uid: user.uid,
+          telegramUserId: user.telegramUserId,
+          displayName: user.displayName,
+          currentBalanceEtb: user.demoBalanceEtb,
+          recordedInitialCreditEtb: recordedInit,
+          excessCreditEtb: excess,
+          alreadyReconciled,
+          recommendedAdjustmentEtb: recommended,
+        });
+      }
+    }
+
+    const reconciledCount = accounts.filter((a) => a.alreadyReconciled).length;
+    return {
+      expectedInitialCreditEtb: expected,
+      legacyInitialCreditEtb: legacy,
+      flaggedCount: accounts.length,
+      reconciledCount,
+      pendingReconciliationCount: accounts.length - reconciledCount,
+      accounts,
+    };
+  }
+
+  public reconcileLegacyInitialCredit(params: {
+    uid: string;
+    adminActor: VerifiedSessionActor;
+    notes?: string;
+    ledgerLookup?: (uid: string) => Array<{ id: string; amount: number }>;
+  }): {
+    ok: boolean;
+    reason?: 'user_not_found' | 'not_legacy_initial_credit' | 'already_reconciled';
+    uid?: string;
+    previousBalanceEtb?: number;
+    adjustedByEtb?: number;
+    newBalanceEtb?: number;
+    transactionId?: string;
+    auditRecord?: AdminAuditRecord;
+  } {
+    this.syncBotPlayers();
+    const target = this.users.get(params.uid);
+    if (!target) {
+      return { ok: false, reason: 'user_not_found' };
+    }
+    const extLedger = params.ledgerLookup ? params.ledgerLookup(params.uid) : [];
+    const initTx =
+      extLedger.find((t) => t.id === `tx_init_${params.uid}`) ||
+      target.walletLedger.find((t) => t.id === `tx_init_${params.uid}`);
+    const recordedInit = initTx
+      ? Number('amount' in initTx ? initTx.amount : initTx.amountEtb)
+      : 0;
+    if (recordedInit <= 15) {
+      return { ok: false, reason: 'not_legacy_initial_credit' };
+    }
+    const txId = `tx_reconcile_init_${params.uid}`;
+    if (
+      extLedger.some((t) => t.id === txId) ||
+      target.walletLedger.some((t) => t.id === txId)
+    ) {
+      return { ok: false, reason: 'already_reconciled' };
+    }
+
+    const excess = Number((recordedInit - 15).toFixed(2));
+    const prevBal = target.demoBalanceEtb;
+    const deductEtb = Number(Math.min(prevBal, excess).toFixed(2));
+    const nextBal = Number(Math.max(0, prevBal - deductEtb).toFixed(2));
+    target.demoBalanceEtb = nextBal;
+
+    const bp = this.botEngine.getPlayerByTelegramId(target.telegramUserId);
+    if (bp) {
+      bp.demoBalanceEtb = nextBal;
+    }
+
+    const nowIso = new Date().toISOString();
+    const cleanNotes =
+      params.notes?.trim() ||
+      `Auditable correction of legacy ${recordedInit} ETB initial credit to 15 ETB`;
+
+    target.walletLedger.unshift({
+      id: txId,
+      type: 'admin_adjustment',
+      amountEtb: -deductEtb,
+      description: cleanNotes,
+      reference: `RECONCILE-INIT-${target.telegramUserId}`,
+      timestamp: nowIso,
+      status: 'demo_completed',
+    });
+
+    const auditRecord = this.appendAuditRecord({
+      adminActor: params.adminActor,
+      action: 'WALLET_BALANCE_ADJUSTED',
+      targetId: target.uid,
+      summary: `Reconciled legacy ${recordedInit} ETB initial credit for ${target.displayName} (-${deductEtb.toFixed(2)} ETB)`,
+      previousValue: `${prevBal.toFixed(2)} ETB`,
+      newValue: `${nextBal.toFixed(2)} ETB`,
+      notes: cleanNotes,
+    });
+
+    return {
+      ok: true,
+      uid: target.uid,
+      previousBalanceEtb: prevBal,
+      adjustedByEtb: -deductEtb,
+      newBalanceEtb: nextBal,
+      transactionId: txId,
+      auditRecord,
+    };
   }
 
   public getRooms(): AdminRoomConfigRecord[] {

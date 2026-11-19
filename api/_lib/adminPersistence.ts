@@ -125,7 +125,7 @@ export class PersistentAdminService {
         phoneVerified: true,
         maskedPhone: '+25191****44',
         language: 'am',
-        demoBalanceEtb: 250.0,
+        demoBalanceEtb: 15.0,
         gamesPlayed: 14,
         gamesWon: 4,
         referralCode: 'ADEY-8842',
@@ -450,7 +450,7 @@ export class PersistentAdminService {
         joinedAt: '2026-03-10 14:20 UTC',
         status: 'qualified',
         inviterBonusEtb: 20,
-        inviteeBonusEtb: 15,
+        inviteeBonusEtb: 0,
       },
       {
         id: 'ref-1002',
@@ -463,7 +463,7 @@ export class PersistentAdminService {
         joinedAt: '2026-03-12 11:30 UTC',
         status: 'qualified',
         inviterBonusEtb: 20,
-        inviteeBonusEtb: 15,
+        inviteeBonusEtb: 0,
       },
     ];
 
@@ -807,7 +807,7 @@ export class PersistentAdminService {
               ? '+2519****'
               : 'Unverified',
         language: (data.language === 'en' ? 'en' : 'am') as Language,
-        demoBalanceEtb: Number(data.demoBalanceEtb ?? 250),
+        demoBalanceEtb: Number(data.demoBalanceEtb ?? 0),
         gamesPlayed: Number(data.gamesPlayed ?? liveTx.filter((t) => t.type === 'card_entry').length),
         gamesWon: Number(data.gamesWon ?? liveTx.filter((t) => t.type === 'bingo_win').length),
         referralCode: String(data.referralCode || `ADEY-${telegramUserId || uid}`),
@@ -837,7 +837,7 @@ export class PersistentAdminService {
           phoneVerified: Boolean(bp.phoneVerified),
           maskedPhone: String(bp.verifiedPhoneMasked || 'Unverified'),
           language: (bp.language === 'en' ? 'en' : 'am') as Language,
-          demoBalanceEtb: Number(bp.demoBalanceEtb ?? 250),
+          demoBalanceEtb: Number(bp.demoBalanceEtb ?? 0),
           gamesPlayed: 0,
           gamesWon: 0,
           referralCode: String(bp.referralCode || `ADEY-${tgId}`),
@@ -1198,10 +1198,10 @@ export class PersistentAdminService {
       // If transitioning to Rejected from a non-Rejected state, atomically refund the player's Demo balance
       if (params.nextStatus === 'Rejected') {
         const currentBalance = userSnap.exists
-          ? Number(userSnap.get('demoBalanceEtb') ?? 250)
+          ? Number(userSnap.get('demoBalanceEtb') ?? 0)
           : botPlayerSnap?.exists
-            ? Number(botPlayerSnap.get('demoBalanceEtb') ?? 250)
-            : 250;
+            ? Number(botPlayerSnap.get('demoBalanceEtb') ?? 0)
+            : 0;
         const refundAmt = Number(order.requestedAmountEtb);
         const nextBalance = Math.min(100000, Number((currentBalance + refundAmt).toFixed(2)));
         refundedBalanceEtb = nextBalance;
@@ -1345,13 +1345,13 @@ export class PersistentAdminService {
 
       let creditedBalanceEtb: number | undefined;
 
-      // If transitioning to Approved from a non-Approved state, atomically credit the player's Demo balance
+      // If transitioning to Approved from Pending, atomically credit the player's balance
       if (params.nextStatus === 'Approved') {
         const currentBalance = userSnap.exists
-          ? Number(userSnap.get('demoBalanceEtb') ?? 250)
+          ? Number(userSnap.get('demoBalanceEtb') ?? 0)
           : botPlayerSnap?.exists
-            ? Number(botPlayerSnap.get('demoBalanceEtb') ?? 250)
-            : 250;
+            ? Number(botPlayerSnap.get('demoBalanceEtb') ?? 0)
+            : 0;
         const creditAmt = Number(dep.amountEtb);
         const nextBalance = Math.min(100000, Number((currentBalance + creditAmt).toFixed(2)));
         creditedBalanceEtb = nextBalance;
@@ -1390,7 +1390,7 @@ export class PersistentAdminService {
           balanceBeforeEtb: currentBalance,
           balanceAfterEtb: nextBalance,
           status: 'demo_completed',
-          description: `Approved ${dep.provider} Top-Up (${dep.depositId})`.slice(0, 160),
+          description: `Approved Manual Deposit (${dep.provider} · ${dep.referenceCode})`.slice(0, 160),
           reference: dep.referenceCode || `ADB-DEP-${dep.depositId}`,
           relatedId: dep.depositId,
           idempotencyKey: txId,
@@ -1398,11 +1398,48 @@ export class PersistentAdminService {
         });
       }
 
+      // Queue player notification for both Approved and Rejected manual deposits
+      if (depTgId > 0 && (params.nextStatus === 'Approved' || params.nextStatus === 'Rejected')) {
+        const notifId = `notif_dep_${dep.depositId}_${params.nextStatus.toLowerCase()}`;
+        const playerLang: Language =
+          (userSnap.exists && userSnap.get('language') === 'en') ||
+          (botPlayerSnap?.exists && botPlayerSnap.get('language') === 'en')
+            ? 'en'
+            : 'am';
+        const isApproved = params.nextStatus === 'Approved';
+        const title = isApproved
+          ? playerLang === 'am'
+            ? '✅ የተቀማጭ ክፍያዎ ጸድቋል'
+            : '✅ Deposit Approved'
+          : playerLang === 'am'
+            ? '❌ የተቀማጭ ክፍያ ጥያቄዎ አልጸደቀም'
+            : '❌ Deposit Request Rejected';
+        const body = isApproved
+          ? playerLang === 'am'
+            ? `የ ${dep.amountEtb.toFixed(2)} ETB (${dep.provider}, Ref: ${dep.referenceCode}) ተቀማጭዎ ጸድቆ ወደ ሂሳብዎ ተጨምሯል። አዲስ ቀሪ ሂሳብ፦ ${(creditedBalanceEtb ?? 0).toFixed(2)} ETB።`
+            : `Your manual deposit of ${dep.amountEtb.toFixed(2)} ETB (${dep.provider}, Ref: ${dep.referenceCode}) was approved and credited. New balance: ${(creditedBalanceEtb ?? 0).toFixed(2)} ETB.`
+          : playerLang === 'am'
+            ? `የ ${dep.amountEtb.toFixed(2)} ETB (${dep.provider}, Ref: ${dep.referenceCode}) ተቀማጭ ጥያቄዎ አልጸደቀም። ምክንያት፦ ${cleanNotes}`
+            : `Your manual deposit of ${dep.amountEtb.toFixed(2)} ETB (${dep.provider}, Ref: ${dep.referenceCode}) was rejected. Reason: ${cleanNotes}`;
+
+        tx.set(this.db.collection(BOT_OUTBOX_COLLECTION).doc(notifId), {
+          id: notifId,
+          event: 'support_response',
+          telegramUserId: depTgId,
+          language: playerLang,
+          title,
+          body,
+          createdAt: nowIso,
+          createdAtMs: Date.now(),
+          deliveredViaBotApi: false,
+        });
+      }
+
       const builtAudit = this.buildAuditRecordFromChainSnap(chainSnap, {
         adminActor: params.adminActor,
         action: 'DEPOSIT_STATUS_REVIEWED',
         targetId: dep.depositId,
-        summary: `Demo deposit ${dep.depositId} (${dep.amountEtb} ETB) changed from ${prevStatus} to ${params.nextStatus}`,
+        summary: `Manual deposit ${dep.depositId} (${dep.amountEtb} ETB, Ref: ${dep.referenceCode}) changed from ${prevStatus} to ${params.nextStatus}`,
         previousValue: prevStatus,
         newValue: params.nextStatus,
         notes: cleanNotes,
@@ -1622,7 +1659,7 @@ export class PersistentAdminService {
         status:
           data.status === 'qualified' ? 'qualified' : 'pending_verification',
         inviterBonusEtb: Number(data.inviterBonusEtb ?? data.inviterBonus ?? 20),
-        inviteeBonusEtb: Number(data.inviteeBonusEtb ?? data.inviteeBonus ?? 15),
+        inviteeBonusEtb: Number(data.inviteeBonusEtb ?? data.inviteeBonus ?? 0),
       };
     });
   }
@@ -2089,5 +2126,180 @@ export class PersistentAdminService {
       auditChainIntegrity,
       auditTrail,
     };
+  }
+
+  /**
+   * Audits existing accounts that received the legacy incorrect 250 ETB initialization
+   * instead of the authoritative 15 ETB initial credit. Never deletes balances or history.
+   */
+  public async auditLegacyInitialCredits(): Promise<
+    Array<{
+      uid: string;
+      displayName: string;
+      initialTxId: string;
+      initialCreditEtb: number;
+      expectedInitialCreditEtb: number;
+      excessEtb: number;
+      currentBalanceEtb: number;
+      recommendedAdjustmentEtb: number;
+      alreadyReconciled: boolean;
+    }>
+  > {
+    const [usersSnap, txSnap] = await Promise.all([
+      this.db.collection('users').get(),
+      this.db.collection('transactions').get(),
+    ]);
+
+    const userMap = new Map<string, { displayName: string; demoBalanceEtb: number }>();
+    for (const uDoc of usersSnap.docs) {
+      const d = uDoc.data() || {};
+      userMap.set(uDoc.id, {
+        displayName: String(d.displayName || uDoc.id),
+        demoBalanceEtb: Number(d.demoBalanceEtb ?? 0),
+      });
+    }
+
+    const reconciledUids = new Set<string>();
+    const legacyInitEntries: Array<{ uid: string; txId: string; amountEtb: number }> = [];
+
+    for (const tDoc of txSnap.docs) {
+      const d = tDoc.data() || {};
+      const txId = String(d.transactionId || tDoc.id);
+      const userId = String(d.userId || '');
+      if (txId.startsWith('tx_reconcile_init_') && userId) {
+        reconciledUids.add(userId);
+      }
+      const amount = Number(d.amountEtb ?? 0);
+      if (txId.startsWith('tx_init_') && amount > 15 && userId) {
+        legacyInitEntries.push({ uid: userId, txId, amountEtb: amount });
+      }
+    }
+
+    return legacyInitEntries.map((entry) => {
+      const userInfo = userMap.get(entry.uid);
+      const currentBalanceEtb = userInfo ? userInfo.demoBalanceEtb : 0;
+      const excessEtb = Number(Math.max(0, entry.amountEtb - 15).toFixed(2));
+      const alreadyReconciled = reconciledUids.has(entry.uid);
+      const recommendedAdjustmentEtb = alreadyReconciled
+        ? 0
+        : Number(Math.min(excessEtb, Math.max(0, currentBalanceEtb)).toFixed(2));
+      return {
+        uid: entry.uid,
+        displayName: userInfo?.displayName || entry.uid,
+        initialTxId: entry.txId,
+        initialCreditEtb: entry.amountEtb,
+        expectedInitialCreditEtb: 15,
+        excessEtb,
+        currentBalanceEtb,
+        recommendedAdjustmentEtb,
+        alreadyReconciled,
+      };
+    });
+  }
+
+  /**
+   * Reconciles a legacy over-credited initial balance (e.g. 250 ETB -> 15 ETB) via a non-destructive,
+   * idempotent, auditable ledger adjustment transaction and SHA-256 chained audit record.
+   * Preserves legitimate earned balances and full transaction history.
+   */
+  public async reconcileLegacyInitialCredit(params: {
+    uid: string;
+    adminActor: VerifiedSessionActor;
+    notes?: string;
+  }): Promise<{
+    ok: boolean;
+    reason?: 'user_not_found' | 'no_legacy_excess' | 'already_reconciled';
+    uid?: string;
+    adjustmentEtb?: number;
+    previousBalanceEtb?: number;
+    updatedBalanceEtb?: number;
+    transactionId?: string;
+    auditRecord?: AdminAuditRecord;
+  }> {
+    const userRef = this.db.collection('users').doc(params.uid);
+    const tgMatch = /^tg_([1-9]\d*)$/.exec(params.uid);
+    const tgId = tgMatch ? Number(tgMatch[1]) : 0;
+    const botPlayerRef = tgId > 0 ? this.db.collection('botPlayers').doc(String(tgId)) : null;
+    const initTxRef = this.db.collection('transactions').doc(`tx_init_${params.uid}`);
+    const reconcileTxId = `tx_reconcile_init_${params.uid}`;
+    const reconcileTxRef = this.db.collection('transactions').doc(reconcileTxId);
+    const chainRef = this.db.collection(ADMIN_AUDIT_META_COLLECTION).doc('chain');
+
+    return await this.db.runTransaction(async (tx) => {
+      const [userSnap, botPlayerSnap, initTxSnap, reconcileSnap, chainSnap] = await Promise.all([
+        tx.get(userRef),
+        botPlayerRef ? tx.get(botPlayerRef) : Promise.resolve(null),
+        tx.get(initTxRef),
+        tx.get(reconcileTxRef),
+        tx.get(chainRef),
+      ]);
+
+      if (!userSnap.exists) {
+        return { ok: false, reason: 'user_not_found' as const };
+      }
+      if (reconcileSnap.exists) {
+        return { ok: false, reason: 'already_reconciled' as const };
+      }
+      const initialCredit = initTxSnap.exists ? Number(initTxSnap.get('amountEtb') ?? 0) : 0;
+      const excessEtb = Number(Math.max(0, initialCredit - 15).toFixed(2));
+      if (excessEtb <= 0) {
+        return { ok: false, reason: 'no_legacy_excess' as const };
+      }
+
+      const previousBalanceEtb = Math.max(0, Number(userSnap.get('demoBalanceEtb') ?? 0));
+      const recoverableAdjustment = Number(Math.min(excessEtb, previousBalanceEtb).toFixed(2));
+      const updatedBalanceEtb = Number(Math.max(0, previousBalanceEtb - recoverableAdjustment).toFixed(2));
+      const nowIso = new Date().toISOString();
+      const cleanNotes =
+        params.notes?.trim() ||
+        `Auditable correction of legacy ${initialCredit} ETB initial credit to 15 ETB (excess -${recoverableAdjustment} ETB)`;
+
+      tx.update(userRef, {
+        demoBalanceEtb: updatedBalanceEtb,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      if (botPlayerRef && botPlayerSnap?.exists) {
+        tx.update(botPlayerRef, {
+          demoBalanceEtb: updatedBalanceEtb,
+          updatedAt: nowIso,
+        });
+      }
+
+      tx.set(reconcileTxRef, {
+        transactionId: reconcileTxId,
+        userId: params.uid,
+        type: 'withdraw_demo',
+        amountEtb: -recoverableAdjustment,
+        balanceBeforeEtb: previousBalanceEtb,
+        balanceAfterEtb: updatedBalanceEtb,
+        status: 'demo_completed',
+        description: cleanNotes.slice(0, 160),
+        reference: `ADB-RECON-${params.uid}`.slice(0, 64),
+        relatedId: `tx_init_${params.uid}`,
+        idempotencyKey: reconcileTxId,
+        createdAt: nowIso,
+      });
+
+      const builtAudit = this.buildAuditRecordFromChainSnap(chainSnap, {
+        adminActor: params.adminActor,
+        action: 'WALLET_BALANCE_ADJUSTED',
+        targetId: params.uid,
+        summary: `Reconciled legacy initial credit (${initialCredit} -> 15 ETB) for ${params.uid}: -${recoverableAdjustment} ETB`,
+        previousValue: `${previousBalanceEtb.toFixed(2)} ETB`,
+        newValue: `${updatedBalanceEtb.toFixed(2)} ETB`,
+        notes: cleanNotes,
+      });
+      this.writeAuditRecordToTx(tx, builtAudit);
+
+      return {
+        ok: true,
+        uid: params.uid,
+        adjustmentEtb: -recoverableAdjustment,
+        previousBalanceEtb,
+        updatedBalanceEtb,
+        transactionId: reconcileTxId,
+        auditRecord: builtAudit.auditRecord,
+      };
+    });
   }
 }

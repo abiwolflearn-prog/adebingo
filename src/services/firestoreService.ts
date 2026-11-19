@@ -212,7 +212,7 @@ export async function ensureUserProfileInFirestore(
         username: safeUsername,
         language: lang,
         phoneVerified: false,
-        demoBalanceEtb: 250,
+        demoBalanceEtb: 15,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -224,7 +224,7 @@ export async function ensureUserProfileInFirestore(
         username: safeUsername,
         language: lang,
         phoneVerified: false,
-        demoBalanceEtb: 250,
+        demoBalanceEtb: 15,
       };
     });
   } catch (error) {
@@ -804,7 +804,7 @@ export async function recordDemoReferralInFirestore(params: {
       friendName: params.friendName.slice(0, 80),
       friendHandle: params.friendHandle.slice(0, 64),
       inviterBonusEtb: 20,
-      inviteeBonusEtb: 15,
+      inviteeBonusEtb: 0,
       status: 'pending',
       createdAt: serverTimestamp(),
     });
@@ -934,7 +934,14 @@ export async function fetchPlayerStateFromApi(): Promise<
 export async function submitPlayerWalletAction(
   payload:
     | { action: 'apply_promo'; code: string }
-    | { action: 'deposit_request'; amountEtb: number; provider: string }
+    | {
+        action: 'deposit_request';
+        amountEtb: number;
+        provider: string;
+        receiptReference?: string;
+        referenceCode?: string;
+        receiptProof?: string;
+      }
     | { action: 'withdraw_request'; amountEtb: number; method: string }
     | { action: 'support_ticket'; category: string; subject: string; message: string }
 ): Promise<{
@@ -942,6 +949,7 @@ export async function submitPlayerWalletAction(
   error?: string;
   message?: string;
   bonusEtb?: number;
+  inviterBonusEtb?: number;
   updatedBalanceEtb?: number;
   availableBalanceEtb?: number;
   deposit?: import('../types/bingo').DepositRequestSummary;

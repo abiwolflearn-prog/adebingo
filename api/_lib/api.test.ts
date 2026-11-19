@@ -461,7 +461,9 @@ test('Telegram auth & initData validation reject invalid, expired, replayed, and
   assert.equal(okRes.body.verifiedTelegramId, 778899);
   assert.equal(okRes.body.customToken, 'custom_token_for_tg_778899');
   assert.equal(store.get('telegramBindings/tg_778899')?.uid, 'tg_778899');
-  assert.equal(store.get('users/tg_778899')?.demoBalanceEtb, 250);
+  assert.equal(store.get('users/tg_778899')?.demoBalanceEtb, 15);
+  assert.equal(okRes.body.isAdmin, false);
+  assert.equal(okRes.body.role, 'player');
 
   // Replayed initData -> 409 Conflict
   const replayRes = await invokeHandler(authHandler, {
@@ -1102,7 +1104,8 @@ test('Game & room API endpoints enforce authentication, host/admin authorization
   assert.equal(validWin.statusCode, 200);
   assert.equal(validWin.body.verified, true);
   const prize = Number(validWin.body.demoPrizeEtb);
-  assert.ok(prize >= 50);
+  // Strict 80% prize pool cap: 3 confirmed players * 10 ETB = 30 ETB collected -> 80% = 24 ETB (never exceeds prize pool)
+  assert.equal(prize, 24);
   assert.equal(store.get('users/tg_2002')?.demoBalanceEtb, balBeforeWin + prize);
   assert.equal(store.get('games/game_vip-room_live')?.status, 'completed');
 
@@ -1619,6 +1622,10 @@ test('Milestone 5: /api/telegram/auth defaults new users to Amharic even when la
   });
   assert.equal(depCb.statusCode, 200);
   assert.equal(depCb.body.securityCode, 'deposit_request_created');
+
+  // Credit verified funds before testing 50 ETB withdrawal (new account starts with 15 ETB)
+  store.set('users/tg_665544', { ...(store.get('users/tg_665544') || {}), demoBalanceEtb: 115 });
+  store.set('botPlayers/665544', { ...(store.get('botPlayers/665544') || {}), demoBalanceEtb: 115 });
 
   const wdrCb = await invokeHandler(webhookHandler, {
     method: 'POST',

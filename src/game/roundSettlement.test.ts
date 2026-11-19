@@ -23,9 +23,9 @@ test('evaluateRoundWinners finishes immediately on one diagonal and credits sing
   assert.equal(res.winners[0].uid, 'tg_101');
   assert.equal(res.winners[0].cardId, 1);
   assert.equal(res.winners[0].patternType, 'diagonal');
-  assert.equal(res.prizePoolEtb, 17); // 2 * 10 = 20 gross, 15% reserve = 3 -> 17 ETB pool
+  assert.equal(res.prizePoolEtb, 16); // 2 * 10 = 20 gross, 20% ADEYBINGO share = 4 -> 16 ETB (80%) prize pool
   assert.equal(res.payoutsByPlayer.length, 1);
-  assert.equal(res.payoutsByPlayer[0].totalPrizeEtb, 17);
+  assert.equal(res.payoutsByPlayer[0].totalPrizeEtb, 16);
 });
 
 test('evaluateRoundWinners splits prize pool evenly when two players win simultaneously', () => {
@@ -44,16 +44,16 @@ test('evaluateRoundWinners splits prize pool evenly when two players win simulta
     ],
     calledNumbers: combinedCalls,
     cardPrice: 20,
-    totalCardsInRoom: 3, // 60 gross -> 9 reserve -> 51 ETB pool
+    totalCardsInRoom: 3, // 3 players * 20 = 60 gross -> 20% ADEY share = 12 -> 48 ETB (80%) prize pool
   });
 
   assert.equal(res.hasWinner, true);
   assert.equal(res.winners.length, 2);
-  assert.equal(res.prizePoolEtb, 51);
+  assert.equal(res.prizePoolEtb, 48);
   assert.equal(res.payoutsByPlayer.length, 2);
 
   const totalPaid = res.payoutsByPlayer.reduce((s, p) => s + p.totalPrizeEtb, 0);
-  assert.equal(Number(totalPaid.toFixed(2)), 51);
-  assert.equal(res.payoutsByPlayer[0].totalPrizeEtb, 25.5);
-  assert.equal(res.payoutsByPlayer[1].totalPrizeEtb, 25.5);
+  assert.equal(Number(totalPaid.toFixed(2)), 48);
+  assert.equal(res.payoutsByPlayer[0].totalPrizeEtb, 24);
+  assert.equal(res.payoutsByPlayer[1].totalPrizeEtb, 24);
 });

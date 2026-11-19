@@ -332,15 +332,16 @@ test('Audit 1: Persistent Account Creation, Signed start_param Referral Attribut
   });
   assert.equal(inviterAuth.status, 200);
   assert.equal(inviterAuth.json.ok, true);
-  assert.equal((inviterAuth.json.profile as { demoBalanceEtb: number }).demoBalanceEtb, 250);
+  assert.equal(inviterAuth.json.isAdmin, false);
+  assert.equal((inviterAuth.json.profile as { demoBalanceEtb: number }).demoBalanceEtb, 15);
   const inviterToken = String(inviterAuth.json.sessionToken);
 
-  // Verify initial balance ledger entry exists
+  // Verify initial balance ledger entry exists (15 ETB, credited once)
   const initTx = store.get('transactions/tx_init_tg_500001');
-  assert.ok(initTx, 'Initial 250 ETB ledger entry must be written on account creation');
-  assert.equal(initTx.amountEtb, 250);
+  assert.ok(initTx, 'Initial 15 ETB ledger entry must be written on account creation');
+  assert.equal(initTx.amountEtb, 15);
   assert.equal(initTx.balanceBeforeEtb, 0);
-  assert.equal(initTx.balanceAfterEtb, 250);
+  assert.equal(initTx.balanceAfterEtb, 15);
 
   // 2) Invitee registers via Telegram Mini App deep link with signed start_param=ADEY-500001
   const inviteeInitData = buildSignedInitData(
@@ -355,27 +356,28 @@ test('Audit 1: Persistent Account Creation, Signed start_param Referral Attribut
   });
   assert.equal(inviteeAuth.status, 200);
   assert.equal(inviteeAuth.json.ok, true);
+  assert.equal(inviteeAuth.json.isAdmin, false);
   assert.equal((inviteeAuth.json.referralApplied as { applied: boolean })?.applied, true);
-  // Invitee gets 250 initial + 15 referral bonus = 265 ETB
-  assert.equal((inviteeAuth.json.profile as { demoBalanceEtb: number }).demoBalanceEtb, 265);
+  // New player starts with 15 ETB once (no double credit, no deduction); inviter gets +20 ETB -> 35 ETB
+  assert.equal((inviteeAuth.json.profile as { demoBalanceEtb: number }).demoBalanceEtb, 15);
   const inviteeToken = String(inviteeAuth.json.sessionToken);
 
-  // Verify BOTH users & botPlayers are strictly synced for BOTH inviter (270) and invitee (265)
-  assert.equal(store.get('users/tg_500001')?.demoBalanceEtb, 270);
-  assert.equal(store.get('botPlayers/500001')?.demoBalanceEtb, 270);
+  // Verify BOTH users & botPlayers are strictly synced for BOTH inviter (35) and invitee (15)
+  assert.equal(store.get('users/tg_500001')?.demoBalanceEtb, 35);
+  assert.equal(store.get('botPlayers/500001')?.demoBalanceEtb, 35);
   assert.equal(store.get('users/tg_500001')?.referralsCount, 1);
 
-  assert.equal(store.get('users/tg_500002')?.demoBalanceEtb, 265);
-  assert.equal(store.get('botPlayers/500002')?.demoBalanceEtb, 265);
+  assert.equal(store.get('users/tg_500002')?.demoBalanceEtb, 15);
+  assert.equal(store.get('botPlayers/500002')?.demoBalanceEtb, 15);
 
-  // Verify inviter sees real referral record & updated 270 ETB balance in /api/player/state
+  // Verify inviter sees real referral record & updated 35 ETB balance in /api/player/state
   const inviterState = await invokeHandler(playerStateHandler, {
     method: 'GET',
     url: '/api/player/state',
     headers: { authorization: `Bearer ${inviterToken}` },
   });
   assert.equal(inviterState.status, 200);
-  assert.equal((inviterState.json.wallet as { availableBalanceEtb: number }).availableBalanceEtb, 270);
+  assert.equal((inviterState.json.wallet as { availableBalanceEtb: number }).availableBalanceEtb, 35);
   assert.equal((inviterState.json.referrals as unknown[]).length, 1);
   assert.equal(typeof inviterState.json.serverNowMs, 'number');
 
@@ -387,7 +389,8 @@ test('Audit 1: Persistent Account Creation, Signed start_param Referral Attribut
     body: { action: 'apply_promo', code: 'ADEY-500001' },
   });
   assert.equal(dupRef.status, 409);
-  assert.equal(store.get('users/tg_500002')?.demoBalanceEtb, 265);
+  assert.equal(store.get('users/tg_500002')?.demoBalanceEtb, 15);
+  assert.equal(store.get('users/tg_500001')?.demoBalanceEtb, 35);
 
   // 4) Self-referral attempt by inviter is blocked (400)
   const selfRef = await invokeHandler(playerWalletHandler, {
@@ -397,7 +400,7 @@ test('Audit 1: Persistent Account Creation, Signed start_param Referral Attribut
     body: { action: 'apply_promo', code: 'ADEY-500001' },
   });
   assert.equal(selfRef.status, 400);
-  assert.equal(store.get('users/tg_500001')?.demoBalanceEtb, 270);
+  assert.equal(store.get('users/tg_500001')?.demoBalanceEtb, 35);
 
   // 5) Nonexistent inviter code is rejected via Telegram store (never creates phantom bonus)
   const tgStore = createFirestoreTelegramStore(db);
@@ -453,7 +456,7 @@ test('Audit 2: Financial Atomicity, Concurrent Withdrawal Double-Spend Protectio
     const depositReviewHandler = createAdminDepositReviewHandler({ getDb: () => db, authDeps });
     const adminRouter = createAdminRouterHandler({ getDb: () => db, authDeps });
 
-  // Register player (250 ETB initial)
+  // Register player (15 ETB initial)
   const playerInitData = buildSignedInitData(BOT_TOKEN, {
     id: 600001,
     first_name: 'Meron',
@@ -465,6 +468,7 @@ test('Audit 2: Financial Atomicity, Concurrent Withdrawal Double-Spend Protectio
     body: { initData: playerInitData },
   });
   assert.equal(playerAuth.status, 200);
+  assert.equal(store.get('users/tg_600001')?.demoBalanceEtb, 15);
   const playerToken = String(playerAuth.json.sessionToken);
 
   // Mint verified Owner Admin token (Telegram ID 8842109)
@@ -473,19 +477,48 @@ test('Audit 2: Financial Atomicity, Concurrent Withdrawal Double-Spend Protectio
     SESSION_SECRET
   );
 
+  // First fund player via admin-approved manual deposit (+235 ETB -> 250 ETB) to test 200 ETB withdrawal race
+  const initialDepReq = await invokeHandler(playerWalletHandler, {
+    method: 'POST',
+    url: '/api/player/wallet',
+    headers: { authorization: `Bearer ${playerToken}`, 'idempotency-key': 'dep-audit-seed' },
+    body: {
+      action: 'deposit_request',
+      amountEtb: 235,
+      provider: 'Telebirr (Manual)',
+      receiptReference: 'FT-SEED-235001',
+      receiptProof: 'Telebirr SMS receipt from Meron',
+    },
+  });
+  assert.equal(initialDepReq.status, 201);
+  const seedDepId = String((initialDepReq.json.deposit as { depositId: string }).depositId);
+  // Pending deposit MUST NOT credit balance before admin approval
+  assert.equal(store.get('users/tg_600001')?.demoBalanceEtb, 15);
+
+  const seedDepApprove = await invokeHandler(depositReviewHandler, {
+    method: 'POST',
+    url: `/api/admin/deposits/${seedDepId}/review`,
+    headers: { authorization: `Bearer ${adminSession.token}` },
+    query: { depositId: seedDepId },
+    body: { nextStatus: 'Approved', reviewNotes: 'Verified Telebirr SMS receipt' },
+  });
+  assert.equal(seedDepApprove.status, 200);
+  assert.equal(store.get('users/tg_600001')?.demoBalanceEtb, 250);
+  assert.equal(store.get('botPlayers/600001')?.demoBalanceEtb, 250);
+
   // 1) Concurrent double-spend withdrawal attack: two 200 ETB withdrawals simultaneously on a 250 ETB balance
   const [w1, w2] = await Promise.all([
     invokeHandler(playerWalletHandler, {
       method: 'POST',
       url: '/api/player/wallet',
       headers: { authorization: `Bearer ${playerToken}`, 'idempotency-key': 'withdraw-race-1' },
-      body: { action: 'withdraw_request', amountEtb: 200, method: 'Telebirr (Demo)' },
+      body: { action: 'withdraw_request', amountEtb: 200, method: 'Telebirr (Manual)' },
     }),
     invokeHandler(playerWalletHandler, {
       method: 'POST',
       url: '/api/player/wallet',
       headers: { authorization: `Bearer ${playerToken}`, 'idempotency-key': 'withdraw-race-2' },
-      body: { action: 'withdraw_request', amountEtb: 200, method: 'Telebirr (Demo)' },
+      body: { action: 'withdraw_request', amountEtb: 200, method: 'Telebirr (Manual)' },
     }),
   ]);
   const statuses = [w1.status, w2.status].sort((a, b) => a - b);
@@ -504,7 +537,7 @@ test('Audit 2: Financial Atomicity, Concurrent Withdrawal Double-Spend Protectio
     method: 'POST',
     url: '/api/player/wallet',
     headers: { authorization: `Bearer ${playerToken}`, 'idempotency-key': 'withdraw-race-1' },
-    body: { action: 'withdraw_request', amountEtb: 10, method: 'Telebirr (Demo)' },
+    body: { action: 'withdraw_request', amountEtb: 10, method: 'Telebirr (Manual)' },
   });
   assert.equal(replayRes.status, 409);
   assert.equal(store.get('users/tg_600001')?.demoBalanceEtb, 50);
@@ -521,12 +554,18 @@ test('Audit 2: Financial Atomicity, Concurrent Withdrawal Double-Spend Protectio
   assert.equal(store.get('users/tg_600001')?.demoBalanceEtb, 250);
   assert.equal(store.get('botPlayers/600001')?.demoBalanceEtb, 250);
 
-  // 4) Player submits deposit request -> admin approves -> +100 ETB synced to BOTH users & botPlayers (350)
+  // 4) Player submits manual deposit request -> admin approves -> +100 ETB synced to BOTH users & botPlayers (350)
   const depReq = await invokeHandler(playerWalletHandler, {
     method: 'POST',
     url: '/api/player/wallet',
     headers: { authorization: `Bearer ${playerToken}`, 'idempotency-key': 'dep-audit-1' },
-    body: { action: 'deposit_request', amountEtb: 100, provider: 'Telebirr (Demo)' },
+    body: {
+      action: 'deposit_request',
+      amountEtb: 100,
+      provider: 'CBE Birr (Manual)',
+      receiptReference: 'CBE-AUDIT-100999',
+      receiptProof: 'CBE manual transfer receipt',
+    },
   });
   assert.equal(depReq.status, 201);
   const depositId = String((depReq.json.deposit as { depositId: string }).depositId);
@@ -699,4 +738,248 @@ test('Audit 3: Server-Authoritative Countdown Calculation, Round Reset Cleanup &
   assert.equal(store.get('rooms/adey-main')?.reservedCardsCount, 0);
   assert.equal(store.get('rooms/adey-main')?.confirmedPlayersCount, 0);
   assert.ok(Number(store.get('rooms/adey-main')?.registrationDeadlineMs) > Date.now());
+});
+
+test('Audit 4: 5-Player Invite Flow (ADEY-7863181590 -> +100 ETB), Manual Receipt Verification, Duplicate Blocks, Legacy 250 ETB Reconciliation & Private Admin Isolation', async () => {
+  const BOT_TOKEN = '999888777:AAAuditTestBotTokenSecret1234567890';
+  const SESSION_SECRET = 'audit-test-session-secret-0123456789';
+  const prevSecret = process.env.ADMIN_SESSION_SECRET;
+  process.env.ADMIN_SESSION_SECRET = SESSION_SECRET;
+  try {
+    const { db, store } = createStrictInMemoryFirestore();
+    const authDeps = createTestAuthDeps({}, SESSION_SECRET);
+
+    const authHandler = createTelegramAuthHandler({
+      getDb: () => db,
+      getBotToken: () => BOT_TOKEN,
+      isAdminReady: () => true,
+      mintCustomToken: async (u) => ({
+        uid: `tg_${u.telegramUserId}`,
+        customToken: `custom_tg_${u.telegramUserId}`,
+      }),
+    });
+    const playerStateHandler = createPlayerStateHandler({ getDb: () => db, authDeps });
+    const playerWalletHandler = createPlayerWalletHandler({ getDb: () => db, authDeps });
+    const depositReviewHandler = createAdminDepositReviewHandler({ getDb: () => db, authDeps });
+    const adminRouter = createAdminRouterHandler({ getDb: () => db, authDeps });
+
+    // 1) Inviter 7863181590 registers -> receives 15 ETB once; ordinary player has isAdmin=false
+    const inviterInit = buildSignedInitData(BOT_TOKEN, {
+      id: 7863181590,
+      first_name: 'InviterOwner',
+      username: 'adey_inviter',
+    });
+    const inviterAuth = await invokeHandler(authHandler, {
+      method: 'POST',
+      url: '/api/telegram/auth',
+      body: { initData: inviterInit },
+    });
+    assert.equal(inviterAuth.status, 200);
+    assert.equal(inviterAuth.json.isAdmin, false);
+    assert.equal(store.get('users/tg_7863181590')?.demoBalanceEtb, 15);
+    const inviterToken = String(inviterAuth.json.sessionToken);
+
+    // 2) Five new players open https://t.me/AdeyBingoBot?start=ADEY-7863181590
+    //    Each new player starts with 15 ETB (never deducted, never double-credited); inviter earns 5 * 20 = 100 ETB (total 115 ETB)
+    let firstInviteeToken = '';
+    for (let i = 1; i <= 5; i++) {
+      const inviteeId = 900100 + i;
+      const init = buildSignedInitData(
+        BOT_TOKEN,
+        { id: inviteeId, first_name: `Friend${i}`, username: `friend_${i}` },
+        { start_param: 'ADEY-7863181590' }
+      );
+      const res = await invokeHandler(authHandler, {
+        method: 'POST',
+        url: '/api/telegram/auth',
+        body: { initData: init },
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.json.isAdmin, false, 'Invited players must never receive admin privileges');
+      assert.equal((res.json.referralApplied as { applied: boolean })?.applied, true);
+      assert.equal((res.json.profile as { demoBalanceEtb: number }).demoBalanceEtb, 15);
+      assert.equal(store.get(`users/tg_${inviteeId}`)?.demoBalanceEtb, 15);
+      assert.equal(store.get(`botPlayers/${inviteeId}`)?.demoBalanceEtb, 15);
+      if (i === 1) firstInviteeToken = String(res.json.sessionToken);
+    }
+
+    assert.equal(store.get('users/tg_7863181590')?.demoBalanceEtb, 115);
+    assert.equal(store.get('botPlayers/7863181590')?.demoBalanceEtb, 115);
+    assert.equal(store.get('users/tg_7863181590')?.referralsCount, 5);
+
+    const inviterState = await invokeHandler(playerStateHandler, {
+      method: 'GET',
+      url: '/api/player/state',
+      headers: { authorization: `Bearer ${inviterToken}` },
+    });
+    assert.equal(inviterState.status, 200);
+    assert.equal((inviterState.json.wallet as { availableBalanceEtb: number }).availableBalanceEtb, 115);
+    assert.equal((inviterState.json.referrals as unknown[]).length, 5);
+
+    // 3) Manual deposit receipt submission -> duplicate receipt blocked (409), self-approval blocked (403),
+    //    admin approval credits once + blocks duplicate approval (409), admin rejection does not credit + notifies player
+    const manualDep1 = await invokeHandler(playerWalletHandler, {
+      method: 'POST',
+      url: '/api/player/wallet',
+      headers: { authorization: `Bearer ${firstInviteeToken}`, 'idempotency-key': 'manual-dep-1' },
+      body: {
+        action: 'deposit_request',
+        amountEtb: 100,
+        provider: 'Telebirr (Manual)',
+        receiptReference: 'FT26119UNIQUE01',
+        receiptProof: 'Sent from +251911223344',
+      },
+    });
+    assert.equal(manualDep1.status, 201);
+    const depId1 = String((manualDep1.json.deposit as { depositId: string }).depositId);
+    assert.equal(store.get('users/tg_900101')?.demoBalanceEtb, 15, 'Pending deposit must NOT auto-credit');
+
+    // Duplicate receipt submission blocked (409)
+    const dupReceipt = await invokeHandler(playerWalletHandler, {
+      method: 'POST',
+      url: '/api/player/wallet',
+      headers: { authorization: `Bearer ${firstInviteeToken}`, 'idempotency-key': 'manual-dep-dup' },
+      body: {
+        action: 'deposit_request',
+        amountEtb: 100,
+        provider: 'Telebirr (Manual)',
+        receiptReference: 'FT26119UNIQUE01',
+      },
+    });
+    assert.equal(dupReceipt.status, 409);
+    assert.equal(dupReceipt.json.error, 'duplicate_receipt');
+
+    // Player self-approval blocked (403)
+    const selfApprove = await invokeHandler(depositReviewHandler, {
+      method: 'POST',
+      url: `/api/admin/deposits/${depId1}/review`,
+      headers: { authorization: `Bearer ${firstInviteeToken}` },
+      query: { depositId: depId1 },
+      body: { nextStatus: 'Approved', reviewNotes: 'Self approve attempt' },
+    });
+    assert.equal(selfApprove.status, 403);
+
+    // Admin approves deposit once -> balance becomes 115; second approval blocked (409 already_finalized)
+    const adminSession = mintServerSessionToken(
+      { telegramUserId: 8842109, displayName: 'Owner', username: 'owner', email: 'abiwolfcode@gmail.com' },
+      SESSION_SECRET
+    );
+    const approve1 = await invokeHandler(depositReviewHandler, {
+      method: 'POST',
+      url: `/api/admin/deposits/${depId1}/review`,
+      headers: { authorization: `Bearer ${adminSession.token}` },
+      query: { depositId: depId1 },
+      body: { nextStatus: 'Approved', reviewNotes: 'Verified Telebirr manual receipt' },
+    });
+    assert.equal(approve1.status, 200);
+    assert.equal(store.get('users/tg_900101')?.demoBalanceEtb, 115);
+
+    const approveDup = await invokeHandler(depositReviewHandler, {
+      method: 'POST',
+      url: `/api/admin/deposits/${depId1}/review`,
+      headers: { authorization: `Bearer ${adminSession.token}` },
+      query: { depositId: depId1 },
+      body: { nextStatus: 'Approved', reviewNotes: 'Duplicate approve' },
+    });
+    assert.equal(approveDup.status, 409);
+    assert.equal(store.get('users/tg_900101')?.demoBalanceEtb, 115);
+
+    // Second manual deposit rejected -> balance unchanged (115), rejection reason saved, notification queued
+    const manualDep2 = await invokeHandler(playerWalletHandler, {
+      method: 'POST',
+      url: '/api/player/wallet',
+      headers: { authorization: `Bearer ${firstInviteeToken}`, 'idempotency-key': 'manual-dep-2' },
+      body: {
+        action: 'deposit_request',
+        amountEtb: 200,
+        provider: 'Bank Transfer (Manual)',
+        receiptReference: 'CBE-INVALID-999',
+      },
+    });
+    assert.equal(manualDep2.status, 201);
+    const depId2 = String((manualDep2.json.deposit as { depositId: string }).depositId);
+
+    const reject2 = await invokeHandler(depositReviewHandler, {
+      method: 'POST',
+      url: `/api/admin/deposits/${depId2}/review`,
+      headers: { authorization: `Bearer ${adminSession.token}` },
+      query: { depositId: depId2 },
+      body: { nextStatus: 'Rejected', reviewNotes: 'Receipt reference not found in bank statement' },
+    });
+    assert.equal(reject2.status, 200);
+    assert.equal(store.get('users/tg_900101')?.demoBalanceEtb, 115);
+    assert.equal(store.get(`depositRequests/${depId2}`)?.status, 'Rejected');
+    assert.equal(
+      store.get(`depositRequests/${depId2}`)?.reviewNotes,
+      'Receipt reference not found in bank statement'
+    );
+
+    // 4) Legacy 250 ETB initial credit audit & non-destructive auditable reconciliation (preserves +40 ETB earned winnings!)
+    store.set('users/tg_777001', {
+      uid: 'tg_777001',
+      telegramUserId: 'tg_777001',
+      displayName: 'Legacy Player',
+      username: '@legacy_player',
+      language: 'am',
+      phoneVerified: true,
+      demoBalanceEtb: 290, // 250 legacy initial + 40 legitimate earned balance
+    });
+    store.set('botPlayers/777001', {
+      telegramUserId: 777001,
+      uid: 'tg_777001',
+      firstName: 'Legacy',
+      demoBalanceEtb: 290,
+    });
+    store.set('transactions/tx_init_tg_777001', {
+      transactionId: 'tx_init_tg_777001',
+      userId: 'tg_777001',
+      type: 'deposit_demo',
+      amountEtb: 250,
+      balanceBeforeEtb: 0,
+      balanceAfterEtb: 250,
+      status: 'demo_completed',
+      description: 'Legacy 250 ETB init',
+    });
+
+    // Ordinary player cannot access audit endpoint (403)
+    const playerAuditForbidden = await invokeHandler(adminRouter, {
+      method: 'GET',
+      url: '/api/admin/audit/initial-credits',
+      headers: { authorization: `Bearer ${firstInviteeToken}` },
+    });
+    assert.equal(playerAuditForbidden.status, 403);
+
+    // Admin audits & reconciles legacy account -> -235 ETB auditable tx, keeps 15 + 40 = 55 ETB, original tx preserved
+    const auditReport = await invokeHandler(adminRouter, {
+      method: 'GET',
+      url: '/api/admin/audit/initial-credits',
+      headers: { authorization: `Bearer ${adminSession.token}` },
+    });
+    assert.equal(auditReport.status, 200);
+    assert.equal(auditReport.json.flaggedCount, 1);
+
+    const reconcileOk = await invokeHandler(adminRouter, {
+      method: 'POST',
+      url: '/api/admin/audit/initial-credits/reconcile',
+      headers: { authorization: `Bearer ${adminSession.token}` },
+      body: { uid: 'tg_777001', notes: 'Audit correction to 15 ETB policy' },
+    });
+    assert.equal(reconcileOk.status, 200);
+    assert.equal(store.get('users/tg_777001')?.demoBalanceEtb, 55, 'Must keep 15 ETB initial + 40 ETB earned');
+    assert.equal(store.get('botPlayers/777001')?.demoBalanceEtb, 55);
+    assert.ok(store.has('transactions/tx_init_tg_777001'), 'Original ledger record must never be deleted');
+    assert.equal(store.get('transactions/tx_reconcile_init_tg_777001')?.amountEtb, -235);
+
+    // Duplicate reconciliation blocked (409)
+    const reconcileDup = await invokeHandler(adminRouter, {
+      method: 'POST',
+      url: '/api/admin/audit/initial-credits/reconcile',
+      headers: { authorization: `Bearer ${adminSession.token}` },
+      body: { uid: 'tg_777001' },
+    });
+    assert.equal(reconcileDup.status, 409);
+  } finally {
+    if (prevSecret === undefined) delete process.env.ADMIN_SESSION_SECRET;
+    else process.env.ADMIN_SESSION_SECRET = prevSecret;
+  }
 });

@@ -176,6 +176,7 @@ interface AdminDepositRequest {
   requestDate: string;
   provider: string;
   referenceCode: string;
+  receiptProof?: string;
   status: 'Pending' | 'Approved' | 'Rejected';
   reviewNotes: string;
   reviewedBy?: string;
@@ -1457,7 +1458,7 @@ export function AdminDashboardScreen({
                       <ArrowDownCircle size={16} className="text-[#159447]" />
                     </div>
                     <p className="text-[11px] text-[#68776D]">
-                      Inspect Telebirr, CBE Birr, and Chapa reference codes and credit verified
+                      Inspect Telebirr, CBE Birr, and Bank Transfer manual receipts and credit verified
                       player balances in one click.
                     </p>
                     <button
@@ -1946,8 +1947,8 @@ export function AdminDashboardScreen({
                       </span>
                     </div>
                     <p className="text-xs text-[#68776D]">
-                      Verify player Telebirr, CBE Birr, or Chapa transaction reference codes.
-                      Approving a deposit immediately credits the player’s wallet balance.
+                      Verify player manual payment receipts (Telebirr, CBE Birr, or Bank Transfer).
+                      Approving a deposit atomically credits the player’s wallet balance and records the ledger transaction.
                     </p>
                   </div>
 
@@ -2000,9 +2001,14 @@ export function AdminDashboardScreen({
                           <b className="text-[#168A49] font-mono">
                             +{dep.amountEtb.toFixed(2)} ETB
                           </b>{' '}
-                          · Provider: <b className="text-[#183326]">{dep.provider}</b> · Submitted:{' '}
+                          · Method: <b className="text-[#183326]">{dep.provider}</b> · Submitted:{' '}
                           {dep.requestDate}
                         </div>
+                        {dep.receiptProof && (
+                          <div className="text-[11px] text-[#08743A] font-medium">
+                            Receipt Proof: {dep.receiptProof}
+                          </div>
+                        )}
                         <div className="text-[11px] text-[#68776D]">
                           Verification Note: {dep.reviewNotes}
                         </div>
@@ -2226,8 +2232,8 @@ export function AdminDashboardScreen({
                           {ref.inviteeHandle})
                         </b>
                         <span className="block text-[11px] text-[#68776D]">
-                          Joined: {ref.joinedAt} · Inviter Bonus: +{ref.inviterBonusEtb} ETB ·
-                          Invitee Bonus: +{ref.inviteeBonusEtb} ETB
+                          Joined: {ref.joinedAt} · Inviter Reward: +{ref.inviterBonusEtb} ETB ·
+                          New Player Start: 15 ETB
                         </span>
                       </div>
                       <span

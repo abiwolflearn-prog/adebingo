@@ -197,6 +197,7 @@ export default function App() {
   const [phoneNumber, setPhoneNumber] = useState<string>('');
   const [phoneVerified, setPhoneVerified] = useState<boolean>(false);
   const [serverVerifiedTelegramId, setServerVerifiedTelegramId] = useState<number | null>(null);
+  const [isVerifiedAdmin, setIsVerifiedAdmin] = useState<boolean>(false);
   const [activeSessionToken, setActiveSessionToken] = useState<string>('');
   const [telegramBackendStatus, setTelegramBackendStatus] = useState<string>(
     'Ready to validate Telegram WebApp initData on /api/telegram/auth'
@@ -570,6 +571,21 @@ export default function App() {
             setPhoneNumber(privContact.phoneNumber);
             setPhoneVerified(privContact.phoneVerified);
           }
+          // Server-side verification for admin visibility (ordinary players always remain false)
+          const idToken = await currentUser.getIdToken().catch(() => '');
+          if (idToken) {
+            fetch('/api/admin/session', {
+              method: 'GET',
+              headers: { Authorization: `Bearer ${idToken}` },
+            })
+              .then((resp) => (resp.ok ? resp.json() : null))
+              .then((data) => {
+                if (data?.authorized === true) {
+                  setIsVerifiedAdmin(true);
+                }
+              })
+              .catch(() => {});
+          }
           void hydratePlayerState();
           void hydrateRoomState(activeRoomId);
         } catch (err) {
@@ -577,6 +593,7 @@ export default function App() {
         }
       } else {
         setServerVerifiedTelegramId(null);
+        setIsVerifiedAdmin(false);
       }
     });
 
@@ -602,6 +619,19 @@ export default function App() {
           setTelegramBackendStatus(
             `✓ Authenticated on Server: TG User #${savedSession.verifiedTelegramId}`
           );
+          fetch('/api/admin/session', {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${savedSession.sessionToken}` },
+          })
+            .then((resp) => (resp.ok ? resp.json() : null))
+            .then((data) => {
+              if (!cancelled) {
+                setIsVerifiedAdmin(Boolean(data?.authorized === true));
+              }
+            })
+            .catch(() => {
+              if (!cancelled) setIsVerifiedAdmin(false);
+            });
           await hydrateRoomState(activeRoomId);
           return;
         }
@@ -635,6 +665,7 @@ export default function App() {
           if (Number.isInteger(verifiedId) && verifiedId > 0) {
             setServerVerifiedTelegramId(verifiedId);
           }
+          setIsVerifiedAdmin(Boolean(d.isAdmin === true || d.role === 'admin'));
           if (d.sessionToken) {
             setSessionBearerToken(d.sessionToken);
             setActiveSessionToken(d.sessionToken);
@@ -656,11 +687,10 @@ export default function App() {
           }
           if (d.referralApplied?.applied) {
             autoAppliedStartRef.current = true;
-            const bonus = Number(d.referralApplied.inviteeBonusEtb ?? 15);
             setToast(
               langRef.current === 'am'
-                ? `የግብዣ ቦነስ +${bonus.toFixed(2)} ብር ወደ ሂሳብዎ ተጨምሯል!`
-                : `Invitation bonus +${bonus.toFixed(2)} ETB credited to your account!`
+                ? 'በጓደኛ ግብዣ ተቀላቅለዋል! የ15.00 ብር መነሻ ሂሳብዎ ዝግጁ ነው።'
+                : 'Joined via friend invite! Your 15.00 ETB initial balance is ready.'
             );
           }
           if (d.customToken) {
@@ -1712,11 +1742,11 @@ export default function App() {
       soundFX.playWinFanfare(sound);
       triggerHaptic('success');
       await hydratePlayerState();
-      const bonus = Number(res.bonusEtb ?? 15);
+      const inviterBonus = Number(res.inviterBonusEtb ?? 20);
       const msg =
         lang === 'am'
-          ? `የግብዣ ኮዱ ተረጋግጧል! (+${bonus.toFixed(2)} ብር ቦነስ)`
-          : `Referral code verified! (+${bonus.toFixed(2)} ETB bonus)`;
+          ? `የግብዣ ኮዱ ተረጋግጧል! ለጋባዡ +${inviterBonus.toFixed(0)} ብር ሽልማት ተሰጥቷል።`
+          : `Referral code verified! Inviter rewarded +${inviterBonus.toFixed(0)} ETB.`;
       setToast(msg);
       return { ok: true, message: msg };
     }
@@ -1731,26 +1761,37 @@ export default function App() {
     return { ok: false, message: errMsg };
   }
 
-  // Handler: Submit Deposit Request via POST /api/player/wallet
-  async function handleSubmitDepositRequest(amount: number, provider: string) {
+  // Handler: Submit Manual Payment Deposit Receipt via POST /api/player/wallet
+  async function handleSubmitDepositRequest(
+    amount: number,
+    provider: string,
+    receiptReference: string,
+    receiptProof: string
+  ) {
     const res = await submitPlayerWalletAction({
       action: 'deposit_request',
       amountEtb: amount,
       provider,
+      receiptReference,
+      referenceCode: receiptReference,
+      receiptProof,
     });
     if (res.ok) {
       soundFX.playDaub(sound);
       await hydratePlayerState();
       setToast(
         lang === 'am'
-          ? `የ ${amount.toFixed(2)} ETB የተቀማጭ ጥያቄ (${provider}) ተልኳል`
-          : `Deposit request of ${amount.toFixed(2)} ETB (${provider}) submitted`
+          ? `የ ${amount.toFixed(2)} ETB የክፍያ ደረሰኝ (${receiptReference}) ለአስተዳዳሪ ማረጋገጫ ተልኳል`
+          : `Manual deposit receipt (${receiptReference}) for ${amount.toFixed(2)} ETB submitted for admin verification`
       );
       setScreen('wallet');
       return;
     }
     soundFX.playError(sound);
-    setToast(res.message || (lang === 'am' ? 'የተቀማጭ ጥያቄ አልተሳካም' : 'Deposit request failed'));
+    const errMsg =
+      res.message || (lang === 'am' ? 'የተቀማጭ ጥያቄ አልተሳካም' : 'Deposit request failed');
+    setToast(errMsg);
+    throw new Error(errMsg);
   }
 
   // Handler: Submit Withdrawal Request via POST /api/player/wallet
@@ -1829,7 +1870,15 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fbUser, serverVerifiedTelegramId, user.startParam, referralCode, referredByCode]);
 
-  if (isAdminRoute) {
+  // Prevent authenticated ordinary players from entering the private /admin dashboard
+  useEffect(() => {
+    if (isAdminRoute && serverVerifiedTelegramId !== null && !isVerifiedAdmin) {
+      window.history.replaceState({}, '', '/');
+      setIsAdminRoute(false);
+    }
+  }, [isAdminRoute, serverVerifiedTelegramId, isVerifiedAdmin]);
+
+  if (isAdminRoute && (isVerifiedAdmin || serverVerifiedTelegramId === null)) {
     return (
       <AdminDashboardScreen
         lang={lang}
@@ -1877,9 +1926,10 @@ export default function App() {
         onTimerClick={() => void handleEnterLiveGame()}
         onWalletClick={() => setScreen('wallet')}
         onToggleLanguage={() => handleChangeLanguage((l) => (l === 'am' ? 'en' : 'am'))}
-        showAdminButton
+        showAdminButton={isVerifiedAdmin}
         isAdminActive={isAdminRoute}
         onAdminClick={() => {
+          if (!isVerifiedAdmin) return;
           window.history.pushState({}, '', '/admin');
           setIsAdminRoute(true);
         }}

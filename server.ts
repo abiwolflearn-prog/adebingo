@@ -358,7 +358,7 @@ async function startServer() {
     const tgUser = result.telegramUser;
     const uid = `tg_${tgUser.id}`;
 
-    // Ensure player profile exists in backend bot registry bound to uid with authoritative initial sandbox balance (250 ETB)
+    // Ensure player profile exists in backend bot registry bound to uid with authoritative initial balance (15 ETB)
     let playerProfile = botEngine.getPlayerByTelegramId(tgUser.id);
     if (!playerProfile) {
       playerProfile = ensureServerPlayerWithWelcomeBonus({
@@ -429,6 +429,8 @@ async function startServer() {
 
     persistLocalStateSnapshot();
 
+    const verifiedRole = mintedSession.actor.role;
+
     res.json({
       ok: true,
       authenticated: true,
@@ -436,6 +438,8 @@ async function startServer() {
       statusCode: 200,
       uid,
       verifiedTelegramId: tgUser.id,
+      role: verifiedRole,
+      isAdmin: verifiedRole === 'admin',
       customToken,
       customTokenStatus,
       sessionToken: mintedSession.token,
@@ -453,6 +457,7 @@ async function startServer() {
             verifiedPhoneMasked: playerProfile.verifiedPhoneMasked,
             demoBalanceEtb: playerProfile.demoBalanceEtb,
             referralCode: playerProfile.referralCode,
+            role: verifiedRole,
           }
         : undefined,
       authDate: result.authDate,
@@ -1134,7 +1139,7 @@ async function startServer() {
     const distinctOwners = roomCards ? new Set(roomCards.values()).size : 1;
     const totalCards = roomCards ? roomCards.size : 1;
     const financials = calculateAuthoritativeGameFinancials(distinctOwners, totalCards, cardPrice);
-    const prizeEtb = Math.max(financials.winnersPrizePoolEtb, cardPrice);
+    const prizeEtb = financials.winnersPrizePoolEtb;
 
     const p = ensureServerPlayerWithWelcomeBonus(actor);
     const balBefore = p ? Number(p.demoBalanceEtb ?? 0) : 0;
@@ -1257,7 +1262,13 @@ async function startServer() {
     string,
     Array<{
       id: string;
-      type: 'deposit_demo' | 'withdraw_demo' | 'card_entry' | 'bingo_win' | 'referral_bonus';
+      type:
+        | 'deposit_demo'
+        | 'withdraw_demo'
+        | 'card_entry'
+        | 'bingo_win'
+        | 'referral_bonus'
+        | 'admin_adjustment';
       amount: number;
       balanceBeforeEtb?: number;
       balanceAfterEtb?: number;
@@ -1277,6 +1288,8 @@ async function startServer() {
       amountEtb: number;
       provider: string;
       referenceCode: string;
+      receiptProof?: string;
+      reviewNotes?: string;
       status: 'Pending' | 'Approved' | 'Rejected';
       requestDate: string;
     }>
@@ -2095,11 +2108,11 @@ async function startServer() {
       });
       player = reg.profile;
       if (player) {
-        player.demoBalanceEtb = 250;
+        player.demoBalanceEtb = 15;
       }
     }
     if (!localTransactionsByUid.has(actor.uid)) {
-      const initBal = player ? Number(player.demoBalanceEtb ?? 250) : 250;
+      const initBal = player ? Number(player.demoBalanceEtb ?? 15) : 15;
       localTransactionsByUid.set(actor.uid, [
         {
           id: `tx_init_${actor.uid}`,
@@ -2109,8 +2122,8 @@ async function startServer() {
           balanceAfterEtb: initBal,
           relatedId: actor.uid,
           status: 'demo_completed',
-          labelAm: 'የመጀመሪያ የሙከራ ሂሳብ (250 ብር)',
-          labelEn: 'Initial Sandbox Account Balance (250 ETB)',
+          labelAm: 'የመጀመሪያ ሂሳብ (15 ብር)',
+          labelEn: 'Initial Account Balance (15 ETB)',
           timestamp: new Date().toISOString(),
           reference: `ADB-INIT-${actor.telegramUserId}`,
         },
@@ -2152,15 +2165,14 @@ async function startServer() {
       return { ok: false, status: 404, error: 'inviter_not_found', message: 'No registered player matches this referral code.' };
     }
 
+    // Business rule: new player starts with 15 ETB initial credit (once); inviter earns +20 ETB per referred new player.
     const inviterBonus = 20;
-    const inviteeBonus = 15;
+    const inviteeBonus = 0;
     const nowIso = new Date().toISOString();
     const refId = `ref_tg_${actor.telegramUserId}`;
 
-    const inviteeBefore = player ? Number(player.demoBalanceEtb ?? 0) : 0;
-    const inviteeAfter = Number((inviteeBefore + inviteeBonus).toFixed(2));
+    const inviteeBalance = player ? Number(player.demoBalanceEtb ?? 15) : 15;
     if (player) {
-      player.demoBalanceEtb = inviteeAfter;
       player.referredByCode = normalized;
     }
 
@@ -2169,22 +2181,6 @@ async function startServer() {
     inviterPlayer.demoBalanceEtb = inviterAfter;
 
     localAppliedPromoByUid.set(actor.uid, normalized);
-
-    const actorTxs = localTransactionsByUid.get(actor.uid) || [];
-    actorTxs.unshift({
-      id: `tx_ref_invitee_${actor.telegramUserId}`,
-      type: 'referral_bonus',
-      amount: inviteeBonus,
-      balanceBeforeEtb: inviteeBefore,
-      balanceAfterEtb: inviteeAfter,
-      relatedId: refId,
-      status: 'demo_completed',
-      labelAm: `የተጋበዘ ጓደኛ ቦነስ (+15 ብር · ${normalized})`,
-      labelEn: `Welcome Referral Bonus (+15 ETB · ${normalized})`,
-      timestamp: nowIso,
-      reference: `ADB-REF-W-${actor.telegramUserId}`,
-    });
-    localTransactionsByUid.set(actor.uid, actorTxs.slice(0, 50));
 
     const inviterUid = inviterPlayer.uid || `tg_${inviterId}`;
     const inviterTxs = localTransactionsByUid.get(inviterUid) || [];
@@ -2197,7 +2193,7 @@ async function startServer() {
       relatedId: refId,
       status: 'demo_completed',
       labelAm: `ጓደኛ በመጋበዝ የተገኘ ቦነስ (+20 ብር · ${actor.displayName})`,
-      labelEn: `Referral Bonus (+20 ETB · ${actor.displayName})`,
+      labelEn: `Referral Reward (+20 ETB · ${actor.displayName})`,
       timestamp: nowIso,
       reference: `ADB-REF-${actor.telegramUserId}`,
     });
@@ -2225,7 +2221,7 @@ async function startServer() {
       inviterTelegramId: inviterId,
       inviterBonusEtb: inviterBonus,
       inviteeBonusEtb: inviteeBonus,
-      updatedBalanceEtb: inviteeAfter,
+      updatedBalanceEtb: inviteeBalance,
     };
   };
 
@@ -2392,7 +2388,7 @@ async function startServer() {
           ok: true,
           action: 'apply_promo',
           code: rawCode,
-          bonusEtb: refRes.inviteeBonusEtb ?? 15,
+          bonusEtb: refRes.inviteeBonusEtb ?? 0,
           inviterBonusEtb: refRes.inviterBonusEtb ?? 20,
           updatedBalanceEtb: refRes.updatedBalanceEtb,
           demoSandboxOnly: true,
@@ -2409,26 +2405,76 @@ async function startServer() {
         res.status(400).json({ ok: false, error: 'invalid_deposit_amount', message: 'Deposit request must be 10–10,000 ETB.' });
         return;
       }
+      const rawProvider = typeof req.body?.provider === 'string' ? req.body.provider.trim() : '';
       const method =
-        req.body?.provider === 'CBE Birr (Demo)' || req.body?.provider === 'Chapa Sandbox (Demo)'
-          ? req.body.provider
-          : 'Telebirr (Demo)';
-      const customRef =
-        typeof req.body?.referenceCode === 'string' && req.body.referenceCode.trim().length >= 4
-          ? req.body.referenceCode.trim().toUpperCase()
-          : `REF-${Math.floor(100000 + Math.random() * 899999)}`;
+        rawProvider === 'CBE Birr (Manual)' ||
+        rawProvider === 'CBE Birr (Demo)' ||
+        rawProvider === 'Bank Transfer (Manual)' ||
+        rawProvider === 'Telebirr (Manual)' ||
+        rawProvider === 'Telebirr (Demo)'
+          ? rawProvider
+          : 'Telebirr (Manual)';
+
+      const rawRef =
+        typeof req.body?.receiptReference === 'string' && req.body.receiptReference.trim()
+          ? req.body.receiptReference.trim()
+          : typeof req.body?.referenceCode === 'string' && req.body.referenceCode.trim()
+            ? req.body.referenceCode.trim()
+            : '';
+
+      if (rawRef && rawRef.length < 4) {
+        res.status(400).json({
+          ok: false,
+          error: 'invalid_receipt_reference',
+          message: 'Payment receipt reference must be at least 4 characters.',
+        });
+        return;
+      }
+
+      const customRef = rawRef
+        ? rawRef.toUpperCase().slice(0, 64)
+        : `REF-${Math.floor(100000 + Math.random() * 899999)}`;
+
+      const receiptProof =
+        typeof req.body?.receiptProof === 'string'
+          ? req.body.receiptProof.trim().slice(0, 500)
+          : typeof req.body?.proofNote === 'string'
+            ? req.body.proofNote.trim().slice(0, 500)
+            : '';
+
+      // Prevent duplicate receipt submissions across all users
+      let isDuplicateReceipt = adminAuthority.hasDepositReferenceCode(customRef);
+      if (!isDuplicateReceipt) {
+        for (const list of localDepositsByUid.values()) {
+          if (list.some((item) => item.referenceCode.trim().toUpperCase() === customRef)) {
+            isDuplicateReceipt = true;
+            break;
+          }
+        }
+      }
+      if (isDuplicateReceipt) {
+        res.status(409).json({
+          ok: false,
+          error: 'duplicate_receipt',
+          message: 'This payment receipt reference has already been submitted.',
+        });
+        return;
+      }
+
       const depositId = `DEP-WEB-${Date.now().toString(36).toUpperCase()}`;
       const deposit = {
         depositId,
         amountEtb,
         provider: method,
         referenceCode: customRef,
+        ...(receiptProof ? { receiptProof } : {}),
+        reviewNotes: 'Manual payment receipt submitted — awaiting admin verification',
         status: 'Pending' as const,
         requestDate: nowIso,
       };
       const existing = localDepositsByUid.get(actor.uid) || [];
       existing.unshift(deposit);
-      localDepositsByUid.set(actor.uid, existing.slice(0, 10));
+      localDepositsByUid.set(actor.uid, existing.slice(0, 20));
 
       adminAuthority.registerPlayerDepositRequest({
         depositId,
@@ -2438,6 +2484,7 @@ async function startServer() {
         amountEtb,
         provider: method,
         referenceCode: customRef,
+        receiptProof,
         requestDate: nowIso.slice(0, 16).replace('T', ' '),
       });
 
@@ -3294,7 +3341,13 @@ async function startServer() {
       adminActor: actor,
     });
     if (!result.ok || !result.deposit) {
-      res.status(400).json(result);
+      const status =
+        result.reason === 'already_finalized'
+          ? 409
+          : result.reason === 'deposit_not_found'
+            ? 404
+            : 400;
+      res.status(status).json(result);
       return;
     }
 
@@ -3304,6 +3357,7 @@ async function startServer() {
       for (const item of userDeposits) {
         if (item.depositId === depositId) {
           item.status = result.deposit.status;
+          item.reviewNotes = result.deposit.reviewNotes;
         }
       }
     }
@@ -3311,7 +3365,7 @@ async function startServer() {
     if (result.deposit.status === 'Approved' && result.creditedBalanceEtb !== undefined) {
       const txList = localTransactionsByUid.get(targetUid) || [];
       txList.unshift({
-        id: `tx_dep_${depositId}_${Date.now()}`,
+        id: `tx_dep_${depositId}`,
         type: 'deposit_demo',
         amount: result.deposit.amountEtb,
         balanceBeforeEtb: Math.max(0, result.creditedBalanceEtb - result.deposit.amountEtb),
@@ -3320,7 +3374,7 @@ async function startServer() {
         provider: result.deposit.provider,
         status: 'demo_completed',
         labelAm: `የጸደቀ ${result.deposit.provider} ገቢ (${result.deposit.referenceCode})`,
-        labelEn: `Verified ${result.deposit.provider} Deposit (${result.deposit.referenceCode})`,
+        labelEn: `Verified Manual ${result.deposit.provider} Deposit (${result.deposit.referenceCode})`,
         timestamp: new Date().toISOString(),
         reference: result.deposit.referenceCode,
       });
@@ -3328,6 +3382,62 @@ async function startServer() {
     }
 
     broadcastWalletUpdate(targetUid);
+    persistLocalStateSnapshot();
+    res.json(result);
+  });
+
+  // 9F-2. Legacy Initial Credit Audit & Non-Destructive Reconciliation (Admin Only)
+  app.get('/api/admin/audit/initial-credits', requireAdmin, (_req, res) => {
+    const report = adminAuthority.auditLegacyInitialCredits((uid) =>
+      (localTransactionsByUid.get(uid) || []).map((t) => ({ id: t.id, amount: t.amount }))
+    );
+    res.json({
+      ok: true,
+      ...report,
+    });
+  });
+
+  app.post('/api/admin/audit/initial-credits/reconcile', requireAdmin, (req, res) => {
+    const actor = (req as express.Request & { adminActor: VerifiedSessionActor }).adminActor;
+    const uid = typeof req.body?.uid === 'string' ? req.body.uid.trim() : '';
+    const notes = typeof req.body?.notes === 'string' ? req.body.notes.trim() : undefined;
+    if (!uid) {
+      res.status(400).json({ ok: false, reason: 'missing_uid' });
+      return;
+    }
+    const result = adminAuthority.reconcileLegacyInitialCredit({
+      uid,
+      adminActor: actor,
+      notes,
+      ledgerLookup: (targetUid) =>
+        (localTransactionsByUid.get(targetUid) || []).map((t) => ({ id: t.id, amount: t.amount })),
+    });
+    if (!result.ok) {
+      const status =
+        result.reason === 'already_reconciled'
+          ? 409
+          : result.reason === 'user_not_found'
+            ? 404
+            : 400;
+      res.status(status).json(result);
+      return;
+    }
+    const txList = localTransactionsByUid.get(uid) || [];
+    txList.unshift({
+      id: result.transactionId || `tx_reconcile_init_${uid}`,
+      type: 'admin_adjustment',
+      amount: result.adjustedByEtb ?? 0,
+      balanceBeforeEtb: result.previousBalanceEtb ?? 0,
+      balanceAfterEtb: result.newBalanceEtb ?? 0,
+      relatedId: `tx_init_${uid}`,
+      status: 'demo_completed',
+      labelAm: 'የመጀመሪያ 250 ብር ሂሳብ ማስተካከያ (ወደ 15 ብር)',
+      labelEn: 'Auditable Initial Credit Reconciliation (250 ETB -> 15 ETB)',
+      timestamp: new Date().toISOString(),
+      reference: `RECONCILE-INIT-${uid}`,
+    });
+    localTransactionsByUid.set(uid, txList.slice(0, 50));
+    broadcastWalletUpdate(uid);
     persistLocalStateSnapshot();
     res.json(result);
   });

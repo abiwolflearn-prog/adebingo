@@ -467,11 +467,11 @@ export function formatTelegramNotification(
       return lang === 'am'
         ? {
             title: '✅ ምዝገባዎ በተሳካ ሁኔታ ተጠናቋል!',
-            body: `እንኳን ደህና መጡ *${playerName}*! የቴሌግራም ስልክ ቁጥርዎ (${payload.maskedPhone || '+251***'}) ተረጋግጧል። 250.00 ETB የሙከራ ሂሳብ (Demo Balance) ተዘጋጅቶልዎታል። *🎱 ቢንጎ ይጫወቱ* የሚለውን በመጫን ይጀምሩ!`,
+            body: `እንኳን ደህና መጡ *${playerName}*! የቴሌግራም ስልክ ቁጥርዎ (${payload.maskedPhone || '+251***'}) ተረጋግጧል። 15.00 ETB የመጀመሪያ ሂሳብ ተዘጋጅቶልዎታል። *🎱 ቢንጎ ይጫወቱ* የሚለውን በመጫን ይጀምሩ!`,
           }
         : {
             title: '✅ Registration & Phone Verification Complete!',
-            body: `Welcome *${playerName}*! Your Telegram phone contact (${payload.maskedPhone || '+251***'}) is verified. Your 250.00 ETB Demo Sandbox balance is ready. Tap *🎱 Play Bingo* to launch ADEYBINGO!`,
+            body: `Welcome *${playerName}*! Your Telegram phone contact (${payload.maskedPhone || '+251***'}) is verified. Your 15.00 ETB initial balance is ready. Tap *🎱 Play Bingo* to launch ADEYBINGO!`,
           };
     }
 
@@ -2140,7 +2140,7 @@ export class AdeyBingoTelegramBotEngine {
         username: username.replace(/^@/, '').slice(0, 64),
         language: lang,
         phoneVerified: false,
-        demoBalanceEtb: 250,
+        demoBalanceEtb: 15,
         referralCode: `ADEY-${senderTelegramId}`,
         registeredAt: nowIso,
         updatedAt: nowIso,
@@ -2160,28 +2160,29 @@ export class AdeyBingoTelegramBotEngine {
           referralNoticeAm = '\n\n⚠️ _የራስዎን የግብዣ ሊንክ መጠቀም አይችሉም።_';
           referralNoticeEn = '\n\n⚠️ _Self-referrals are not permitted._';
         } else if (!this.referredInviteeIds.has(senderTelegramId) && isNewUser) {
-          this.referredInviteeIds.add(senderTelegramId);
-          player.referredByCode = referralCode;
-          player.referredByUid = `tg_${inviterId}`;
-          player.demoBalanceEtb += 15;
-          const inviterRefs = this.referralsByInviter.get(inviterId) || [];
-          inviterRefs.push({
-            inviteeTelegramId: senderTelegramId,
-            inviteeName: player.firstName,
-            bonusEtb: 20,
-            createdAt: new Date().toISOString(),
-          });
-          this.referralsByInviter.set(inviterId, inviterRefs);
           const inviterPlayer = this.playersByTelegramId.get(inviterId);
           if (inviterPlayer) {
-            inviterPlayer.demoBalanceEtb += 20;
+            this.referredInviteeIds.add(senderTelegramId);
+            player.referredByCode = referralCode;
+            player.referredByUid = `tg_${inviterId}`;
+            const inviterRefs = this.referralsByInviter.get(inviterId) || [];
+            inviterRefs.push({
+              inviteeTelegramId: senderTelegramId,
+              inviteeName: player.firstName,
+              bonusEtb: 20,
+              createdAt: new Date().toISOString(),
+            });
+            this.referralsByInviter.set(inviterId, inviterRefs);
+            inviterPlayer.demoBalanceEtb = Number((inviterPlayer.demoBalanceEtb + 20).toFixed(2));
             this.queueNotification('referral_confirmation', inviterId, {
               friendName: player.firstName,
               inviterBonusEtb: 20,
             });
+            referralNoticeAm =
+              '\n\n🎁 _በጓደኛ ግብዣ ተመዝግበዋል! የመጀመሪያ 15.00 ETB ሂሳብዎ ዝግጁ ነው (ጋባዥዎ +20.00 ETB አግኝቷል)።_';
+            referralNoticeEn =
+              '\n\n🎁 _Welcome via friend invitation! Your 15.00 ETB initial balance is ready (your inviter earned +20.00 ETB)._';
           }
-          referralNoticeAm = '\n\n🎁 _በጓደኛ ግብዣ +15.00 ETB የሙከራ እንኳን ደህና መጡ ቦነስ ተጨምሯል!_';
-          referralNoticeEn = '\n\n🎁 _Referral welcome bonus: +15.00 ETB Demo credited!_';
         }
       }
     }

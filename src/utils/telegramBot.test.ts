@@ -316,7 +316,7 @@ test('Milestone 4 & 5: Contextual inline callbacks, duplicate callbackQueryId pr
     callbackData: 'cb:my_wallet',
   });
   assert.equal(walletCb.ok, true);
-  assert.match(walletCb.text, /250\.00 ETB/);
+  assert.match(walletCb.text, /15\.00 ETB/);
 
   const inviteCb = bot.handleIncomingUpdate({
     callbackQueryId: 'cbq-3',
@@ -397,7 +397,7 @@ test('Milestone 5: Deposit, Withdraw, Referral deep-link, Leaderboard, and persi
     text: '/start',
   });
 
-  // 2. Invitee joins using /start ADEY-8842109 -> starts in Amharic & receives +15 ETB demo bonus
+  // 2. Invitee joins using /start ADEY-8842109 -> starts in Amharic with 15 ETB initial credit; inviter earns +20 ETB (35 ETB)
   const inviteeStart = bot.handleIncomingUpdate({
     updateId: 5002,
     senderTelegramId: 999111,
@@ -405,8 +405,8 @@ test('Milestone 5: Deposit, Withdraw, Referral deep-link, Leaderboard, and persi
     text: '/start ADEY-8842109',
   });
   assert.equal(inviteeStart.language, 'am');
-  assert.equal(inviteeStart.profile?.demoBalanceEtb, 265);
-  assert.equal(bot.getPlayerByTelegramId(8842109)?.demoBalanceEtb, 270);
+  assert.equal(inviteeStart.profile?.demoBalanceEtb, 15);
+  assert.equal(bot.getPlayerByTelegramId(8842109)?.demoBalanceEtb, 35);
 
   // Self-referral or duplicate referral claim does not grant extra bonus
   const dupRefStart = bot.handleIncomingUpdate({
@@ -414,7 +414,8 @@ test('Milestone 5: Deposit, Withdraw, Referral deep-link, Leaderboard, and persi
     senderTelegramId: 999111,
     text: '/start ADEY-8842109',
   });
-  assert.equal(dupRefStart.profile?.demoBalanceEtb, 265);
+  assert.equal(dupRefStart.profile?.demoBalanceEtb, 15);
+  assert.equal(bot.getPlayerByTelegramId(8842109)?.demoBalanceEtb, 35);
 
   const selfRefStart = bot.handleIncomingUpdate({
     updateId: 5004,
@@ -422,7 +423,7 @@ test('Milestone 5: Deposit, Withdraw, Referral deep-link, Leaderboard, and persi
     firstName: 'Kaleb',
     text: '/start ADEY-555222',
   });
-  assert.equal(selfRefStart.profile?.demoBalanceEtb, 250);
+  assert.equal(selfRefStart.profile?.demoBalanceEtb, 15);
 
   // 3. Deposit flow: select method & quick amount -> request status
   bot.handleIncomingUpdate({
@@ -457,6 +458,10 @@ test('Milestone 5: Deposit, Withdraw, Referral deep-link, Leaderboard, and persi
   });
   assert.equal(overWithdraw.ok, false);
   assert.equal(overWithdraw.securityCode, 'insufficient_demo_balance');
+
+  // Credit verified deposit before testing 100 ETB withdrawal (new account starts with 15 ETB)
+  const p999 = bot.getPlayerByTelegramId(999111);
+  if (p999) p999.demoBalanceEtb = 215;
 
   const validWithdraw = bot.handleIncomingUpdate({
     updateId: 5010,

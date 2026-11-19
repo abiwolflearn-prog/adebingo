@@ -546,7 +546,7 @@ test('Persistent Telegram verification & bot store enforce 24h replay protection
   assert.equal(startRes.language, 'am');
   assert.equal(store.has(`${BOT_PLAYERS_COLLECTION}/778899`), true);
   assert.equal(store.get('telegramBindings/tg_778899')?.uid, 'tg_778899');
-  assert.equal(store.get('users/tg_778899')?.demoBalanceEtb, 250);
+  assert.equal(store.get('users/tg_778899')?.demoBalanceEtb, 15);
 
   // 2. Replayed updateId blocked even 12 hours later (< 24h TTL) on a fresh instance
   const botB = new PersistentTelegramBotService(
@@ -928,7 +928,8 @@ test('PersistentGameAuthorityService enforces concurrent 4-card cap, balance/led
     markedNumbers: topRowNums,
   });
   assert.equal(legitWin.verified, true);
-  assert.ok((legitWin.demoPrizeEtb ?? 0) >= 50);
+  // Strict 80% prize pool: 2 confirmed players (player2 + ghost) * 10 ETB = 20 -> 80% = 16 ETB
+  assert.equal(legitWin.demoPrizeEtb, 16);
 
   const completedGame = store.get(`games/${gameId}`);
   assert.equal(completedGame?.status, 'completed');
@@ -1122,7 +1123,7 @@ test('Milestone 5: PersistentTelegramBotService persists demo depositRequests, p
     nowUnixSeconds: nowUnix,
   });
 
-  // 2. Invitee joins via /start ADEY-112233 -> atomic referral credit (+20 / +15)
+  // 2. Invitee joins via /start ADEY-112233 -> new player has 15 ETB initial credit, inviter gains +20 ETB (35 ETB)
   const inviteeStart = await bot.handleIncomingUpdate({
     updateId: 8101,
     senderTelegramId: 445566,
@@ -1135,8 +1136,8 @@ test('Milestone 5: PersistentTelegramBotService persists demo depositRequests, p
   });
   assert.equal(inviteeStart.ok, true);
   assert.equal(inviteeStart.language, 'am');
-  assert.equal(store.get('users/tg_112233')?.demoBalanceEtb, 270);
-  assert.equal(store.get('users/tg_445566')?.demoBalanceEtb, 265);
+  assert.equal(store.get('users/tg_112233')?.demoBalanceEtb, 35);
+  assert.equal(store.get('users/tg_445566')?.demoBalanceEtb, 15);
   assert.equal(store.get('referrals/ref_tg_445566')?.inviterUid, 'tg_112233');
 
   // Re-sending /start ADEY-112233 does NOT duplicate credit
@@ -1148,8 +1149,8 @@ test('Milestone 5: PersistentTelegramBotService persists demo depositRequests, p
     text: '/start ADEY-112233',
     nowUnixSeconds: nowUnix + 2,
   });
-  assert.equal(store.get('users/tg_112233')?.demoBalanceEtb, 270);
-  assert.equal(store.get('users/tg_445566')?.demoBalanceEtb, 265);
+  assert.equal(store.get('users/tg_112233')?.demoBalanceEtb, 35);
+  assert.equal(store.get('users/tg_445566')?.demoBalanceEtb, 15);
 
   // Self-referral is ignored without credit
   await bot.handleIncomingUpdate({
@@ -1161,7 +1162,7 @@ test('Milestone 5: PersistentTelegramBotService persists demo depositRequests, p
     text: '/start ADEY-778800',
     nowUnixSeconds: nowUnix + 3,
   });
-  assert.equal(store.get('users/tg_778800')?.demoBalanceEtb, 250);
+  assert.equal(store.get('users/tg_778800')?.demoBalanceEtb, 15);
 
   // 3. Demo deposit request via bot persists in depositRequests & appears in cb:deposit_status
   await bot.handleIncomingUpdate({
@@ -1203,6 +1204,10 @@ test('Milestone 5: PersistentTelegramBotService persists demo depositRequests, p
   });
   assert.equal(overWdr.ok, false);
   assert.equal(overWdr.securityCode, 'insufficient_demo_balance');
+
+  // Credit approved manual deposit before testing 100 ETB withdrawal on 15 ETB initial balance
+  store.set('users/tg_445566', { ...(store.get('users/tg_445566') || {}), demoBalanceEtb: 215 });
+  store.set('botPlayers/445566', { ...(store.get('botPlayers/445566') || {}), demoBalanceEtb: 215 });
 
   const okWdr = await bot.handleIncomingUpdate({
     updateId: 8108,

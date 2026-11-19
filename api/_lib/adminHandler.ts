@@ -990,6 +990,76 @@ export function createAdminSettingsHandler(deps: AdminHandlerDeps = {}) {
 }
 
 /**
+ * GET /api/admin/audit/initial-credits
+ */
+export function createAdminAuditInitialCreditsHandler(deps: AdminHandlerDeps = {}) {
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    if (!enforceMethod(req, res, ['GET'])) return;
+    const actor = await requireVerifiedAdminActor(req, res, deps);
+    if (!actor) return;
+    const db = resolveDbOrSend503(res, deps);
+    if (!db) return;
+
+    const service = new PersistentAdminService(db);
+    const accounts = await service.auditLegacyInitialCredits();
+    const reconciledCount = accounts.filter((a) => a.alreadyReconciled).length;
+    sendJson(res, 200, {
+      ok: true,
+      expectedInitialCreditEtb: 15,
+      legacyInitialCreditEtb: 250,
+      flaggedCount: accounts.length,
+      reconciledCount,
+      pendingReconciliationCount: accounts.length - reconciledCount,
+      accounts,
+    });
+  };
+}
+
+/**
+ * POST /api/admin/audit/initial-credits/reconcile
+ */
+export function createAdminReconcileInitialCreditHandler(deps: AdminHandlerDeps = {}) {
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    if (!enforceMethod(req, res, ['POST'])) return;
+    const actor = await requireVerifiedAdminActor(req, res, deps);
+    if (!actor) return;
+    const db = resolveDbOrSend503(res, deps);
+    if (!db) return;
+
+    const body = await parseJsonBody(req, res, { maxBytes: 8 * 1024, required: true });
+    if (!body) return;
+    const targetUid = typeof body.uid === 'string' ? body.uid.trim() : '';
+    if (!targetUid) {
+      sendError(res, 400, 'missing_uid', 'Target user uid is required.');
+      return;
+    }
+
+    const service = new PersistentAdminService(db);
+    const result = await service.reconcileLegacyInitialCredit({
+      uid: targetUid,
+      adminActor: actor,
+      notes: typeof body.notes === 'string' ? body.notes : undefined,
+    });
+    if (!result.ok) {
+      const status =
+        result.reason === 'user_not_found'
+          ? 404
+          : result.reason === 'already_reconciled'
+            ? 409
+            : 400;
+      sendError(
+        res,
+        status,
+        result.reason || 'reconcile_failed',
+        `Cannot reconcile initial credit (${result.reason}).`
+      );
+      return;
+    }
+    sendJson(res, 200, result);
+  };
+}
+
+/**
  * Consolidated router for all 17 `/api/admin/*` endpoints.
  * Preserves every route, method, authentication, RBAC, and dynamic parameter contract.
  */
@@ -1013,6 +1083,8 @@ export function createAdminRouterHandler(deps: AdminHandlerDeps = {}) {
   const notificationsHandler = createAdminNotificationsHandler(deps);
   const notificationsSendHandler = createAdminNotificationsSendHandler(deps);
   const settingsHandler = createAdminSettingsHandler(deps);
+  const auditInitialCreditsHandler = createAdminAuditInitialCreditsHandler(deps);
+  const reconcileInitialCreditHandler = createAdminReconcileInitialCreditHandler(deps);
 
   return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
     const subRoute = extractSubRoute(req, '/api/admin');
@@ -1044,6 +1116,10 @@ export function createAdminRouterHandler(deps: AdminHandlerDeps = {}) {
         return await notificationsSendHandler(req, res);
       case 'settings':
         return await settingsHandler(req, res);
+      case 'audit/initial-credits':
+        return await auditInitialCreditsHandler(req, res);
+      case 'audit/initial-credits/reconcile':
+        return await reconcileInitialCreditHandler(req, res);
       default:
         break;
     }
