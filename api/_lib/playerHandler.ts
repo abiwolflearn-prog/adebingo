@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
 import { FieldValue } from 'firebase-admin/firestore';
-import { AuthBackendDeps, authenticateRequest } from './auth.ts';
+import { type AuthBackendDeps, authenticateRequest } from './auth.ts';
 import { getAdminDb } from './firebaseAdmin.ts';
 import {
   BoundedRateLimiter,

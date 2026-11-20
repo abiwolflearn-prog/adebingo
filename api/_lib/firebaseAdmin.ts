@@ -1,6 +1,6 @@
-import { App, cert, getApps, initializeApp, ServiceAccount } from 'firebase-admin/app';
-import { Auth, getAuth } from 'firebase-admin/auth';
-import { Firestore, getFirestore } from 'firebase-admin/firestore';
+import { cert, getApps, initializeApp, type App, type ServiceAccount } from 'firebase-admin/app';
+import { getAuth, type Auth } from 'firebase-admin/auth';
+import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 
 export const FIREBASE_PROJECT_ID = 'gen-lang-client-0559010770';
 export const FIREBASE_DATABASE_ID =

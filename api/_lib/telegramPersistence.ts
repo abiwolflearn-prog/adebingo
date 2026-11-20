@@ -4,18 +4,18 @@ import { FieldValue } from 'firebase-admin/firestore';
 import type { Language } from '../../src/types/bingo.ts';
 import {
   type BotAdminConfig,
-  BotNotificationMessage,
+  type BotNotificationMessage,
   buildBotMainMenuMarkup,
   DEFAULT_DEPLOYED_MINI_APP_URL,
   formatTelegramNotification,
   isDisallowedMiniAppPreviewUrl,
-  NotificationEventType,
-  RegisteredTelegramPlayer,
+  type NotificationEventType,
+  type RegisteredTelegramPlayer,
   sanitizeProductionMiniAppUrl,
-  TelegramBotResponse,
+  type TelegramBotResponse,
 } from '../../src/utils/telegramBot.ts';
 import {
-  TelegramValidationResult,
+  type TelegramValidationResult,
   validateTelegramWebAppInitData,
   verifyTelegramSharedContact,
 } from '../../src/utils/telegramVerify.ts';

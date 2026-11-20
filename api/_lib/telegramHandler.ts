@@ -6,7 +6,7 @@ import {
   type NotificationEventType,
 } from '../../src/utils/telegramBot.ts';
 import {
-  AuthBackendDeps,
+  type AuthBackendDeps,
   authenticateRequest,
   requireValidWebhookSecret,
   resolveAdminSessionSecret,
@@ -860,6 +860,17 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
           callbackAnswered = Boolean(cbResp.ok);
         }
 
+        const rawMarkup = botResponse.replyMarkup;
+        const telegramReplyMarkup = rawMarkup?.inline_keyboard?.length
+          ? { inline_keyboard: rawMarkup.inline_keyboard }
+          : rawMarkup?.keyboard?.length
+            ? {
+                keyboard: rawMarkup.keyboard,
+                resize_keyboard: rawMarkup.resize_keyboard ?? true,
+                one_time_keyboard: rawMarkup.one_time_keyboard ?? false,
+              }
+            : undefined;
+
         const tgResp = await fetchFn(`https://api.telegram.org/bot${botToken}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -867,7 +878,7 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
             chat_id: botResponse.chatId,
             text: botResponse.text,
             parse_mode: botResponse.parseMode,
-            reply_markup: botResponse.replyMarkup,
+            ...(telegramReplyMarkup ? { reply_markup: telegramReplyMarkup } : {}),
           }),
         });
         const tgData = (await tgResp.json().catch(() => ({}))) as {

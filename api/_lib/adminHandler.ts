@@ -2,16 +2,16 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   mintServerSessionToken,
-  PayoutOrderStatus,
-  DepositRequestStatus,
-  AdminRoomConfigRecord,
-  VerifiedSessionActor,
+  type PayoutOrderStatus,
+  type DepositRequestStatus,
+  type AdminRoomConfigRecord,
+  type VerifiedSessionActor,
 } from '../../src/utils/adminAuthority.ts';
 import type { BotButtonLabelsConfig } from '../../src/utils/telegramBot.ts';
 import { PersistentAdminService } from './adminPersistence.ts';
 import {
-  AuthBackendDeps,
-  AuthenticatedCaller,
+  type AuthBackendDeps,
+  type AuthenticatedCaller,
   authenticateRequest,
   extractBearerToken,
   isServerAllowlistedAdmin,

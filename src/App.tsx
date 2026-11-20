@@ -3,7 +3,6 @@ import { onAuthStateChanged, signInWithCustomToken, User as FirebaseUser } from 
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Wallet,
-  Gift,
   X,
   Trophy,
   Play,
@@ -1972,15 +1971,6 @@ export default function App() {
                               : activeRoom.nameEn
                       }
                     />
-                    {referredByCode && (
-                      <span
-                        title={lang === 'am' ? 'የጓደኛ ግብዣ ኮድ' : 'Invited friend code'}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#E6F6EB] border border-[#159447]/30 text-[10px] font-extrabold text-[#08743A]"
-                      >
-                        <Gift size={10} className="text-[#159447]" />
-                        {referredByCode}
-                      </span>
-                    )}
                   </div>
 
                   {/* Colorful 3D Bingo Balls + Compact Icon Stats */}

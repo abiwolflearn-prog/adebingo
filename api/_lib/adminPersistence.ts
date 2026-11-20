@@ -25,10 +25,10 @@ import {
   AUTHORIZED_ADMIN_TELEGRAM_IDS,
 } from '../../src/utils/adminAuthority.ts';
 import {
-  BotAdminConfig,
-  BotAnnouncementRecord,
-  BotButtonLabelsConfig,
-  BotNotificationMessage,
+  type BotAdminConfig,
+  type BotAnnouncementRecord,
+  type BotButtonLabelsConfig,
+  type BotNotificationMessage,
   DEFAULT_BOT_BUTTON_LABELS,
   DEFAULT_DEPLOYED_MINI_APP_URL,
   isDisallowedMiniAppPreviewUrl,

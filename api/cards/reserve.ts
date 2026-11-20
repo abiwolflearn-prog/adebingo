@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
-import { AuthBackendDeps, authenticateRequest } from '../_lib/auth.ts';
+import { type AuthBackendDeps, authenticateRequest } from '../_lib/auth.ts';
 import { getAdminDb } from '../_lib/firebaseAdmin.ts';
 import { createFirestoreGameStore, PersistentGameAuthorityService } from '../_lib/gamePersistence.ts';
 import {

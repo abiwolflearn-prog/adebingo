@@ -1,11 +1,11 @@
-import {
+import type {
   GameHistoryItem,
   NotificationItem,
   ReferralRecord,
   RoomConfig,
   SupportTicket,
   WalletTransaction,
-} from '../types/bingo';
+} from '../types/bingo.ts';
 
 export const INITIAL_ROOMS: RoomConfig[] = [
   {
