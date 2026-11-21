@@ -6,6 +6,11 @@ import {
   type NotificationEventType,
 } from '../../src/utils/telegramBot.ts';
 import {
+  defaultMenuButtonConfigurator,
+  fetchCurrentChatMenuButton,
+  TelegramMenuButtonConfigurator,
+} from '../../src/utils/telegramMenuButton.ts';
+import {
   type AuthBackendDeps,
   authenticateRequest,
   requireValidWebhookSecret,
@@ -146,10 +151,22 @@ export interface BotStateHandlerDeps {
   limiter?: BoundedRateLimiter;
 }
 
+export interface ConfigureMenuButtonHandlerDeps {
+  getBotToken?: () => string | undefined;
+  getWebhookSecret?: () => string | undefined;
+  authDeps?: AuthBackendDeps;
+  fetchImpl?: typeof fetch;
+  configurator?: TelegramMenuButtonConfigurator;
+  limiter?: BoundedRateLimiter;
+}
+
 export type TelegramRouterDeps = TelegramAuthHandlerDeps &
   WebhookHandlerDeps &
   BotCommandHandlerDeps &
-  NotifyHandlerDeps;
+  NotifyHandlerDeps &
+  ConfigureMenuButtonHandlerDeps & {
+    autoConfigureMenuButton?: boolean;
+  };
 
 /**
  * POST /api/telegram/auth
@@ -1060,21 +1077,15 @@ export function createRegisterWebhookHandler(deps: RegisterWebhookHandlerDeps = 
       );
       const setCommandsData = (await setCommandsResp.json()) as { ok?: boolean };
 
-      const setMenuResp = await fetchFn(
-        `https://api.telegram.org/bot${botToken}/setChatMenuButton`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            menu_button: {
-              type: 'web_app',
-              text: '🎱 ቢንጎ ይጫወቱ',
-              web_app: { url: requestedLaunchUrl },
-            },
-          }),
-        }
-      );
-      const setMenuData = (await setMenuResp.json()) as { ok?: boolean };
+      const menuConfigurator = defaultMenuButtonConfigurator;
+      const menuButtonResult = await menuConfigurator.configure({
+        botToken,
+        miniAppUrl: requestedLaunchUrl,
+        fetchImpl: fetchFn,
+        force: true,
+        checkExistingFirst: false,
+        verifyAfterSet: true,
+      });
 
       const setWebhookResp = await fetchFn(
         `https://api.telegram.org/bot${botToken}/setWebhook`,
@@ -1111,7 +1122,9 @@ export function createRegisterWebhookHandler(deps: RegisterWebhookHandlerDeps = 
           canJoinGroups: getMeData.result?.can_join_groups,
         },
         commandsRegistered: Boolean(setCommandsData.ok),
-        menuButtonConfigured: Boolean(setMenuData.ok),
+        menuButtonConfigured: Boolean(menuButtonResult.ok && menuButtonResult.configured),
+        menuButton: menuButtonResult.verifiedMenuButton || menuButtonResult.menuButton,
+        menuButtonStatus: menuButtonResult,
         webhookSet: {
           ok: Boolean(setWebhookData.ok),
           webhookUrl,
@@ -1167,9 +1180,10 @@ export function createWebhookInfoHandler(deps: WebhookInfoHandlerDeps = {}) {
 
     const fetchFn = deps.fetchImpl ?? fetch;
     try {
-      const [meResp, infoResp] = await Promise.all([
+      const [meResp, infoResp, menuBtnRes] = await Promise.all([
         fetchFn(`https://api.telegram.org/bot${botToken}/getMe`),
         fetchFn(`https://api.telegram.org/bot${botToken}/getWebhookInfo`),
+        fetchCurrentChatMenuButton({ botToken, fetchImpl: fetchFn }),
       ]);
       const [meData, infoData] = (await Promise.all([meResp.json(), infoResp.json()])) as [
         { ok?: boolean; result?: { id?: number; first_name?: string; username?: string } },
@@ -1187,6 +1201,7 @@ export function createWebhookInfoHandler(deps: WebhookInfoHandlerDeps = {}) {
             }
           : null,
         webhookInfo: infoData.ok ? infoData.result : null,
+        menuButton: menuBtnRes.ok ? menuBtnRes.menuButton : null,
       });
     } catch {
       sendError(
@@ -1496,7 +1511,77 @@ export function createBotStateHandler(deps: BotStateHandlerDeps = {}) {
 }
 
 /**
- * Consolidated router for all 8 `/api/telegram/*` endpoints.
+ * POST /api/telegram/configure-menu-button
+ * Programmatically configures & verifies AdeyBingo's default Telegram Mini App Menu Button
+ * via setChatMenuButton / getChatMenuButton (protected by webhook secret or Admin Bearer token).
+ */
+export function createConfigureMenuButtonHandler(deps: ConfigureMenuButtonHandlerDeps = {}) {
+  const configurator = deps.configurator ?? defaultMenuButtonConfigurator;
+
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    if (!enforceMethod(req, res, ['POST'])) return;
+
+    const secretHeader = getHeaderValue(req, 'x-telegram-bot-api-secret-token');
+    const configuredSecret = deps.getWebhookSecret
+      ? deps.getWebhookSecret()
+      : process.env.TELEGRAM_WEBHOOK_SECRET;
+
+    if (secretHeader !== undefined) {
+      if (!requireValidWebhookSecret(req, res, configuredSecret)) {
+        return;
+      }
+    } else {
+      const caller = await authenticateRequest(req, res, deps.authDeps, {
+        requireAdmin: true,
+      });
+      if (!caller) return;
+      if (isConfiguredWebhookSecret(configuredSecret) === false && !caller.isAdmin) {
+        sendError(res, 403, 'admin_required', 'Administrator authorization is required.');
+        return;
+      }
+    }
+
+    if (
+      !enforceRateLimit(req, res, {
+        scope: 'telegram_configure_menu_button',
+        limit: 10,
+        windowSeconds: 60,
+        limiter: deps.limiter,
+      })
+    ) {
+      return;
+    }
+
+    const body = await parseJsonBody(req, res, { maxBytes: 8 * 1024, required: false });
+    if (!body) return;
+
+    const botToken = deps.getBotToken ? deps.getBotToken() : process.env.TELEGRAM_BOT_TOKEN;
+    if (!isConfiguredBotToken(botToken)) {
+      sendError(
+        res,
+        503,
+        'missing_bot_token',
+        'TELEGRAM_BOT_TOKEN is not configured in server environment.'
+      );
+      return;
+    }
+
+    const force = body.force === true;
+    const result = await configurator.configure({
+      botToken,
+      miniAppUrl: getPublicMiniAppUrl(),
+      fetchImpl: deps.fetchImpl,
+      force,
+      checkExistingFirst: !force,
+      verifyAfterSet: true,
+    });
+
+    sendJson(res, result.ok ? 200 : 502, result as unknown as Record<string, unknown>);
+  };
+}
+
+/**
+ * Consolidated router for all 9 `/api/telegram/*` endpoints.
  */
 export function createTelegramRouterHandler(deps: TelegramRouterDeps = {}) {
   const authHandler = createTelegramAuthHandler(deps);
@@ -1507,9 +1592,27 @@ export function createTelegramRouterHandler(deps: TelegramRouterDeps = {}) {
   const botCommandHandler = createBotCommandHandler(deps);
   const notifyHandler = createNotifyHandler(deps);
   const botStateHandler = createBotStateHandler(deps);
+  const configureMenuButtonHandler = createConfigureMenuButtonHandler(deps);
+  const menuConfigurator = deps.configurator ?? defaultMenuButtonConfigurator;
 
   return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
     const subRoute = extractSubRoute(req, '/api/telegram');
+
+    // Deployment-safe once-per-cold-start Menu Button initialization for serverless runtime
+    if (
+      deps.autoConfigureMenuButton === true &&
+      (subRoute === 'webhook' || subRoute === 'auth')
+    ) {
+      const botToken = deps.getBotToken ? deps.getBotToken() : process.env.TELEGRAM_BOT_TOKEN;
+      if (isConfiguredBotToken(botToken)) {
+        await menuConfigurator.ensureConfiguredOnce({
+          botToken,
+          miniAppUrl: getPublicMiniAppUrl(),
+          fetchImpl: deps.fetchImpl,
+          timeoutMs: 3500,
+        });
+      }
+    }
 
     switch (subRoute) {
       case 'auth':
@@ -1522,6 +1625,8 @@ export function createTelegramRouterHandler(deps: TelegramRouterDeps = {}) {
         return await registerWebhookHandler(req, res);
       case 'webhook-info':
         return await webhookInfoHandler(req, res);
+      case 'configure-menu-button':
+        return await configureMenuButtonHandler(req, res);
       case 'bot-command':
         return await botCommandHandler(req, res);
       case 'notify':

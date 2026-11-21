@@ -22,6 +22,11 @@ import {
   verifyWebhookSecretHeader,
 } from './src/utils/telegramBot.ts';
 import type { NotificationEventType } from './src/utils/telegramBot.ts';
+import {
+  defaultMenuButtonConfigurator,
+  fetchCurrentChatMenuButton,
+  sanitizeTelegramApiError,
+} from './src/utils/telegramMenuButton.ts';
 import { getBingoVoiceCallScript } from './src/utils/amharicNumbers.ts';
 import {
   calculateAuthoritativeGameFinancials,
@@ -223,6 +228,8 @@ async function startServer() {
       req.body?.uid !== undefined ||
       req.body?.firebaseUid !== undefined ||
       req.body?.isAdmin !== undefined ||
+      req.body?.demoBalanceEtb !== undefined ||
+      req.body?.customToken !== undefined ||
       req.body?.initDataUnsafe !== undefined ||
       req.body?.user !== undefined
     ) {
@@ -638,10 +645,10 @@ async function startServer() {
       return;
     }
 
-    const botToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    const botToken = resolveConfiguredBotToken();
     const rawWebhookSecret = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
 
-    if (!botToken || botToken === 'MY_TELEGRAM_BOT_TOKEN') {
+    if (!botToken) {
       res.status(503).json({
         ok: false,
         reason: 'missing_bot_token',
@@ -719,18 +726,13 @@ async function startServer() {
       const setCommandsData = await setCommandsResp.json();
 
       // Step 3: Set Chat Menu Button to launch the deployed Mini App (https://adebingo-3nta.vercel.app/)
-      const setMenuResp = await fetch(`https://api.telegram.org/bot${botToken}/setChatMenuButton`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          menu_button: {
-            type: 'web_app',
-            text: '🎱 ቢንጎ ይጫወቱ',
-            web_app: { url: requestedLaunchUrl },
-          },
-        }),
+      const menuButtonResult = await defaultMenuButtonConfigurator.configure({
+        botToken,
+        miniAppUrl: requestedLaunchUrl,
+        force: true,
+        checkExistingFirst: false,
+        verifyAfterSet: true,
       });
-      const setMenuData = await setMenuResp.json();
 
       // Step 4: Register Webhook with normalized secret_token
       const setWebhookResp = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, {
@@ -758,7 +760,9 @@ async function startServer() {
           canJoinGroups: getMeData.result?.can_join_groups,
         },
         commandsRegistered: Boolean(setCommandsData.ok),
-        menuButtonConfigured: Boolean(setMenuData.ok),
+        menuButtonConfigured: Boolean(menuButtonResult.ok && menuButtonResult.configured),
+        menuButton: menuButtonResult.verifiedMenuButton || menuButtonResult.menuButton,
+        menuButtonStatus: menuButtonResult,
         webhookSet: {
           ok: Boolean(setWebhookData.ok),
           description: setWebhookData.description,
@@ -771,7 +775,7 @@ async function startServer() {
       res.status(500).json({
         ok: false,
         reason: 'telegram_api_network_error',
-        message: err instanceof Error ? err.message : 'Network error calling Telegram API',
+        message: sanitizeTelegramApiError(err),
       });
     }
   });
@@ -789,13 +793,13 @@ async function startServer() {
       return;
     }
 
-    const botToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    const botToken = resolveConfiguredBotToken();
     const hasWebhookSecret = Boolean(
       process.env.TELEGRAM_WEBHOOK_SECRET &&
         process.env.TELEGRAM_WEBHOOK_SECRET.trim().length >= 8 &&
         process.env.TELEGRAM_WEBHOOK_SECRET !== 'MY_TELEGRAM_WEBHOOK_SECRET'
     );
-    if (!botToken || botToken === 'MY_TELEGRAM_BOT_TOKEN') {
+    if (!botToken) {
       res.json({
         ok: false,
         telegramBotTokenConfigured: false,
@@ -805,9 +809,10 @@ async function startServer() {
     }
 
     try {
-      const [meResp, infoResp] = await Promise.all([
+      const [meResp, infoResp, menuBtnRes] = await Promise.all([
         fetch(`https://api.telegram.org/bot${botToken}/getMe`),
         fetch(`https://api.telegram.org/bot${botToken}/getWebhookInfo`),
+        fetchCurrentChatMenuButton({ botToken }),
       ]);
       const [meData, infoData] = await Promise.all([meResp.json(), infoResp.json()]);
       res.json({
@@ -822,13 +827,60 @@ async function startServer() {
             }
           : null,
         webhookInfo: infoData.ok ? infoData.result : null,
+        menuButton: menuBtnRes.ok ? menuBtnRes.menuButton : null,
       });
     } catch (err) {
       res.status(500).json({
         ok: false,
-        message: err instanceof Error ? err.message : 'Failed to fetch Telegram webhook info',
+        message: sanitizeTelegramApiError(err),
       });
     }
+  });
+
+  // 3D. Configure & Verify Telegram Bot Default Menu Button (Webhook Secret or Admin Protected)
+  app.post('/api/telegram/configure-menu-button', async (req, res) => {
+    const secretHeader =
+      typeof req.headers['x-telegram-bot-api-secret-token'] === 'string'
+        ? req.headers['x-telegram-bot-api-secret-token']
+        : undefined;
+    const expectedSecret = (process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+    const webhookSecretConfigured =
+      expectedSecret.length >= 8 && expectedSecret !== 'MY_TELEGRAM_WEBHOOK_SECRET';
+    const hasValidSecret =
+      webhookSecretConfigured && verifyWebhookSecretHeader(secretHeader, expectedSecret);
+    if (!hasValidSecret) {
+      const adminCheck = extractAdminAuthFromRequest(req);
+      if (!adminCheck.authorized) {
+        res.status(adminCheck.statusCode || 401).json({
+          ok: false,
+          error: adminCheck.statusCode === 403 ? 'admin_required' : 'unauthenticated_request',
+          message: 'Administrator authorization or valid webhook secret is required.',
+        });
+        return;
+      }
+    }
+
+    const botToken = resolveConfiguredBotToken();
+    if (!botToken) {
+      res.status(503).json({
+        ok: false,
+        configured: false,
+        reason: 'missing_bot_token',
+        message: 'TELEGRAM_BOT_TOKEN is not configured in server environment.',
+      });
+      return;
+    }
+
+    const force = req.body?.force === true;
+    const result = await defaultMenuButtonConfigurator.configure({
+      botToken,
+      miniAppUrl: miniAppLaunchUrl,
+      force,
+      checkExistingFirst: !force,
+      verifyAfterSet: true,
+    });
+
+    res.status(result.ok ? 200 : 502).json(result);
   });
 
   // 4. Interactive Bot Command & Contact Verification Endpoint (Authenticated — blocks identity spoofing)
@@ -3766,6 +3818,11 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`ADEYBINGO server listening on http://localhost:${PORT}`);
+    // Automatically configure AdeyBingo's default Telegram Mini App Menu Button once on startup
+    void defaultMenuButtonConfigurator.ensureConfiguredOnce({
+      botToken: resolveConfiguredBotToken(),
+      miniAppUrl: miniAppLaunchUrl,
+    });
   });
 }
 
