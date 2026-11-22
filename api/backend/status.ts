@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  FIREBASE_DATABASE_ID,
-  FIREBASE_PROJECT_ID,
-  isFirebaseAdminConfigured,
+  checkFirestoreConnectivity,
+  type FirestoreHealthCheckResult,
+  getFirebaseAdminConfigDiagnostics,
 } from '../_lib/firebaseAdmin.ts';
 import {
   BoundedRateLimiter,
@@ -16,6 +16,7 @@ import {
 
 export interface StatusHandlerDeps {
   limiter?: BoundedRateLimiter;
+  checkFirestore?: () => Promise<FirestoreHealthCheckResult>;
 }
 
 export function createStatusHandler(deps: StatusHandlerDeps = {}) {
@@ -34,14 +35,20 @@ export function createStatusHandler(deps: StatusHandlerDeps = {}) {
 
     const miniAppUrl = getPublicMiniAppUrl();
     const publicBase = miniAppUrl.replace(/\/+$/, '');
+    const adminDiag = getFirebaseAdminConfigDiagnostics(process.env);
+    const firestoreHealth = deps.checkFirestore
+      ? await deps.checkFirestore()
+      : await checkFirestoreConnectivity();
 
     sendJson(res, 200, {
       ok: true,
       serverTime: new Date().toISOString(),
-      firebaseProjectId: process.env.FIREBASE_PROJECT_ID || FIREBASE_PROJECT_ID,
-      firestoreDatabaseId:
-        process.env.FIREBASE_FIRESTORE_DATABASE_ID || FIREBASE_DATABASE_ID,
-      firebaseAdminConfigured: isFirebaseAdminConfigured(),
+      firebaseProjectId: adminDiag.projectId,
+      firestoreDatabaseId: adminDiag.databaseId,
+      firebaseAdminConfigured: adminDiag.configured,
+      firebaseAdminCredentialSource: adminDiag.source,
+      firebaseAdminDiagnostic: adminDiag.diagnostic,
+      firestoreHealth,
       telegramBotTokenConfigured: isConfiguredBotToken(process.env.TELEGRAM_BOT_TOKEN),
       telegramWebhookSecretConfigured: isConfiguredWebhookSecret(
         process.env.TELEGRAM_WEBHOOK_SECRET

@@ -8,6 +8,11 @@ import { GoogleGenAI } from '@google/genai';
 import { cert, getApps, initializeApp as initializeAdminApp } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import {
+  checkFirestoreConnectivity,
+  getFirebaseAdminConfigDiagnostics,
+  resolveFirebaseAdminCredentials,
+} from './api/_lib/firebaseAdmin.ts';
+import {
   defaultReplayGuard,
   hasValidTelegramBotTokenFormat,
   validateTelegramWebAppInitData,
@@ -54,23 +59,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const firebaseProjectId =
-  process.env.VITE_FIREBASE_PROJECT_ID || 'gen-lang-client-0559010770';
+  process.env.FIREBASE_PROJECT_ID ||
+  process.env.VITE_FIREBASE_PROJECT_ID ||
+  'gen-lang-client-0559010770';
 
 function getOrInitFirebaseAdminApp() {
   const existing = getApps();
   if (existing.length > 0) return existing[0];
 
-  const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-  if (rawServiceAccount && rawServiceAccount.trim().startsWith('{')) {
-    try {
-      const parsed = JSON.parse(rawServiceAccount);
-      return initializeAdminApp({
-        credential: cert(parsed),
-        projectId: parsed.project_id || firebaseProjectId,
-      });
-    } catch {
-      // Fall back to Application Default Credentials
-    }
+  const resolved = resolveFirebaseAdminCredentials(process.env);
+  if (resolved.serviceAccount) {
+    return initializeAdminApp({
+      credential: cert(resolved.serviceAccount),
+      projectId: resolved.projectId || firebaseProjectId,
+    });
   }
 
   return initializeAdminApp({ projectId: firebaseProjectId });
@@ -199,17 +201,24 @@ async function startServer() {
   };
 
   // 1. Trusted Backend Status Endpoint (Honest reporting — never exposes or logs secrets)
-  app.get('/api/backend/status', (_req, res) => {
+  app.get('/api/backend/status', async (_req, res) => {
     const hasBotToken = Boolean(resolveConfiguredBotToken());
     const hasWebhookSecret = Boolean(
       process.env.TELEGRAM_WEBHOOK_SECRET &&
         process.env.TELEGRAM_WEBHOOK_SECRET.trim().length >= 8 &&
         process.env.TELEGRAM_WEBHOOK_SECRET !== 'MY_TELEGRAM_WEBHOOK_SECRET'
     );
+    const adminDiag = getFirebaseAdminConfigDiagnostics(process.env);
+    const firestoreHealth = await checkFirestoreConnectivity();
     res.json({
       ok: true,
       serverTime: new Date().toISOString(),
-      firebaseProjectId,
+      firebaseProjectId: adminDiag.projectId,
+      firestoreDatabaseId: adminDiag.databaseId,
+      firebaseAdminConfigured: adminDiag.configured,
+      firebaseAdminCredentialSource: adminDiag.source,
+      firebaseAdminDiagnostic: adminDiag.diagnostic,
+      firestoreHealth,
       telegramBotTokenConfigured: hasBotToken,
       telegramWebhookSecretConfigured: hasWebhookSecret,
       miniAppUrl,

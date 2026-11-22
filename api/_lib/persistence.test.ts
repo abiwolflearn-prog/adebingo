@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
+  checkFirestoreConnectivity,
   FIREBASE_DATABASE_ID,
   FIREBASE_PROJECT_ID,
   getAdminAuth,
   getAdminDb,
   getFirebaseAdminApp,
+  getFirebaseAdminConfigDiagnostics,
   getTelegramFirebaseUid,
   isFirebaseAdminConfigured,
   parseServiceAccountKey,
@@ -367,6 +369,94 @@ test('Firebase Admin parsing, escaped newline support, UID derivation, and singl
   assert.ok(auth);
   const db = getAdminDb();
   assert.equal(db.databaseId, FIREBASE_DATABASE_ID);
+
+  // Quoted JSON, double-encoded JSON, and base64 with whitespace all parse cleanly
+  const quotedJson = `'${rawJson}'`;
+  assert.equal(parseServiceAccountKey(quotedJson)?.projectId, FIREBASE_PROJECT_ID);
+  const doubleEncoded = JSON.stringify(rawJson);
+  assert.equal(parseServiceAccountKey(doubleEncoded)?.clientEmail, parsedRaw.clientEmail);
+  const wrappedB64 = `${b64.slice(0, 32)}\n${b64.slice(32)}`;
+  assert.equal(parseServiceAccountKey(wrappedB64)?.projectId, FIREBASE_PROJECT_ID);
+
+  // Split Vercel env vars (FIREBASE_CLIENT_EMAIL + FIREBASE_PRIVATE_KEY) work as fallback
+  const splitDiag = getFirebaseAdminConfigDiagnostics({
+    FIREBASE_PROJECT_ID,
+    FIREBASE_FIRESTORE_DATABASE_ID: FIREBASE_DATABASE_ID,
+    FIREBASE_CLIENT_EMAIL: `firebase-adminsdk@${FIREBASE_PROJECT_ID}.iam.gserviceaccount.com`,
+    FIREBASE_PRIVATE_KEY: `"${escapedKey}"`,
+  });
+  assert.equal(splitDiag.configured, true);
+  assert.equal(splitDiag.source, 'split_env_vars');
+  assert.equal(splitDiag.diagnostic, 'configured');
+
+  // Safe diagnostics detect missing, malformed, and mismatched project_id without exposing secrets
+  const missingDiag = getFirebaseAdminConfigDiagnostics({});
+  assert.equal(missingDiag.configured, false);
+  assert.equal(missingDiag.source, 'none');
+  assert.equal(missingDiag.diagnostic, 'missing_credentials');
+
+  const mismatchDiag = getFirebaseAdminConfigDiagnostics({
+    FIREBASE_SERVICE_ACCOUNT_KEY: JSON.stringify({
+      type: 'service_account',
+      project_id: 'wrong-project-id',
+      client_email: 'sa@wrong-project-id.iam.gserviceaccount.com',
+      private_key: escapedKey,
+    }),
+  });
+  assert.equal(mismatchDiag.configured, false);
+  assert.equal(mismatchDiag.diagnostic, 'project_id_mismatch');
+
+  const badPemDiag = getFirebaseAdminConfigDiagnostics({
+    FIREBASE_CLIENT_EMAIL: `sa@${FIREBASE_PROJECT_ID}.iam.gserviceaccount.com`,
+    FIREBASE_PRIVATE_KEY: 'not-a-pem-key',
+  });
+  assert.equal(badPemDiag.configured, false);
+  assert.equal(badPemDiag.diagnostic, 'invalid_private_key_format');
+});
+
+test('checkFirestoreConnectivity performs safe read-only health check and classifies errors without leaking secrets', async (t) => {
+  const prevEnv = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+  delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+  t.after(() => {
+    if (prevEnv === undefined) {
+      delete process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    } else {
+      process.env.FIREBASE_SERVICE_ACCOUNT_KEY = prevEnv;
+    }
+  });
+
+  // Unconfigured env returns safe unconfigured status
+  const unconfigured = await checkFirestoreConnectivity();
+  assert.equal(unconfigured.reachable, false);
+  assert.equal(unconfigured.status, 'unconfigured');
+  assert.equal(unconfigured.databaseId, FIREBASE_DATABASE_ID);
+  assert.equal(unconfigured.errorCode, 'missing_credentials');
+
+  // Reachable Firestore instance returns status: ok with latency
+  const { db } = createInMemoryFirestoreHarness();
+  const healthy = await checkFirestoreConnectivity({ getDb: () => db });
+  assert.equal(healthy.reachable, true);
+  assert.equal(healthy.status, 'ok');
+  assert.equal(healthy.databaseId, FIREBASE_DATABASE_ID);
+  assert.equal(typeof healthy.latencyMs, 'number');
+
+  // Permission-denied error maps safely without leaking credentials or raw stack traces
+  const failingDb = {
+    collection: () => ({
+      limit: () => ({
+        get: async () => {
+          const err = new Error('7 PERMISSION_DENIED: secret_token_should_never_leak');
+          (err as Error & { code?: number }).code = 7;
+          throw err;
+        },
+      }),
+    }),
+  } as unknown as Firestore;
+  const denied = await checkFirestoreConnectivity({ getDb: () => failingDb });
+  assert.equal(denied.reachable, false);
+  assert.equal(denied.status, 'error');
+  assert.equal(denied.errorCode, 'permission_denied');
+  assert.equal(JSON.stringify(denied).includes('secret_token_should_never_leak'), false);
 });
 
 test('PersistentReplayGuard blocks reuse, survives concurrent Promise.all races, and supports TTL cleanup', async () => {
