@@ -108,6 +108,14 @@ export interface AdminManagedUserRecord {
   lastActiveAt: string;
   registeredAt: string;
   walletLedger: AdminUserWalletEntry[];
+  activeRoomCards?: Array<{ roomId: string; cardIds: number[] }>;
+  recentWins?: Array<{
+    gameId: string;
+    roomId: string;
+    cardIds: number[];
+    prizeEtb: number;
+    completedAt: string;
+  }>;
 }
 
 export interface PayoutStatusTransition {
@@ -194,6 +202,7 @@ export interface AdminLiveActivityItem {
   timestamp: string;
   type: 'join' | 'card' | 'payment' | 'game' | 'winner' | 'audit';
   label: string;
+  summary?: string;
   amountEtb?: number;
   status?: string;
 }
@@ -204,12 +213,16 @@ export interface AdminFinancialDashboardMetrics {
   gameStatus: string;
   lifecycleStage: GameLifecycleStage;
   maxCapacityPlayers: number;
+  maxPlayersCapacity?: number;
   entryPriceEtb: number;
   confirmedPlayersCount: number;
+  verifiedPaidEntriesCount?: number;
   availableSpaces: number;
   totalCardsSold: number;
   verifiedTotalRevenueEtb: number;
+  adeySharePercent?: number;
   adeyShareEtb: number;
+  winnersPrizePoolPercent?: number;
   winnersPrizePoolEtb: number;
   approvedDepositsCount: number;
   approvedDepositsEtb: number;
@@ -220,6 +233,7 @@ export interface AdminFinancialDashboardMetrics {
   refundedPaymentsCount: number;
   refundedPaymentsEtb: number;
   latestBall: number;
+  currentDrawnNumber?: number | null;
   calledNumbersCount: number;
   liveActivityFeed: AdminLiveActivityItem[];
   updatedAt: string;

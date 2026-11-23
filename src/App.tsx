@@ -34,6 +34,7 @@ import {
 } from './types/bingo';
 import { soundFX } from './utils/sound';
 import {
+  getLiveTelegramWebAppUserId,
   initTelegramMiniApp,
   syncTelegramBackButton,
   triggerHaptic,
@@ -54,7 +55,6 @@ import {
   resetRoundViaServerApi,
   setSessionBearerToken,
   signOutFromFirebase,
-  startGameViaServerApi,
   submitPlayerWalletAction,
   subscribeToGameState,
   subscribeToRoomState,
@@ -161,7 +161,7 @@ function savePersistedTelegramSession(session: PersistedTelegramSession | null):
 }
 
 export default function App() {
-  const [user] = useState(() => initTelegramMiniApp());
+  const [user, setUser] = useState(() => initTelegramMiniApp());
   const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => checkIsAdminRoute());
 
   useEffect(() => {
@@ -266,6 +266,51 @@ export default function App() {
 
   const playerCards = selectedCardIds.map((id) => generateDeterministicCard(id));
 
+  const syncUserIdentityFromServer = useCallback(
+    (incoming: {
+      telegramUserId?: number;
+      displayName?: string;
+      firstName?: string;
+      lastName?: string;
+      username?: string;
+      language?: Language;
+    }) => {
+      const nextId =
+        typeof incoming.telegramUserId === 'number' &&
+        Number.isInteger(incoming.telegramUserId) &&
+        incoming.telegramUserId > 0
+          ? incoming.telegramUserId
+          : null;
+      const rawDisplay = (incoming.displayName || '').trim();
+      const parts = rawDisplay ? rawDisplay.split(/\s+/) : [];
+      const first = (incoming.firstName || parts[0] || '').trim();
+      const last = (incoming.lastName ?? (parts.length > 1 ? parts.slice(1).join(' ') : '')).trim();
+      const rawUsername = (incoming.username || '').trim();
+      const normalizedUsername = rawUsername
+        ? rawUsername.startsWith('@')
+          ? rawUsername
+          : `@${rawUsername}`
+        : '';
+
+      if (!nextId && !first && !normalizedUsername) return;
+      setUser((prev) => {
+        const resolvedFirst = first || prev.firstName;
+        const resolvedLast = first ? last : prev.lastName || '';
+        const initials = `${resolvedFirst[0] || 'A'}${resolvedLast[0] || resolvedFirst[1] || 'B'}`.toUpperCase();
+        return {
+          ...prev,
+          id: nextId ?? prev.id,
+          firstName: resolvedFirst,
+          lastName: resolvedLast,
+          username: normalizedUsername || prev.username,
+          languageCode: incoming.language || prev.languageCode,
+          initials,
+        };
+      });
+    },
+    []
+  );
+
   const hydratePlayerState = useCallback(async () => {
     try {
       const state = await fetchPlayerStateFromApi();
@@ -284,21 +329,36 @@ export default function App() {
       if (Array.isArray(state.supportTickets)) {
         setTickets(state.supportTickets);
       }
-      if (state.profile?.referralCode) {
-        setReferralCode(state.profile.referralCode);
-      }
-      setReferredByCode(state.profile?.referredByCode || '');
-      if (typeof state.profile?.phoneVerified === 'boolean') {
-        setPhoneVerified(state.profile.phoneVerified);
-      }
-      if (state.profile?.language === 'am' || state.profile?.language === 'en') {
-        setLang(state.profile.language);
+      if (state.profile) {
+        syncUserIdentityFromServer({
+          telegramUserId: state.profile.telegramUserId,
+          displayName: state.profile.displayName,
+          username: state.profile.username,
+          language: state.profile.language,
+        });
+        if (
+          typeof state.profile.telegramUserId === 'number' &&
+          Number.isInteger(state.profile.telegramUserId) &&
+          state.profile.telegramUserId > 0
+        ) {
+          setServerVerifiedTelegramId(state.profile.telegramUserId);
+        }
+        if (state.profile.referralCode) {
+          setReferralCode(state.profile.referralCode);
+        }
+        setReferredByCode(state.profile.referredByCode || '');
+        if (typeof state.profile.phoneVerified === 'boolean') {
+          setPhoneVerified(state.profile.phoneVerified);
+        }
+        if (state.profile.language === 'am' || state.profile.language === 'en') {
+          setLang(state.profile.language);
+        }
       }
       return true;
     } catch {
       return false;
     }
-  }, []);
+  }, [syncUserIdentityFromServer]);
 
   const hydrateRoomState = useCallback(async (roomIdToLoad: string) => {
     try {
@@ -474,6 +534,12 @@ export default function App() {
           detail.room.registrationDeadlineMs > 0
             ? detail.room.registrationDeadlineMs
             : 0;
+        const intermissionDeadlineMs =
+          typeof detail.room.intermissionEndsAtMs === 'number' &&
+          Number.isFinite(detail.room.intermissionEndsAtMs) &&
+          detail.room.intermissionEndsAtMs > 0
+            ? detail.room.intermissionEndsAtMs
+            : 0;
         if (nextStatus === 'countdown' && deadlineMs > 0) {
           roomDeadlineMsRef.current = deadlineMs;
           const syncedRemaining = Math.max(
@@ -481,13 +547,25 @@ export default function App() {
             Math.ceil((deadlineMs - (Date.now() + serverClockOffsetMsRef.current)) / 1000)
           );
           setCountdown(syncedRemaining);
+        } else if (nextStatus === 'completed' && intermissionDeadlineMs > 0) {
+          roomDeadlineMsRef.current = intermissionDeadlineMs;
+          const syncedIntermission = Math.max(
+            0,
+            Math.ceil(
+              (intermissionDeadlineMs - (Date.now() + serverClockOffsetMsRef.current)) / 1000
+            )
+          );
+          setCountdown(syncedIntermission);
         } else {
           roomDeadlineMsRef.current = 0;
           setCountdown(Number(detail.room.countdownSeconds ?? 0));
         }
         setCardPrice(Number(detail.room.cardPrice || DEFAULT_GAME_RULES.defaultCardPrice));
+        const mySortedCards = [...detail.myCardIds].sort((a, b) => a - b);
+        const myCardSet = new Set(mySortedCards);
+        const otherTakenCards = detail.takenCardIds.filter((id) => !myCardSet.has(id));
         if (token) {
-          setSelectedCardIds(detail.myCardIds.sort((a, b) => a - b));
+          setSelectedCardIds(mySortedCards);
         }
         const confirmedPlayers = Number(
           detail.room.confirmedPlayersCount ?? detail.room.activePlayersCount ?? 0
@@ -523,7 +601,7 @@ export default function App() {
                     detail.room.winnersPrizePoolEtb ?? financials.winnersPrizePoolEtb
                   ),
                   lifecycleStage: detail.room.lifecycleStage || rm.lifecycleStage || 'WAITING',
-                  takenCardIds: detail.takenCardIds,
+                  takenCardIds: otherTakenCards,
                   countdownSeconds: Number(detail.room.countdownSeconds ?? 0),
                   status: nextStatus,
                 }
@@ -607,8 +685,16 @@ export default function App() {
       // 1) Reuse existing verified session across Mini App page refreshes to avoid initData replay 409
       const savedSession = loadPersistedTelegramSession();
       const incomingHash = rawInitData ? extractInitDataHash(rawInitData) : '';
+      const liveTgUserId = getLiveTelegramWebAppUserId();
+      const sessionMatchesLiveUser =
+        !liveTgUserId || !savedSession || savedSession.verifiedTelegramId === liveTgUserId;
+      if (savedSession && !sessionMatchesLiveUser) {
+        setSessionBearerToken('');
+        savePersistedTelegramSession(null);
+      }
       if (
         savedSession &&
+        sessionMatchesLiveUser &&
         (!incomingHash || !savedSession.initDataHash || savedSession.initDataHash === incomingHash)
       ) {
         setSessionBearerToken(savedSession.sessionToken);
@@ -666,6 +752,14 @@ export default function App() {
           if (Number.isInteger(verifiedId) && verifiedId > 0) {
             setServerVerifiedTelegramId(verifiedId);
           }
+          syncUserIdentityFromServer({
+            telegramUserId: Number.isInteger(verifiedId) && verifiedId > 0 ? verifiedId : undefined,
+            displayName: d.displayName,
+            firstName: d.profile?.firstName ?? d.telegramUser?.first_name,
+            lastName: d.profile?.lastName ?? d.telegramUser?.last_name,
+            username: d.profile?.username ?? d.telegramUser?.username,
+            language: d.profile?.language === 'en' ? 'en' : d.profile?.language === 'am' ? 'am' : undefined,
+          });
           setIsVerifiedAdmin(Boolean(d.isAdmin === true || d.role === 'admin'));
           if (d.sessionToken) {
             setSessionBearerToken(d.sessionToken);
@@ -820,8 +914,25 @@ export default function App() {
               )
             )
           );
+        } else if (
+          nextStatus === 'completed' &&
+          typeof roomDoc.intermissionEndsAtMs === 'number' &&
+          roomDoc.intermissionEndsAtMs > 0
+        ) {
+          roomDeadlineMsRef.current = roomDoc.intermissionEndsAtMs;
+          setCountdown(
+            Math.max(
+              0,
+              Math.ceil(
+                (roomDoc.intermissionEndsAtMs - (Date.now() + serverClockOffsetMsRef.current)) /
+                  1000
+              )
+            )
+          );
         } else if (typeof roomDoc.countdownSeconds === 'number') {
-          if (nextStatus !== 'countdown') roomDeadlineMsRef.current = 0;
+          if (nextStatus !== 'countdown' && nextStatus !== 'completed') {
+            roomDeadlineMsRef.current = 0;
+          }
           setCountdown(roomDoc.countdownSeconds);
         }
         if (typeof roomDoc.cardPrice === 'number' && roomDoc.cardPrice > 0) {
@@ -954,8 +1065,9 @@ export default function App() {
       autoAppliedStartRef.current ||
       !rawStart ||
       !/^ADEY-[1-9]\d*$/.test(rawStart) ||
+      rawStart === referralCode.toUpperCase() ||
       referredByCode ||
-      (!activeSessionToken && !fbUser)
+      (!activeSessionToken && !fbUser && !serverVerifiedTelegramId)
     ) {
       return;
     }
@@ -965,12 +1077,20 @@ export default function App() {
         void hydratePlayerState();
       }
     });
-  }, [activeSessionToken, fbUser, hydratePlayerState, referredByCode, user.startParam]);
+  }, [
+    activeSessionToken,
+    fbUser,
+    hydratePlayerState,
+    referralCode,
+    referredByCode,
+    serverVerifiedTelegramId,
+    user.startParam,
+  ]);
 
-  // Server-authoritative countdown display computed strictly from server deadline & clock offset
-  // Never decrements locally without an authoritative server registrationDeadlineMs.
+  // Server-authoritative countdown & intermission display computed strictly from server deadline & clock offset
+  // Never decrements locally without an authoritative server deadline.
   useEffect(() => {
-    if (activeRoom.status !== 'countdown') return;
+    if (activeRoom.status !== 'countdown' && activeRoom.status !== 'completed') return;
     let lastZeroHydrateAt = 0;
     const timer = window.setInterval(() => {
       if (roomDeadlineMsRef.current > 0) {
@@ -1077,6 +1197,19 @@ export default function App() {
         if (Number.isInteger(verifiedId) && verifiedId > 0) {
           setServerVerifiedTelegramId(verifiedId);
         }
+        syncUserIdentityFromServer({
+          telegramUserId: Number.isInteger(verifiedId) && verifiedId > 0 ? verifiedId : undefined,
+          displayName: data.displayName,
+          firstName: data.profile?.firstName ?? data.telegramUser?.first_name,
+          lastName: data.profile?.lastName ?? data.telegramUser?.last_name,
+          username: data.profile?.username ?? data.telegramUser?.username,
+          language:
+            data.profile?.language === 'en'
+              ? 'en'
+              : data.profile?.language === 'am'
+                ? 'am'
+                : undefined,
+        });
         if (data.sessionToken) {
           setSessionBearerToken(data.sessionToken);
           setActiveSessionToken(data.sessionToken);
@@ -1100,7 +1233,11 @@ export default function App() {
           autoAppliedStartRef.current = true;
         }
         if (data.customToken) {
-          await signInWithCustomToken(auth, data.customToken);
+          try {
+            await signInWithCustomToken(auth, data.customToken);
+          } catch (fbErr) {
+            console.warn('Firebase signInWithCustomToken fallback to API polling:', fbErr);
+          }
         }
         await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoomId)]);
         const displayName =
@@ -1603,7 +1740,7 @@ export default function App() {
             cardId: card.id,
             markedNumbers: marked,
             calledNumbers: calls,
-            claimantTelegramId: user.id,
+            claimantTelegramId: serverVerifiedTelegramId ?? user.id,
             playerName: `${user.firstName} ${user.lastName || ''}`.trim(),
           });
           if (!verification.verified) {
@@ -1713,25 +1850,24 @@ export default function App() {
       return;
     }
 
-    const token = await getActiveBearerToken();
-    if (token) {
-      try {
-        const started = await startGameViaServerApi({
-          roomId: activeRoom.id,
-          gameId: `game_${activeRoom.id}_live`,
-        });
-        if (Array.isArray(started.calledNumbers)) {
-          setCalls(started.calledNumbers);
-        }
-        await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoom.id)]);
-      } catch (err) {
-        soundFX.playError(sound);
-        setToast(err instanceof Error ? err.message : 'Cannot start game without a reserved card');
-        return;
-      }
-    }
+    void hydrateRoomState(activeRoom.id);
     setScreen('game');
     setToast(lang === 'am' ? `ወደ ${activeRoom.nameAm} ገብተዋል!` : `Joined ${activeRoom.nameEn}!`);
+  }
+
+  function handleSelectRoom(nextRoomId: string) {
+    if (nextRoomId === activeRoomId) return;
+    localWinnerSettledRoundRef.current = false;
+    roomDeadlineMsRef.current = 0;
+    setSelectedCardIds([]);
+    setCalls([]);
+    setMarked([]);
+    setWinnerModalOpen(false);
+    setActiveWinResult(null);
+    setRoundWinners([]);
+    setWinningCardOverride(null);
+    setActiveRoomId(nextRoomId);
+    void hydrateRoomState(nextRoomId);
   }
 
   // Handler: Apply Promo or Referral Code strictly via persistent server POST /api/player/wallet
@@ -1857,18 +1993,7 @@ export default function App() {
     void syncLanguagePreference(nextLang, fbUser?.uid, serverVerifiedTelegramId ?? user.id);
   }
 
-  // Automatically attribute invited player referral code (?start=ADEY-... or Telegram start_param)
-  // AFTER authentication completes (if not already applied during /api/telegram/auth)
-  useEffect(() => {
-    if (autoAppliedStartRef.current) return;
-    if (!fbUser && !serverVerifiedTelegramId) return;
-    const rawStart = (user.startParam || '').trim().toUpperCase();
-    if (!rawStart || !/^ADEY-[A-Z0-9_-]{2,}$/.test(rawStart)) return;
-    if (rawStart === referralCode.toUpperCase() || referredByCode) return;
-    autoAppliedStartRef.current = true;
-    void handleApplyPromoCode(rawStart);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fbUser, serverVerifiedTelegramId, user.startParam, referralCode, referredByCode]);
+  // Referral attribution handled in effect 2C above.
 
   // Prevent authenticated ordinary players from entering the private /admin dashboard
   useEffect(() => {
@@ -1906,11 +2031,13 @@ export default function App() {
       <AppHeader
         lang={lang}
         countdownLabel={
-          activeRoom.status === 'countdown'
-            ? countdownLabel
-            : activeRoom.status === 'live'
-              ? 'LIVE'
-              : '00:05'
+          activeRoom.status === 'live'
+            ? 'LIVE'
+            : activeRoom.status === 'completed'
+              ? countdown > 0
+                ? countdownLabel
+                : '00:00'
+              : countdownLabel
         }
         isLive={activeRoom.status === 'live'}
         isUrgent={isUrgentCountdown}
@@ -1972,6 +2099,27 @@ export default function App() {
                               : activeRoom.nameEn
                       }
                     />
+                    {rooms.length > 1 && (
+                      <div className="flex flex-wrap items-center gap-1 ml-0.5">
+                        {rooms.map((rm) => {
+                          const isCurrent = rm.id === activeRoom.id;
+                          return (
+                            <button
+                              key={rm.id}
+                              type="button"
+                              onClick={() => handleSelectRoom(rm.id)}
+                              className={`px-1.5 py-0.5 rounded-md text-[9.5px] font-extrabold border transition-colors ${
+                                isCurrent
+                                  ? 'bg-[#159447] text-white border-[#159447]'
+                                  : 'bg-[#FFF9ED] text-[#183326] border-[#E7EDE8] hover:border-[#159447]/40'
+                              }`}
+                            >
+                              {lang === 'am' ? rm.nameAm : rm.nameEn} · {rm.cardPrice} ETB
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   {/* Colorful 3D Bingo Balls + Compact Icon Stats */}
@@ -2074,11 +2222,9 @@ export default function App() {
                             : 'text-[#183326]'
                       }`}
                     >
-                      {activeRoom.status === 'countdown'
-                        ? countdownLabel
-                        : activeRoom.status === 'live'
-                          ? `${calls.length}/75`
-                          : '00:05'}
+                      {activeRoom.status === 'live'
+                        ? `${calls.length}/75`
+                        : countdownLabel}
                     </div>
                     <div className="flex-1 max-w-[80px] h-1.5 rounded-full bg-white border border-[#E7EDE8] overflow-hidden">
                       <div
@@ -2236,7 +2382,9 @@ export default function App() {
           <LobbyAndCardsScreen
             mode={screen}
             lang={lang}
+            rooms={rooms}
             activeRoom={activeRoom}
+            onSelectRoom={handleSelectRoom}
             roomPlayers={roomPlayers}
             selectedCardIds={selectedCardIds}
             onToggleCardId={handleToggleCardId}
@@ -2267,7 +2415,7 @@ export default function App() {
             onToggleAutoCaller={() => setAutoCallerActive((v) => !v)}
             callerIntervalSec={callerIntervalSec}
             onChangeCallerInterval={setCallerIntervalSec}
-            onResetRound={handleResetRound}
+            onResetRound={isVerifiedAdmin ? handleResetRound : undefined}
             onToggleMarkCell={handleToggleCellMark}
             onAddQuickCard={handleAddQuickCard}
             onRemoveCard={(cid) => void handleToggleCardId(cid)}
@@ -2346,7 +2494,11 @@ export default function App() {
         winners={roundWinners}
         lang={lang}
         reducedMotion={reducedMotion}
-        onPlayAgain={handleResetRound}
+        onPlayAgain={() => {
+          setWinnerModalOpen(false);
+          setScreen('home');
+          void Promise.all([hydrateRoomState(activeRoom.id), hydratePlayerState()]);
+        }}
         onClose={() => setWinnerModalOpen(false)}
       />
 

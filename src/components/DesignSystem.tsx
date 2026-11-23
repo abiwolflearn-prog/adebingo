@@ -456,7 +456,7 @@ export function BingoNumberTile({
   return (
     <button
       type="button"
-      disabled={disabled || isTakenByOther}
+      disabled={disabled || (!isSelected && isTakenByOther)}
       onClick={() => onSelect(cardNumber)}
       aria-pressed={isSelected}
       title={`#${cardNumber} · ${statusText}`}

@@ -27,7 +27,9 @@ import {
 interface LobbyAndCardsScreenProps {
   mode: 'lobby' | 'cards';
   lang: Language;
+  rooms?: RoomConfig[];
   activeRoom: RoomConfig;
+  onSelectRoom?: (roomId: string) => void;
   roomPlayers?: FirestoreRoomPlayer[];
   selectedCardIds: number[];
   onToggleCardId: (cardId: number) => void;
@@ -44,7 +46,9 @@ const ALL_CARDS = Array.from({ length: DEFAULT_GAME_RULES.maxCardsPerRoom }, (_,
 
 export function LobbyAndCardsScreen({
   lang,
+  rooms,
   activeRoom,
+  onSelectRoom,
   selectedCardIds,
   onToggleCardId,
   onQuickPickCards,
@@ -120,11 +124,9 @@ export function LobbyAndCardsScreen({
               data-testid="lobby-countdown"
               className="font-mono text-xs font-extrabold tabular-nums"
             >
-              {activeRoom.status === 'countdown'
-                ? `00:${String(Math.max(0, countdown)).padStart(2, '0')}`
-                : activeRoom.status === 'live'
+              {activeRoom.status === 'live'
                 ? 'LIVE'
-                : '00:05'}
+                : `00:${String(Math.max(0, countdown)).padStart(2, '0')}`}
             </b>
           </div>
 
@@ -139,6 +141,28 @@ export function LobbyAndCardsScreen({
           </PrimaryButton>
         </div>
       </div>
+
+      {rooms && rooms.length > 1 && onSelectRoom && (
+        <div className="flex flex-wrap items-center gap-1">
+          {rooms.map((rm) => {
+            const isCurrent = rm.id === activeRoom.id;
+            return (
+              <button
+                key={rm.id}
+                type="button"
+                onClick={() => onSelectRoom(rm.id)}
+                className={`px-2 py-1 rounded-lg text-[10px] font-extrabold border transition-colors ${
+                  isCurrent
+                    ? 'bg-[#159447] text-white border-[#159447]'
+                    : 'bg-white text-[#183326] border-[#E7EDE8] hover:border-[#159447]/40'
+                }`}
+              >
+                {lang === 'am' ? rm.nameAm : rm.nameEn} · {rm.cardPrice} ETB
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Compact 2-Col Metric Strip */}
       <div className="grid grid-cols-2 gap-1.5">

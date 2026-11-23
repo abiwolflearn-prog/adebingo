@@ -384,6 +384,14 @@ export function subscribeToRoomState(
         typeof d.registrationDeadlineMs === 'number' && Number.isFinite(d.registrationDeadlineMs)
           ? d.registrationDeadlineMs
           : undefined;
+      const intermissionEndsAtMs =
+        typeof d.intermissionEndsAtMs === 'number' && Number.isFinite(d.intermissionEndsAtMs)
+          ? d.intermissionEndsAtMs
+          : undefined;
+      const nextBallDrawAtMs =
+        typeof d.nextBallDrawAtMs === 'number' && Number.isFinite(d.nextBallDrawAtMs)
+          ? d.nextBallDrawAtMs
+          : undefined;
       const roundStartedAtMs =
         typeof d.roundStartedAtMs === 'number' && Number.isFinite(d.roundStartedAtMs)
           ? d.roundStartedAtMs
@@ -396,7 +404,9 @@ export function subscribeToRoomState(
       const countdownSeconds =
         status === 'countdown' && registrationDeadlineMs && registrationDeadlineMs > 0
           ? Math.max(0, Math.ceil((registrationDeadlineMs - serverNowEstimate) / 1000))
-          : Number(d.countdownSeconds ?? 60);
+          : status === 'completed' && intermissionEndsAtMs && intermissionEndsAtMs > 0
+            ? Math.max(0, Math.ceil((intermissionEndsAtMs - serverNowEstimate) / 1000))
+            : Number(d.countdownSeconds ?? 60);
       const activePlayersCount = Number(d.confirmedPlayersCount ?? d.activePlayersCount ?? 0);
       const reservedCardsCount = Number(d.totalCardsSold ?? d.reservedCardsCount ?? 0);
       const financials = calculateAuthoritativeGameFinancials(
@@ -425,6 +435,8 @@ export function subscribeToRoomState(
         minPlayers,
         countdownSeconds,
         registrationDeadlineMs,
+        intermissionEndsAtMs,
+        nextBallDrawAtMs,
         roundStartedAtMs,
         roundNumber,
         activePlayersCount: financials.confirmedPlayersCount,
@@ -881,6 +893,8 @@ export interface ServerRoomSummary {
   minPlayers: number;
   countdownSeconds: number;
   registrationDeadlineMs?: number;
+  intermissionEndsAtMs?: number;
+  nextBallDrawAtMs?: number;
   roundStartedAtMs?: number;
   roundNumber?: number;
   activePlayersCount: number;
@@ -1009,6 +1023,8 @@ export async function submitPlayerWalletAction(
   return {
     ok: true,
     bonusEtb: typeof data.bonusEtb === 'number' ? data.bonusEtb : undefined,
+    inviterBonusEtb:
+      typeof data.inviterBonusEtb === 'number' ? data.inviterBonusEtb : undefined,
     updatedBalanceEtb:
       typeof data.updatedBalanceEtb === 'number' ? data.updatedBalanceEtb : undefined,
     deposit: data.deposit,

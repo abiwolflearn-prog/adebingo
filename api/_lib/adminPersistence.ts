@@ -305,11 +305,87 @@ export class PersistentAdminService {
 
   private async loadMergedUsers(): Promise<AdminManagedUserRecord[]> {
     await this.ensureSeedData();
-    const [usersSnap, botPlayersSnap, txSnap] = await Promise.all([
+    const [usersSnap, botPlayersSnap, txSnap, refSnap, gamesSnap, roomsSnap] = await Promise.all([
       this.db.collection('users').get(),
       this.db.collection('botPlayers').get(),
       this.db.collection('transactions').get(),
+      this.db.collection('referrals').get(),
+      this.db.collection('games').get(),
+      this.db.collection('rooms').get(),
     ]);
+
+    const activeRoomCardsByUid = new Map<string, Array<{ roomId: string; cardIds: number[] }>>();
+    const roomPlayerSnaps = await Promise.all(
+      roomsSnap.docs.map(async (roomDoc) => ({
+        roomId: roomDoc.id,
+        playersSnap: await this.db.collection('rooms').doc(roomDoc.id).collection('players').get(),
+      }))
+    );
+    for (const { roomId, playersSnap } of roomPlayerSnaps) {
+      for (const pDoc of playersSnap.docs) {
+        const pData = pDoc.data() || {};
+        const uid = String(pData.playerId || pDoc.id);
+        const cardIds = Array.isArray(pData.cardIds)
+          ? (pData.cardIds as unknown[]).map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 600)
+          : [];
+        if (cardIds.length === 0) continue;
+        const list = activeRoomCardsByUid.get(uid) || [];
+        list.push({ roomId, cardIds: cardIds.sort((a, b) => a - b) });
+        activeRoomCardsByUid.set(uid, list);
+      }
+    }
+
+    const referralCountByInviter = new Map<string, number>();
+    for (const rDoc of refSnap.docs) {
+      const rData = rDoc.data() || {};
+      const inviterUid = String(rData.inviterUid || '');
+      if (!inviterUid) continue;
+      referralCountByInviter.set(inviterUid, (referralCountByInviter.get(inviterUid) || 0) + 1);
+    }
+
+    const winsByUid = new Map<
+      string,
+      Array<{ gameId: string; roomId: string; cardIds: number[]; prizeEtb: number; completedAt: string }>
+    >();
+    for (const gDoc of gamesSnap.docs) {
+      const gData = gDoc.data() || {};
+      if (String(gData.status || '') !== 'completed') continue;
+      const gameId = String(gData.gameId || gDoc.id);
+      const roomId = String(gData.roomId || 'adey-main');
+      const completedAt = String(gData.completedAt || '');
+      const winnersArr = Array.isArray(gData.winners)
+        ? (gData.winners as Array<Record<string, unknown>>)
+        : [];
+      if (winnersArr.length > 0) {
+        const grouped = new Map<string, { cardIds: number[]; prizeEtb: number }>();
+        for (const w of winnersArr) {
+          const wUid = String(w.uid || '');
+          if (!wUid) continue;
+          const entry = grouped.get(wUid) || { cardIds: [], prizeEtb: 0 };
+          const cid = Number(w.cardId ?? 0);
+          if (Number.isInteger(cid) && cid > 0) entry.cardIds.push(cid);
+          entry.prizeEtb = Number((entry.prizeEtb + Number(w.prizeEtb ?? 0)).toFixed(2));
+          grouped.set(wUid, entry);
+        }
+        for (const [wUid, entry] of grouped.entries()) {
+          const list = winsByUid.get(wUid) || [];
+          list.push({ gameId, roomId, cardIds: entry.cardIds, prizeEtb: entry.prizeEtb, completedAt });
+          winsByUid.set(wUid, list);
+        }
+      } else if (typeof gData.winnerUid === 'string' && gData.winnerUid) {
+        const wUid = gData.winnerUid;
+        const cid = Number(gData.winningCardId ?? 0);
+        const list = winsByUid.get(wUid) || [];
+        list.push({
+          gameId,
+          roomId,
+          cardIds: cid > 0 ? [cid] : [],
+          prizeEtb: Number(gData.demoPrizeEtb ?? gData.winnersPrizePoolEtb ?? 0),
+          completedAt,
+        });
+        winsByUid.set(wUid, list);
+      }
+    }
 
     const txByUser = new Map<string, AdminUserWalletEntry[]>();
     for (const d of txSnap.docs) {
@@ -360,6 +436,12 @@ export class PersistentAdminService {
         : [];
       const liveTx = txByUser.get(uid) || [];
       const combinedLedger = [...liveTx, ...existingLedger].slice(0, 20);
+      const userWins = winsByUid.get(uid) || [];
+      const activeRoomCards = activeRoomCardsByUid.get(uid) || [];
+      const actualReferralsCount = Math.max(
+        Number(data.referralsCount ?? 0),
+        referralCountByInviter.get(uid) || 0
+      );
 
       userMap.set(uid, {
         uid,
@@ -383,14 +465,20 @@ export class PersistentAdminService {
         language: (data.language === 'en' ? 'en' : 'am') as Language,
         demoBalanceEtb: Number(data.demoBalanceEtb ?? 0),
         gamesPlayed: Number(data.gamesPlayed ?? liveTx.filter((t) => t.type === 'card_entry').length),
-        gamesWon: Number(data.gamesWon ?? liveTx.filter((t) => t.type === 'bingo_win').length),
+        gamesWon: Math.max(
+          Number(data.gamesWon ?? 0),
+          liveTx.filter((t) => t.type === 'bingo_win').length,
+          userWins.length
+        ),
         referralCode: String(data.referralCode || `ADEY-${telegramUserId || uid}`),
         referredByCode:
           typeof data.referredByCode === 'string' ? data.referredByCode : undefined,
-        referralsCount: Number(data.referralsCount ?? 0),
+        referralsCount: actualReferralsCount,
         lastActiveAt: String(data.lastActiveAt || new Date().toISOString()),
         registeredAt: String(data.registeredAt || new Date().toISOString()),
         walletLedger: combinedLedger,
+        activeRoomCards,
+        recentWins: userWins.slice(0, 10),
       });
     }
 
@@ -401,6 +489,7 @@ export class PersistentAdminService {
       const uid = String(bp.uid || `tg_${tgId}`);
       const existing = userMap.get(uid);
       if (!existing) {
+        const userWins = winsByUid.get(uid) || [];
         userMap.set(uid, {
           uid,
           telegramUserId: tgId,
@@ -412,13 +501,17 @@ export class PersistentAdminService {
           maskedPhone: String(bp.verifiedPhoneMasked || 'Unverified'),
           language: (bp.language === 'en' ? 'en' : 'am') as Language,
           demoBalanceEtb: Number(bp.demoBalanceEtb ?? 0),
-          gamesPlayed: 0,
-          gamesWon: 0,
+          gamesPlayed: (txByUser.get(uid) || []).filter((t) => t.type === 'card_entry').length,
+          gamesWon: userWins.length,
           referralCode: String(bp.referralCode || `ADEY-${tgId}`),
-          referralsCount: 0,
+          referredByCode:
+            typeof bp.referredByCode === 'string' ? bp.referredByCode : undefined,
+          referralsCount: referralCountByInviter.get(uid) || 0,
           lastActiveAt: String(bp.updatedAt || new Date().toISOString()),
           registeredAt: String(bp.registeredAt || new Date().toISOString()),
           walletLedger: txByUser.get(uid) || [],
+          activeRoomCards: activeRoomCardsByUid.get(uid) || [],
+          recentWins: userWins.slice(0, 10),
         });
       } else {
         if (bp.phoneVerified && typeof bp.verifiedPhoneMasked === 'string') {
@@ -427,6 +520,9 @@ export class PersistentAdminService {
         }
         if (bp.language === 'am' || bp.language === 'en') {
           existing.language = bp.language;
+        }
+        if (!existing.referredByCode && typeof bp.referredByCode === 'string') {
+          existing.referredByCode = bp.referredByCode;
         }
       }
     }
@@ -1236,9 +1332,9 @@ export class PersistentAdminService {
       const data = d.data() || {};
       return {
         id: String(data.id || d.id),
-        inviterUid: String(data.inviterUid || 'tg_8842109'),
-        inviterName: String(data.inviterName || 'Abebe Bikila'),
-        inviterTelegramId: Number(data.inviterTelegramId ?? 8842109),
+        inviterUid: String(data.inviterUid || ''),
+        inviterName: String(data.inviterName || 'Unknown'),
+        inviterTelegramId: Number(data.inviterTelegramId ?? 0),
         inviteeUid: String(data.inviteeUid || `tg_${d.id}`),
         inviteeName: String(data.inviteeName || data.friendName || 'Player'),
         inviteeHandle: String(data.inviteeHandle || data.handle || '@player'),
@@ -1262,6 +1358,15 @@ export class PersistentAdminService {
     const announcements = annSnap.docs
       .map((d) => d.data() as BotAnnouncementRecord)
       .sort((a, b) => b.sentAt.localeCompare(a.sentAt));
+    const rawLabels = ((cfgData.buttonLabels as Record<string, string>) || {});
+    const mergedLabels = {
+      ...DEFAULT_BOT_BUTTON_LABELS,
+      ...rawLabels,
+      playBingoAm: rawLabels.playBingoAm || rawLabels.playAm || DEFAULT_BOT_BUTTON_LABELS.playBingoAm,
+      playBingoEn: rawLabels.playBingoEn || rawLabels.playEn || DEFAULT_BOT_BUTTON_LABELS.playBingoEn,
+      playAm: rawLabels.playBingoAm || rawLabels.playAm || DEFAULT_BOT_BUTTON_LABELS.playBingoAm,
+      playEn: rawLabels.playBingoEn || rawLabels.playEn || DEFAULT_BOT_BUTTON_LABELS.playBingoEn,
+    };
 
     return {
       miniAppUrl: sanitizeProductionMiniAppUrl(
@@ -1271,10 +1376,7 @@ export class PersistentAdminService {
         typeof cfgData.customWelcomeAm === 'string' ? cfgData.customWelcomeAm : null,
       customWelcomeEn:
         typeof cfgData.customWelcomeEn === 'string' ? cfgData.customWelcomeEn : null,
-      buttonLabels: {
-        ...DEFAULT_BOT_BUTTON_LABELS,
-        ...((cfgData.buttonLabels as Partial<BotButtonLabelsConfig>) || {}),
-      },
+      buttonLabels: mergedLabels as BotButtonLabelsConfig,
       announcements,
       stats: {
         totalUpdatesProcessed: Number(cfgData.stats?.totalUpdatesProcessed ?? 0),
@@ -1291,7 +1393,7 @@ export class PersistentAdminService {
     miniAppUrl?: string;
     customWelcomeAm?: string | null;
     customWelcomeEn?: string | null;
-    buttonLabels?: Partial<BotButtonLabelsConfig>;
+    buttonLabels?: Partial<BotButtonLabelsConfig> & { playAm?: string; playEn?: string };
     adminActor: VerifiedSessionActor;
   }): Promise<{
     ok: boolean;
@@ -1329,10 +1431,20 @@ export class PersistentAdminService {
         params.customWelcomeEn !== undefined
           ? params.customWelcomeEn?.trim() || null
           : prevWelcomeEn;
+      const incomingLabels = params.buttonLabels || {};
+      const normalizedIncoming: Partial<BotButtonLabelsConfig> = {
+        ...incomingLabels,
+        ...(incomingLabels.playAm && !incomingLabels.playBingoAm
+          ? { playBingoAm: incomingLabels.playAm }
+          : {}),
+        ...(incomingLabels.playEn && !incomingLabels.playBingoEn
+          ? { playBingoEn: incomingLabels.playEn }
+          : {}),
+      };
       const nextLabels: BotButtonLabelsConfig = {
         ...DEFAULT_BOT_BUTTON_LABELS,
         ...((current.buttonLabels as Partial<BotButtonLabelsConfig>) || {}),
-        ...(params.buttonLabels || {}),
+        ...normalizedIncoming,
       };
       const nowIso = new Date().toISOString();
 
@@ -1446,20 +1558,35 @@ export class PersistentAdminService {
     return { ok: true, announcement, auditRecord };
   }
 
-  public async listNotifications(limit = 25): Promise<BotNotificationMessage[]> {
+  public async listNotifications(limit = 25): Promise<
+    Array<
+      BotNotificationMessage & {
+        messageText: string;
+        delivered: boolean;
+        skippedReason?: string;
+      }
+    >
+  > {
     await this.ensureSeedData();
     const snap = await this.db.collection(BOT_OUTBOX_COLLECTION).get();
     const items = snap.docs.map((d) => {
       const data = d.data() || {};
+      const resolvedBody = String(data.body || data.messageText || data.textEn || data.textAm || '');
+      const resolvedDelivered = Boolean(data.deliveredViaBotApi ?? data.delivered);
       return {
         id: String(data.id || d.id),
         event: (data.event || 'admin_announcement') as BotNotificationMessage['event'],
-        telegramUserId: Number(data.telegramUserId ?? 0),
+        telegramUserId: Number(data.telegramUserId ?? data.recipientTelegramId ?? 0),
         language: (data.language === 'en' ? 'en' : 'am') as Language,
-        title: String(data.title || ''),
-        body: String(data.body || ''),
+        title: String(data.title || data.event || 'ADEYBINGO Notification'),
+        body: resolvedBody,
+        messageText: resolvedBody,
         createdAt: String(data.createdAt || new Date().toISOString()),
-        deliveredViaBotApi: Boolean(data.deliveredViaBotApi),
+        deliveredViaBotApi: resolvedDelivered,
+        delivered: resolvedDelivered,
+        skippedReason: resolvedDelivered
+          ? undefined
+          : String(data.skippedReason || 'queued_for_bot_delivery'),
       };
     });
     items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -1611,27 +1738,36 @@ export class PersistentAdminService {
     );
 
     const liveActivityFeed: AdminLiveActivityItem[] = [
-      ...allDeposits.slice(0, 4).map((d) => ({
-        id: `act_dep_${d.depositId}`,
-        timestamp: d.requestDate,
-        type: 'payment' as const,
-        label: `${d.userDisplayName} · ${d.provider} (${d.referenceCode})`,
-        amountEtb: d.amountEtb,
-        status: d.status,
-      })),
-      ...allPayouts.slice(0, 3).map((p) => ({
-        id: `act_po_${p.requestId}`,
-        timestamp: p.requestDate,
-        type: 'payment' as const,
-        label: `${p.userDisplayName} · Payout ${p.requestId}`,
-        amountEtb: -p.requestedAmountEtb,
-        status: p.status,
-      })),
+      ...allDeposits.slice(0, 4).map((d) => {
+        const label = `${d.userDisplayName} · ${d.provider} (${d.referenceCode})`;
+        return {
+          id: `act_dep_${d.depositId}`,
+          timestamp: d.requestDate,
+          type: 'payment' as const,
+          label,
+          summary: label,
+          amountEtb: d.amountEtb,
+          status: d.status,
+        };
+      }),
+      ...allPayouts.slice(0, 3).map((p) => {
+        const label = `${p.userDisplayName} · Payout ${p.requestId}`;
+        return {
+          id: `act_po_${p.requestId}`,
+          timestamp: p.requestDate,
+          type: 'payment' as const,
+          label,
+          summary: label,
+          amountEtb: -p.requestedAmountEtb,
+          status: p.status,
+        };
+      }),
       ...auditTrail.slice(0, 4).map((a) => ({
         id: `act_aud_${a.id}`,
         timestamp: a.timestamp,
         type: 'audit' as const,
         label: a.summary,
+        summary: a.summary,
         status: a.action,
       })),
     ].slice(0, 8);
@@ -1642,12 +1778,16 @@ export class PersistentAdminService {
       gameStatus: String(primaryGameData.status || primaryRoom?.status || 'open'),
       lifecycleStage: primaryRoom?.lifecycleStage || 'WAITING',
       maxCapacityPlayers: financials.maxCapacityPlayers,
+      maxPlayersCapacity: financials.maxCapacityPlayers,
       entryPriceEtb: financials.entryPriceEtb,
       confirmedPlayersCount: financials.confirmedPlayersCount,
+      verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
       availableSpaces: financials.availableSpaces,
       totalCardsSold: financials.totalCardsSold,
       verifiedTotalRevenueEtb: financials.totalCollectedEtb,
+      adeySharePercent: 20,
       adeyShareEtb: financials.adeyShareEtb,
+      winnersPrizePoolPercent: 80,
       winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
       approvedDepositsCount: approvedDeposits.length,
       approvedDepositsEtb,
@@ -1658,6 +1798,7 @@ export class PersistentAdminService {
       refundedPaymentsCount: rejectedPayouts.length + cardRefundCount,
       refundedPaymentsEtb,
       latestBall,
+      currentDrawnNumber: latestBall > 0 ? latestBall : null,
       calledNumbersCount: calledNumbers.length,
       liveActivityFeed,
       updatedAt: new Date().toISOString(),

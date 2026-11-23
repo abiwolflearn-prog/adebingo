@@ -619,7 +619,13 @@ export function WalletScreens({
                       ) : (
                         <Clock size={9} className="text-[#D99B20]" />
                       )}
-                      {lang === 'am' ? 'የተረጋገጠ' : 'Verified'}
+                      {tx.status === 'demo_completed'
+                        ? lang === 'am'
+                          ? 'የተረጋገጠ'
+                          : 'Verified'
+                        : lang === 'am'
+                        ? 'በመጠባበቅ ላይ'
+                        : 'Pending'}
                     </span>
                   </div>
                 </div>

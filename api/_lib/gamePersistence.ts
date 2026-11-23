@@ -175,6 +175,7 @@ export interface PersistentCardToggleResult {
     | 'room_completed'
     | 'room_full'
     | 'user_not_found'
+    | 'account_suspended'
     | 'insufficient_balance'
     | 'card_already_taken'
     | 'card_already_reserved'
@@ -745,6 +746,9 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
 
         if (!userSnap.exists) {
           return { ok: false, reason: 'user_not_found' };
+        }
+        if (String(userSnap.get('accountStatus') || 'active') === 'suspended') {
+          return { ok: false, reason: 'account_suspended' };
         }
 
         const cardPrice = Number(roomSnap.get('cardPrice') ?? roomSnap.get('cardPriceEtb') ?? 10);
@@ -1710,11 +1714,17 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
               tx.set(botOutboxCol.doc(ntfId), {
                 id: ntfId,
                 event: 'schedule_extended',
+                telegramUserId: tgId,
                 recipientTelegramId: tgId,
+                language: 'am',
+                title: `Round #${roundNumber} Extended (${roomId})`,
+                body: noticeEn,
                 roomId,
                 roundNumber,
                 textAm: noticeAm,
                 textEn: noticeEn,
+                deliveredViaBotApi: false,
+                createdAtMs: nowMs,
                 createdAt: new Date(nowMs).toISOString(),
               });
             }
@@ -2087,12 +2097,18 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
               tx.set(botOutboxCol.doc(ntfId), {
                 id: ntfId,
                 event: 'winner_announcement',
+                telegramUserId: payout.telegramUserId,
                 recipientTelegramId: payout.telegramUserId,
+                language: 'am',
+                title: `Winner Announcement · Round #${roundNumber}`,
+                body: `${payout.displayName} won ${payout.totalPrizeEtb.toFixed(2)} ETB on Card #${payout.cardIds.join(', #')} (${roomId})`,
                 roomId,
                 roundNumber,
                 winnerName: payout.displayName,
                 winningCardId: payout.cardIds[0],
                 prizeEtb: payout.totalPrizeEtb,
+                deliveredViaBotApi: false,
+                createdAtMs: nowMs,
                 createdAt: new Date(nowMs).toISOString(),
               });
             }

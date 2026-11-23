@@ -132,6 +132,7 @@ interface AdminUserRecord {
   gamesPlayed: number;
   gamesWon: number;
   referralCode: string;
+  referredByCode?: string;
   referralsCount: number;
   lastActiveAt: string;
   walletLedger: {
@@ -142,6 +143,14 @@ interface AdminUserRecord {
     reference: string;
     timestamp: string;
     status: string;
+  }[];
+  activeRoomCards?: { roomId: string; cardIds: number[] }[];
+  recentWins?: {
+    gameId: string;
+    roomId: string;
+    cardIds: number[];
+    prizeEtb: number;
+    completedAt: string;
   }[];
 }
 
@@ -216,12 +225,14 @@ interface BotConfigState {
   customWelcomeAm: string | null;
   customWelcomeEn: string | null;
   buttonLabels: {
-    playAm: string;
-    playEn: string;
+    playAm?: string;
+    playEn?: string;
+    playBingoAm?: string;
+    playBingoEn?: string;
     walletAm: string;
     walletEn: string;
-    verifyPhoneAm: string;
-    verifyPhoneEn: string;
+    verifyPhoneAm?: string;
+    verifyPhoneEn?: string;
     languageAm: string;
     languageEn: string;
     helpAm: string;
@@ -562,8 +573,8 @@ export function AdminDashboardScreen({
           setBotConfig(cfg);
           setBotWelcomeAmDraft(cfg.customWelcomeAm || '');
           setBotWelcomeEnDraft(cfg.customWelcomeEn || '');
-          setBotPlayLabelAmDraft(cfg.buttonLabels.playAm);
-          setBotPlayLabelEnDraft(cfg.buttonLabels.playEn);
+          setBotPlayLabelAmDraft(cfg.buttonLabels.playBingoAm || cfg.buttonLabels.playAm || '');
+          setBotPlayLabelEnDraft(cfg.buttonLabels.playBingoEn || cfg.buttonLabels.playEn || '');
         }
         if (notifJson.ok) setNotifications(notifJson.outbox);
         if (setJson.ok) setSettingsData(setJson.settings);
@@ -785,8 +796,10 @@ export function AdminDashboardScreen({
         customWelcomeAm: botWelcomeAmDraft.trim() || null,
         customWelcomeEn: botWelcomeEnDraft.trim() || null,
         buttonLabels: {
-          playAm: botPlayLabelAmDraft.trim() || '🎮 ADEYBINGO ክፈት',
-          playEn: botPlayLabelEnDraft.trim() || '🎮 Launch ADEYBINGO',
+          playAm: botPlayLabelAmDraft.trim() || '🎱 ቢንጎ ይጫወቱ',
+          playEn: botPlayLabelEnDraft.trim() || '🎱 Play Bingo',
+          playBingoAm: botPlayLabelAmDraft.trim() || '🎱 ቢንጎ ይጫወቱ',
+          playBingoEn: botPlayLabelEnDraft.trim() || '🎱 Play Bingo',
         },
       }),
     });
@@ -826,6 +839,15 @@ export function AdminDashboardScreen({
   };
 
   const handleSendTestSupportNotification = async () => {
+    const targetTgId =
+      selectedUserLedger?.telegramUserId ||
+      users.find((u) => u.telegramUserId > 0)?.telegramUserId ||
+      actor?.telegramUserId ||
+      0;
+    if (!targetTgId) {
+      showToast('No player with a verified Telegram ID is available to notify.');
+      return;
+    }
     const res = await fetch('/api/admin/notifications/send', {
       method: 'POST',
       headers: {
@@ -834,7 +856,7 @@ export function AdminDashboardScreen({
       },
       body: JSON.stringify({
         event: 'support_response',
-        telegramUserId: 8842109,
+        telegramUserId: targetTgId,
         payload: {
           ticketId: `SUP-${Math.floor(1000 + Math.random() * 9000)}`,
           responseMessage:
@@ -846,8 +868,10 @@ export function AdminDashboardScreen({
     });
     const data = await res.json();
     if (data.ok) {
-      showToast('Support response notification dispatched via Telegram bot engine.');
+      showToast(`Support response notification dispatched to TG #${targetTgId}.`);
       fetchAllAdminData(sessionToken, userSearchQuery, payoutFilter);
+    } else {
+      showToast(`Notification failed: ${data.message || data.reason || 'Error'}`);
     }
   };
 
@@ -1272,7 +1296,8 @@ export function AdminDashboardScreen({
                           {overview.financialDashboard.verifiedTotalRevenueEtb.toLocaleString()} ETB
                         </b>
                         <span className="block text-[9.5px] text-[#08743A] font-semibold">
-                          {overview.financialDashboard.verifiedPaidEntriesCount} × 10 ETB
+                          {overview.financialDashboard.verifiedPaidEntriesCount} ×{' '}
+                          {overview.financialDashboard.entryPriceEtb} ETB
                         </span>
                       </div>
 
@@ -1602,6 +1627,22 @@ export function AdminDashboardScreen({
                             <span>
                               Games: {u.gamesPlayed} ({u.gamesWon} won)
                             </span>
+                            <span>·</span>
+                            <span>
+                              Referrals: <b className="text-[#183326]">{u.referralsCount}</b>
+                              {u.referredByCode ? ` (via ${u.referredByCode})` : ''}
+                            </span>
+                            {u.activeRoomCards && u.activeRoomCards.length > 0 && (
+                              <>
+                                <span>·</span>
+                                <span className="text-[#08743A] font-bold">
+                                  Active Cards:{' '}
+                                  {u.activeRoomCards
+                                    .map((rc) => `${rc.roomId} [#${rc.cardIds.join(', #')}]`)
+                                    .join(' | ')}
+                                </span>
+                              </>
+                            )}
                           </div>
                           {u.suspensionReason && (
                             <p className="text-[11px] text-[#D94B4B] font-semibold">
@@ -1714,8 +1755,33 @@ export function AdminDashboardScreen({
                       </div>
 
                       {selectedUserLedger?.uid === u.uid && (
-                        <div className="pt-3 border-t border-[#E7EDE8]">
-                          <h4 className="text-xs font-extrabold text-[#08743A] mb-2">
+                        <div className="pt-3 border-t border-[#E7EDE8] space-y-2.5">
+                          <div className="flex flex-wrap items-center gap-3 text-[11px] bg-[#FFF9ED] border border-[#E7EDE8] rounded-xl px-3 py-2">
+                            <span>
+                              Code: <b className="font-mono text-[#183326]">{u.referralCode}</b>
+                            </span>
+                            <span>
+                              Invited Friends: <b className="text-[#08743A]">{u.referralsCount}</b>
+                            </span>
+                            {u.referredByCode && (
+                              <span>
+                                Referred By:{' '}
+                                <b className="font-mono text-[#183326]">{u.referredByCode}</b>
+                              </span>
+                            )}
+                            {u.recentWins && u.recentWins.length > 0 && (
+                              <span>
+                                Recent Wins:{' '}
+                                <b className="text-[#D99B20]">
+                                  {u.recentWins
+                                    .slice(0, 3)
+                                    .map((w) => `${w.roomId} (+${w.prizeEtb} ETB)`)
+                                    .join(', ')}
+                                </b>
+                              </span>
+                            )}
+                          </div>
+                          <h4 className="text-xs font-extrabold text-[#08743A]">
                             Wallet Ledger History — {u.displayName}
                           </h4>
                           {u.walletLedger.length === 0 ? (
@@ -1838,20 +1904,24 @@ export function AdminDashboardScreen({
                         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                           {order.status !== 'Completed' && order.status !== 'Rejected' && (
                             <>
-                              <button
-                                type="button"
-                                onClick={() => handleUpdatePayoutStatus(order, 'Approved')}
-                                className="px-3 py-2 min-h-[38px] rounded-xl bg-[#E6F6EB] border border-[#159447]/40 text-[#08743A] text-xs font-extrabold hover:bg-[#159447]/20"
-                              >
-                                Approve
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleUpdatePayoutStatus(order, 'Completed')}
-                                className="px-3 py-2 min-h-[38px] rounded-xl bg-[#159447] text-white text-xs font-extrabold hover:bg-[#08743A]"
-                              >
-                                Mark Paid / Completed
-                              </button>
+                              {(order.status === 'Pending' || order.status === 'Under Review') && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdatePayoutStatus(order, 'Approved')}
+                                  className="px-3 py-2 min-h-[38px] rounded-xl bg-[#E6F6EB] border border-[#159447]/40 text-[#08743A] text-xs font-extrabold hover:bg-[#159447]/20"
+                                >
+                                  Approve
+                                </button>
+                              )}
+                              {order.status === 'Approved' && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdatePayoutStatus(order, 'Completed')}
+                                  className="px-3 py-2 min-h-[38px] rounded-xl bg-[#159447] text-white text-xs font-extrabold hover:bg-[#08743A]"
+                                >
+                                  Mark Paid / Completed
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => handleUpdatePayoutStatus(order, 'Rejected')}

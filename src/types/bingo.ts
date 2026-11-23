@@ -179,7 +179,7 @@ export interface SupportTicket {
   subject: string;
   message: string;
   createdAt: string;
-  status: 'received' | 'answered';
+  status: 'received' | 'in_review' | 'answered' | 'resolved';
 }
 
 export interface NotificationItem {

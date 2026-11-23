@@ -133,9 +133,11 @@ export function createReserveCardHandler(deps: ReserveCardHandlerDeps = {}) {
       const statusCode =
         reason === 'invalid_card_id' || reason === 'insufficient_balance'
           ? 400
-          : reason === 'room_not_found' || reason === 'user_not_found'
-            ? 404
-            : 409;
+          : reason === 'account_suspended'
+            ? 403
+            : reason === 'room_not_found' || reason === 'user_not_found'
+              ? 404
+              : 409;
       sendError(
         res,
         statusCode,

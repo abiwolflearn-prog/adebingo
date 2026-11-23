@@ -41,7 +41,7 @@ interface LiveGameScreenProps {
   onToggleAutoCaller: () => void;
   callerIntervalSec: number;
   onChangeCallerInterval: (sec: number) => void;
-  onResetRound: () => void;
+  onResetRound?: () => void;
   onToggleMarkCell: (num: number, cardId: number) => void;
   onAddQuickCard: () => void;
   onRemoveCard: (cardId: number) => void;
@@ -193,11 +193,9 @@ export function LiveGameScreen({
                 data-testid="live-countdown"
                 className="font-mono text-xs font-extrabold tabular-nums"
               >
-                {activeRoom.status === 'countdown'
-                  ? `00:${String(Math.max(0, countdown)).padStart(2, '0')}`
-                  : activeRoom.status === 'live'
+                {activeRoom.status === 'live'
                   ? `LIVE · ${calledNumbers.length}/75`
-                  : '00:05'}
+                  : `00:${String(Math.max(0, countdown)).padStart(2, '0')}`}
               </b>
             </div>
 
@@ -267,15 +265,17 @@ export function LiveGameScreen({
                 </button>
               )}
 
-              <button
-                type="button"
-                onClick={onResetRound}
-                aria-label={copy.resetDemoBtn}
-                title={copy.resetDemoBtn}
-                className="p-1.5 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[#68776D] hover:text-[#159447] hover:bg-[#E6F6EB] min-h-[30px] min-w-[30px] flex items-center justify-center transition-colors"
-              >
-                <RotateCcw size={12} />
-              </button>
+              {onResetRound && (
+                <button
+                  type="button"
+                  onClick={onResetRound}
+                  aria-label={copy.resetDemoBtn}
+                  title={copy.resetDemoBtn}
+                  className="p-1.5 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[#68776D] hover:text-[#159447] hover:bg-[#E6F6EB] min-h-[30px] min-w-[30px] flex items-center justify-center transition-colors"
+                >
+                  <RotateCcw size={12} />
+                </button>
+              )}
             </div>
           </div>
 

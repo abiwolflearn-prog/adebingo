@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Gift,
   Copy,
@@ -30,7 +30,7 @@ import {
   SupportTicket,
 } from '../types/bingo';
 import { t } from '../utils/i18n';
-import { TelegramUserProfile } from '../utils/telegram';
+import { requestTelegramContact, TelegramUserProfile } from '../utils/telegram';
 import { TelegramBotConsole } from './TelegramBotConsole';
 
 interface CommunityScreensProps {
@@ -116,12 +116,15 @@ export function CommunityScreens({
   const [promoFeedback, setPromoFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [promoBusy, setPromoBusy] = useState(false);
 
-  const [phoneInput, setPhoneInput] = useState(phoneNumber || '+251911223344');
-  const [phoneMethod, setPhoneMethod] = useState<'telegram_contact' | 'sms_otp_demo'>(
-    'telegram_contact'
-  );
+  const [phoneInput, setPhoneInput] = useState(phoneNumber || '');
   const [phoneError, setPhoneError] = useState('');
   const [phoneBusy, setPhoneBusy] = useState(false);
+
+  useEffect(() => {
+    if (phoneNumber) {
+      setPhoneInput(phoneNumber);
+    }
+  }, [phoneNumber]);
 
   const [ticketCategory, setTicketCategory] = useState('game_rules');
   const [ticketSubject, setTicketSubject] = useState('');
@@ -184,21 +187,44 @@ export function CommunityScreens({
     }
   };
 
+  const handleNativeTelegramContact = async () => {
+    setPhoneError('');
+    setPhoneBusy(true);
+    try {
+      const result = await requestTelegramContact();
+      if (result.supported && result.sent) {
+        setPhoneError(
+          lang === 'am'
+            ? 'የቴሌግራም ስልክ ቁጥርዎ ተልኳል — በጥቂት ሰከንዶች ውስጥ ይረጋገጣል።'
+            : 'Telegram contact shared — verification will sync automatically in a few seconds.'
+        );
+      } else if (!result.supported) {
+        setPhoneError(
+          lang === 'am'
+            ? 'በቴሌግራም @AdeyBingoBot ውስጥ /start በመጫን ስልክ ቁጥርዎን ያጋሩ ወይም ከታች ያረጋግጡ።'
+            : 'Open inside @AdeyBingoBot to share native Telegram contact, or verify below.'
+        );
+      }
+    } finally {
+      setPhoneBusy(false);
+    }
+  };
+
   const handlePhoneSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleaned = phoneInput.replace(/[\s\-()]/g, '');
     if (!/^\+?[0-9]{9,15}$/.test(cleaned)) {
       setPhoneError(
         lang === 'am'
-          ? 'ትክክለኛ የስልክ ቁጥር ያስገቡ (+251911223344)'
-          : 'Enter a valid 9–15 digit phone number (+251911223344).'
+          ? 'ትክክለኛ የስልክ ቁጥር ያስገቡ (+2519...)'
+          : 'Enter a valid 9–15 digit phone number (+2519...).'
       );
       return;
     }
     setPhoneError('');
     setPhoneBusy(true);
     try {
-      await onVerifyPhone(cleaned, phoneMethod);
+      await onVerifyPhone(cleaned, 'telegram_contact');
     } catch (err) {
       setPhoneError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -723,35 +749,30 @@ export function CommunityScreens({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                <select
-                  value={phoneMethod}
-                  onChange={(e) =>
-                    setPhoneMethod(e.target.value as 'telegram_contact' | 'sms_otp_demo')
-                  }
-                  aria-label="Phone Verification Method"
-                  className="w-full px-2 py-1 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[11px] font-bold text-[#183326] min-h-[32px] focus:outline-none focus:border-[#159447]"
+                <button
+                  type="button"
+                  disabled={phoneBusy || phoneVerified}
+                  onClick={() => void handleNativeTelegramContact()}
+                  className="w-full px-2.5 py-1 rounded-lg border border-[#159447]/40 bg-[#E6F6EB] text-[#08743A] text-[11px] font-extrabold flex items-center justify-center gap-1 min-h-[32px] disabled:opacity-60"
                 >
-                  <option value="telegram_contact">
-                    {lang === 'am' ? 'የቴሌግራም ስልክ (Contact)' : 'Telegram Contact'}
-                  </option>
-                  <option value="sms_otp_demo">
-                    {lang === 'am' ? 'SMS ኮድ (OTP Demo)' : 'SMS OTP (Demo)'}
-                  </option>
-                </select>
+                  <Phone size={11} />
+                  {lang === 'am' ? 'በቴሌግራም ስልክ አጋራ' : 'Share Telegram Contact'}
+                </button>
 
                 <div className="flex gap-1">
                   <input
                     type="tel"
                     value={phoneInput}
                     onChange={(e) => setPhoneInput(e.target.value)}
-                    placeholder="+251911223344"
+                    placeholder="+2519..."
+                    disabled={phoneVerified}
                     aria-label="Phone Number for Verification"
-                    className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[11px] font-mono font-bold text-[#183326] min-h-[32px] focus:outline-none focus:border-[#159447]"
+                    className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[11px] font-mono font-bold text-[#183326] min-h-[32px] focus:outline-none focus:border-[#159447] disabled:opacity-60"
                   />
                   <button
                     type="submit"
-                    disabled={phoneBusy}
-                    className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-[11px] font-extrabold flex items-center gap-1 shrink-0 min-h-[32px]"
+                    disabled={phoneBusy || phoneVerified}
+                    className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-[11px] font-extrabold flex items-center gap-1 shrink-0 min-h-[32px] disabled:opacity-60"
                   >
                     <Phone size={11} />
                     {phoneBusy ? '...' : lang === 'am' ? 'አረጋግጥ' : 'Verify'}
@@ -923,10 +944,14 @@ export function CommunityScreens({
                       </small>
                     </div>
                     <span className="font-extrabold text-[#159447] bg-[#E6F6EB] px-1.5 py-0.5 rounded text-[10px]">
-                      {tkt.status === 'answered'
+                      {tkt.status === 'answered' || tkt.status === 'resolved'
                         ? lang === 'am'
                           ? 'ተመልሷል'
-                          : 'Answered'
+                          : 'Resolved'
+                        : tkt.status === 'in_review'
+                        ? lang === 'am'
+                          ? 'በግምገማ ላይ'
+                          : 'In Review'
                         : lang === 'am'
                         ? 'ደርሷል'
                         : 'Received'}

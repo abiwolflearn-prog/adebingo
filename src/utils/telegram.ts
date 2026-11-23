@@ -42,6 +42,8 @@ interface TelegramWebAppWindow {
       setBackgroundColor?: (color: string) => void;
       setBottomBarColor?: (color: string) => void;
       BackButton?: TelegramBackButton;
+      requestContact?: (callback?: (sent: boolean) => void) => void;
+      openTelegramLink?: (url: string) => void;
       HapticFeedback?: {
         impactOccurred?: (style: 'light' | 'medium' | 'heavy') => void;
         notificationOccurred?: (type: 'error' | 'success' | 'warning') => void;
@@ -84,15 +86,71 @@ export function getTelegramStartParam(): string {
       (window as unknown as TelegramWebAppWindow).Telegram?.WebApp?.initDataUnsafe?.start_param || '';
     if (tgStart.trim()) return tgStart.trim();
     const params = new URLSearchParams(window.location.search);
-    return (
+    const fromQuery =
       params.get('start')?.trim() ||
+      params.get('startapp')?.trim() ||
       params.get('ref')?.trim() ||
       params.get('tgWebAppStartParam')?.trim() ||
-      ''
-    );
+      '';
+    if (fromQuery) return fromQuery;
+    const rawHash = window.location.hash ? window.location.hash.replace(/^#/, '') : '';
+    if (rawHash) {
+      const hashParams = new URLSearchParams(rawHash);
+      return (
+        hashParams.get('tgWebAppStartParam')?.trim() ||
+        hashParams.get('startapp')?.trim() ||
+        hashParams.get('start')?.trim() ||
+        hashParams.get('ref')?.trim() ||
+        ''
+      );
+    }
+    return '';
   } catch {
     return '';
   }
+}
+
+export function getLiveTelegramWebAppUserId(): number | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const id = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp?.initDataUnsafe?.user?.id;
+    return typeof id === 'number' && Number.isInteger(id) && id > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Triggers Telegram WebApp's native verified contact sharing dialog (Bot API 6.9+).
+ * When the user accepts, Telegram delivers a verified `contact` update directly to
+ * the bot webhook so the backend can verify and persist the phone number securely.
+ */
+export function requestTelegramContact(): Promise<{ supported: boolean; sent: boolean }> {
+  if (typeof window === 'undefined') {
+    return Promise.resolve({ supported: false, sent: false });
+  }
+  const tg = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp;
+  if (!tg || typeof tg.requestContact !== 'function' || !supportsVersion(tg, '6.9')) {
+    return Promise.resolve({ supported: false, sent: false });
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (sent: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve({ supported: true, sent });
+    };
+    const fallbackTimer = window.setTimeout(() => finish(false), 15000);
+    try {
+      tg.requestContact?.((sent: boolean) => {
+        window.clearTimeout(fallbackTimer);
+        finish(Boolean(sent));
+      });
+    } catch {
+      window.clearTimeout(fallbackTimer);
+      resolve({ supported: false, sent: false });
+    }
+  });
 }
 
 export function syncTelegramBackButton(visible: boolean, onBack: () => void): () => void {

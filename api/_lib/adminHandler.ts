@@ -559,7 +559,12 @@ export function createAdminRoomRoundActionHandler(deps: AdminHandlerDeps = {}) {
         sendError(res, 409, started.reason || 'start_failed', `Cannot start round (${started.reason}).`);
         return;
       }
-      sendJson(res, 200, { ok: true, action, game: started.game });
+      sendJson(res, 200, {
+        ok: true,
+        action,
+        roundNumber: Number(started.game?.roundNumber ?? 1),
+        game: started.game,
+      });
       return;
     }
 
@@ -588,7 +593,17 @@ export function createAdminRoomRoundActionHandler(deps: AdminHandlerDeps = {}) {
       sendError(res, 409, reset.reason || 'reset_failed', `Cannot reset round (${reset.reason}).`);
       return;
     }
-    sendJson(res, 200, { ok: true, action, roomId, status: 'countdown' });
+    const updatedRoomSnap = await db.collection('rooms').doc(roomId).get();
+    const nextRoundNumber = updatedRoomSnap.exists
+      ? Number(updatedRoomSnap.get('roundNumber') ?? 1)
+      : 1;
+    sendJson(res, 200, {
+      ok: true,
+      action,
+      roomId,
+      roundNumber: nextRoundNumber,
+      status: 'countdown',
+    });
   };
 }
 
@@ -934,20 +949,26 @@ export function createAdminNotificationsSendHandler(deps: AdminHandlerDeps = {})
     if (!body) return;
 
     const service = new PersistentAdminService(db);
+    const payloadObj =
+      body.payload && typeof body.payload === 'object'
+        ? (body.payload as { title?: string; customMessage?: string; responseMessage?: string })
+        : undefined;
     const payloadTitle =
       typeof body.title === 'string' && body.title.trim()
         ? body.title
-        : typeof (body.payload as { title?: string })?.title === 'string'
-          ? String((body.payload as { title?: string }).title)
+        : typeof payloadObj?.title === 'string'
+          ? payloadObj.title
           : '🌼 ADEYBINGO Notification';
     const payloadBody =
       typeof body.body === 'string' && body.body.trim()
         ? body.body
-        : typeof (body.payload as { customMessage?: string })?.customMessage === 'string'
-          ? String((body.payload as { customMessage?: string }).customMessage)
-          : typeof body.event === 'string'
-            ? `Notification event: ${body.event}`
-            : '';
+        : typeof payloadObj?.customMessage === 'string' && payloadObj.customMessage.trim()
+          ? payloadObj.customMessage
+          : typeof payloadObj?.responseMessage === 'string' && payloadObj.responseMessage.trim()
+            ? payloadObj.responseMessage
+            : typeof body.event === 'string'
+              ? `Notification event: ${body.event}`
+              : '';
 
     const result = await service.sendNotification({
       telegramUserId: Number(body.telegramUserId),

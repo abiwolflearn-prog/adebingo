@@ -149,7 +149,15 @@ export interface TelegramBotStore {
     username: string;
     verifiedPhoneNumber: string;
     maskedPhone: string;
-  }): Promise<{ ok: boolean; reason?: 'duplicate_telegram_account' | 'invalid_uid'; player?: RegisteredTelegramPlayer }>;
+  }): Promise<{
+    ok: boolean;
+    reason?:
+      | 'duplicate_telegram_account'
+      | 'duplicate_phone_number'
+      | 'verified_contact_locked'
+      | 'invalid_uid';
+    player?: RegisteredTelegramPlayer;
+  }>;
   appendNotification(msg: BotNotificationMessage): Promise<void>;
   listNotifications(limit?: number): Promise<BotNotificationMessage[]>;
   getPlayerStatsAndHistory?(telegramUserId: number): Promise<PlayerBotStatsAndHistory>;
@@ -376,7 +384,7 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
       referralCode,
     }) {
       assertValidTelegramUserId(inviteeTelegramId);
-      const match = /^ADEY-([1-9]\d*)$/.exec(referralCode.trim());
+      const match = /^ADEY-([1-9]\d*)$/.exec(referralCode.trim().toUpperCase());
       if (!match) {
         return { applied: false, reason: 'invalid_code' as const };
       }
@@ -925,20 +933,35 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
       }
       const uid = canonicalUid;
       const telegramKey = canonicalUid;
+      const normalizedDigits = verifiedPhoneNumber.replace(/[^\d]/g, '');
       const bindingRef = bindingsCol.doc(telegramKey);
+      const phoneBindingRef = db.collection('phoneBindings').doc(normalizedDigits || 'invalid');
       const playerRef = playersCol.doc(String(telegramUserId));
       const userRef = usersCol.doc(uid);
       const contactRef = userRef.collection('private').doc('contact');
 
       return await db.runTransaction(async (tx) => {
-        const [bindingSnap, playerSnap, userSnap] = await Promise.all([
+        const [bindingSnap, phoneBindingSnap, playerSnap, userSnap, contactSnap] = await Promise.all([
           tx.get(bindingRef),
+          tx.get(phoneBindingRef),
           tx.get(playerRef),
           tx.get(userRef),
+          tx.get(contactRef),
         ]);
 
         if (bindingSnap.exists && bindingSnap.get('uid') !== uid) {
           return { ok: false, reason: 'duplicate_telegram_account' as const };
+        }
+
+        if (phoneBindingSnap.exists && phoneBindingSnap.get('uid') !== uid) {
+          return { ok: false, reason: 'duplicate_phone_number' as const };
+        }
+
+        if (contactSnap.exists && contactSnap.get('phoneVerified') === true) {
+          const existingPhoneDigits = String(contactSnap.get('phoneNumber') || '').replace(/[^\d]/g, '');
+          if (existingPhoneDigits && normalizedDigits && existingPhoneDigits !== normalizedDigits) {
+            return { ok: false, reason: 'verified_contact_locked' as const };
+          }
         }
 
         const nowIso = new Date().toISOString();
@@ -972,6 +995,16 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
           tx.set(bindingRef, {
             telegramUserId: telegramKey,
             uid,
+            boundAt: FieldValue.serverTimestamp(),
+          });
+        }
+
+        if (normalizedDigits && !phoneBindingSnap.exists) {
+          tx.set(phoneBindingRef, {
+            phoneKey: normalizedDigits,
+            uid,
+            telegramUserId,
+            maskedPhone,
             boundAt: FieldValue.serverTimestamp(),
           });
         }
@@ -1476,18 +1509,33 @@ export class PersistentTelegramBotService {
       });
 
       if (!persisted.ok || !persisted.player) {
+        const failReason = persisted.reason || 'duplicate_telegram_account';
+        const isDuplicatePhone = failReason === 'duplicate_phone_number';
+        const isLockedContact = failReason === 'verified_contact_locked';
         return {
           ok: false,
           chatId: senderTelegramId,
           language: currentLang,
-          text:
-            currentLang === 'am'
-              ? '🚫 ይህ የቴሌግራም መለያ ቀደም ብሎ ከሌላ የADEYBINGO መለያ ጋር ተገናኝቷል።'
-              : '🚫 This Telegram account is already bound to another ADEYBINGO account.',
+          text: isDuplicatePhone
+            ? currentLang === 'am'
+              ? '🚫 ይህ ስልክ ቁጥር ቀደም ብሎ በሌላ የADEYBINGO መለያ ላይ ተረጋግጧል።'
+              : '🚫 This phone number is already verified on another ADEYBINGO account.'
+            : isLockedContact
+              ? currentLang === 'am'
+                ? '🔒 የተረጋገጠው ስልክ ቁጥርዎ ተቆልፏል እና በሌላ ቁጥር ሊተካ አይችልም።'
+                : '🔒 Your verified phone contact is locked and cannot be overwritten with a different number.'
+              : currentLang === 'am'
+                ? '🚫 ይህ የቴሌግራም መለያ ቀደም ብሎ ከሌላ የADEYBINGO መለያ ጋር ተገናኝቷል።'
+                : '🚫 This Telegram account is already bound to another ADEYBINGO account.',
           parseMode: 'Markdown',
-          replyMarkup: buildBotMainMenuMarkup(currentLang, effectiveMiniAppUrl, false, customButtons),
-          registrationStatus: 'duplicate_blocked',
-          securityCode: 'duplicate_telegram_account',
+          replyMarkup: buildBotMainMenuMarkup(
+            currentLang,
+            effectiveMiniAppUrl,
+            Boolean(existingPlayer?.phoneVerified),
+            customButtons
+          ),
+          registrationStatus: isLockedContact ? 'verified' : 'duplicate_blocked',
+          securityCode: failReason,
         };
       }
 

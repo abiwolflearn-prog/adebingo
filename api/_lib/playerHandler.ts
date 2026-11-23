@@ -141,6 +141,7 @@ export function createPlayerStateHandler(deps: PlayerStateHandlerDeps = {}) {
       depositSnap,
       payoutSnap,
       wonGamesSnap,
+      completedGamesSnap,
       supportSnap,
       leaderboard,
     ] = await Promise.all([
@@ -153,6 +154,7 @@ export function createPlayerStateHandler(deps: PlayerStateHandlerDeps = {}) {
       db.collection('depositRequests').where('uid', '==', caller.uid).get(),
       db.collection('payoutRequests').where('uid', '==', caller.uid).get(),
       db.collection('games').where('winnerUid', '==', caller.uid).get(),
+      db.collection('games').where('status', '==', 'completed').get(),
       db.collection('supportTickets').where('uid', '==', caller.uid).get(),
       store.getLeaderboard ? store.getLeaderboard(15) : Promise.resolve([]),
     ]);
@@ -258,7 +260,25 @@ export function createPlayerStateHandler(deps: PlayerStateHandlerDeps = {}) {
       })
       .sort((a, b) => b.joinedAt.localeCompare(a.joinedAt));
 
-    const gameHistory = wonGamesSnap.docs
+    const matchedWonDocsMap = new Map<string, (typeof wonGamesSnap.docs)[number]>();
+    for (const d of wonGamesSnap.docs) {
+      matchedWonDocsMap.set(d.id, d);
+    }
+    for (const d of completedGamesSnap.docs) {
+      if (matchedWonDocsMap.has(d.id)) continue;
+      const data = d.data() || {};
+      const winnersArr = Array.isArray(data.winners)
+        ? (data.winners as Array<Record<string, unknown>>)
+        : [];
+      if (
+        String(data.winnerUid || '') === caller.uid ||
+        winnersArr.some((w) => String(w.uid || '') === caller.uid)
+      ) {
+        matchedWonDocsMap.set(d.id, d);
+      }
+    }
+
+    const gameHistory = Array.from(matchedWonDocsMap.values())
       .map((d) => {
         const data = d.data() || {};
         const winningCardId = Number(data.winningCardId ?? 0);
@@ -449,6 +469,19 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
         'Server persistence service is unavailable.'
       );
       return;
+    }
+
+    if (action !== 'support_ticket') {
+      const callerUserSnap = await db.collection('users').doc(caller.uid).get();
+      if (callerUserSnap.exists && String(callerUserSnap.get('accountStatus') || 'active') === 'suspended') {
+        sendError(
+          res,
+          403,
+          'account_suspended',
+          'Your account is currently suspended. Contact support for assistance.'
+        );
+        return;
+      }
     }
 
     const idempotencyKey = extractIdempotencyKey(req, body);
