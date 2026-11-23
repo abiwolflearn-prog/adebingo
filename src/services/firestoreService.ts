@@ -357,7 +357,8 @@ export function subscribeToRoomState(
   onCardsChange: (reservations: FirestoreCardReservation[]) => void,
   onPlayersChange: (players: FirestoreRoomPlayer[]) => void,
   onRoomDocChange?: (room: ServerRoomSummary) => void,
-  onConnectionStateChange?: (state: ConnectionState) => void
+  onConnectionStateChange?: (state: ConnectionState) => void,
+  getServerClockOffsetMs?: () => number
 ): Unsubscribe {
   const roomPath = `rooms/${roomId}`;
   const cardsPath = `rooms/${roomId}/cards`;
@@ -377,7 +378,7 @@ export function subscribeToRoomState(
         rawStatus === 'completed'
           ? rawStatus
           : 'countdown';
-      const cardPrice = Number(d.cardPrice ?? 10);
+      const cardPrice = Number(d.cardPrice ?? d.cardPriceEtb ?? 10);
       const minPlayers = Number(d.minPlayers ?? 3);
       const registrationDeadlineMs =
         typeof d.registrationDeadlineMs === 'number' && Number.isFinite(d.registrationDeadlineMs)
@@ -387,9 +388,14 @@ export function subscribeToRoomState(
         typeof d.roundStartedAtMs === 'number' && Number.isFinite(d.roundStartedAtMs)
           ? d.roundStartedAtMs
           : undefined;
+      const roundNumber =
+        typeof d.roundNumber === 'number' && Number.isFinite(d.roundNumber)
+          ? d.roundNumber
+          : undefined;
+      const serverNowEstimate = Date.now() + (getServerClockOffsetMs?.() ?? 0);
       const countdownSeconds =
         status === 'countdown' && registrationDeadlineMs && registrationDeadlineMs > 0
-          ? Math.max(0, Math.ceil((registrationDeadlineMs - Date.now()) / 1000))
+          ? Math.max(0, Math.ceil((registrationDeadlineMs - serverNowEstimate) / 1000))
           : Number(d.countdownSeconds ?? 60);
       const activePlayersCount = Number(d.confirmedPlayersCount ?? d.activePlayersCount ?? 0);
       const reservedCardsCount = Number(d.totalCardsSold ?? d.reservedCardsCount ?? 0);
@@ -420,6 +426,7 @@ export function subscribeToRoomState(
         countdownSeconds,
         registrationDeadlineMs,
         roundStartedAtMs,
+        roundNumber,
         activePlayersCount: financials.confirmedPlayersCount,
         confirmedPlayersCount: financials.confirmedPlayersCount,
         verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
@@ -560,6 +567,13 @@ export function subscribeToGameState(
           typeof d.adeyShareEtb === 'number' ? d.adeyShareEtb : undefined,
         winnersPrizePoolEtb:
           typeof d.winnersPrizePoolEtb === 'number' ? d.winnersPrizePoolEtb : undefined,
+        prizePoolEtb:
+          typeof d.prizePoolEtb === 'number'
+            ? d.prizePoolEtb
+            : typeof d.winnersPrizePoolEtb === 'number'
+              ? d.winnersPrizePoolEtb
+              : undefined,
+        winners: Array.isArray(d.winners) ? (d.winners as RoundWinnerShare[]) : undefined,
       });
     },
     () => {
@@ -884,13 +898,18 @@ export interface ServerRoomSummary {
   hostUid: string;
 }
 
-export async function fetchRoomsFromServerApi(): Promise<ServerRoomSummary[]> {
+export async function fetchRoomsFromServerApi(
+  onServerNowMs?: (serverNowMs: number) => void
+): Promise<ServerRoomSummary[]> {
   const headers = await buildAuthenticatedHeaders();
   const resp = await fetch('/api/rooms', { method: 'GET', headers });
   if (!resp.ok) {
     throw new Error(`GET /api/rooms failed (${resp.status})`);
   }
   const data = await resp.json().catch(() => ({}));
+  if (typeof data.serverNowMs === 'number' && Number.isFinite(data.serverNowMs)) {
+    onServerNowMs?.(data.serverNowMs);
+  }
   return Array.isArray(data.rooms) ? (data.rooms as ServerRoomSummary[]) : [];
 }
 

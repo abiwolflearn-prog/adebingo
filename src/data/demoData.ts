@@ -7,62 +7,19 @@ import type {
   WalletTransaction,
 } from '../types/bingo.ts';
 
-export const INITIAL_ROOMS: RoomConfig[] = [
-  {
-    id: 'adey-main',
-    nameAm: 'አደይ ዋና አዳራሽ (Starter Room)',
-    nameEn: 'Adey Main Hall (Starter)',
-    subtitleAm: 'ፈጣን 60 ሰከንድ ሎቢ · ከ1–600 ካርዶች',
-    subtitleEn: 'Fast 60s countdown · 1–600 cards deck',
-    cardPrice: 10,
-    maxCardsPerRoom: 600,
-    maxCardsPerPlayer: 4,
-    minPlayers: 3,
-    countdownSeconds: 60,
-    activePlayers: 38,
-    takenCardIds: [
-      2, 5, 8, 11, 14, 19, 23, 27, 31, 35, 42, 48, 53, 61, 67, 74, 82, 90, 96,
-      104, 115, 128, 142, 168, 195, 212, 244, 276, 305, 338, 379, 412, 455, 502, 548, 589,
-    ],
-    status: 'countdown',
-    badgeAm: 'በጣም ተወዳጅ',
-    badgeEn: 'Most Popular',
-  },
-  {
-    id: 'meskel-gold',
-    nameAm: 'መስቀል ወርቃማ ክፍል (Classic)',
-    nameEn: 'Meskel Gold Lounge (Classic)',
-    subtitleAm: 'መካከለኛ ዙር · ከፍተኛ የሙከራ ሽልማት',
-    subtitleEn: 'Classic pace · Higher demo pool',
-    cardPrice: 20,
-    maxCardsPerRoom: 600,
-    maxCardsPerPlayer: 4,
-    minPlayers: 3,
-    countdownSeconds: 60,
-    activePlayers: 24,
-    takenCardIds: [3, 6, 12, 18, 25, 33, 41, 56, 72, 88, 109, 134, 177, 220, 290, 340, 410],
-    status: 'countdown',
-    badgeAm: '20 ETB / ካርድ',
-    badgeEn: '20 ETB / Card',
-  },
-  {
-    id: 'addis-express',
-    nameAm: 'አዲስ ፈጣን ቢንጎ (Turbo)',
-    nameEn: 'Addis Turbo Arena',
-    subtitleAm: 'በየ 3 ሰከንድ ቁጥር የሚጠራበት ፈጣን ጨዋታ',
-    subtitleEn: 'Rapid 3-second ball calls',
-    cardPrice: 10,
-    maxCardsPerRoom: 600,
-    maxCardsPerPlayer: 4,
-    minPlayers: 3,
-    countdownSeconds: 60,
-    activePlayers: 19,
-    takenCardIds: [4, 9, 15, 22, 29, 37, 44, 62, 85, 118, 154, 203],
-    status: 'live',
-    badgeAm: 'ፈጣን ዙር',
-    badgeEn: 'Turbo Speed',
-  },
-];
+import { createCleanInitialRoomConfigs } from '../game/roomCatalog.ts';
+
+/**
+ * Clean pre-hydration UI room configurations derived from the single authoritative
+ * production room catalog (0 players, 0 taken cards, countdown status).
+ * Never injects fabricated players, fake taken cards, or fake live games.
+ */
+export const INITIAL_ROOMS: RoomConfig[] = createCleanInitialRoomConfigs();
+
+/**
+ * Clearly isolated static UI preview fixtures (never persisted to Firestore or used as real records).
+ */
+export const DEMO_UI_FIXTURE_ONLY = true;
 
 export const INITIAL_TRANSACTIONS: WalletTransaction[] = [
   {

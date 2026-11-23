@@ -1228,6 +1228,52 @@ test('Milestone 4.2: Admin Serverless API blocks preset identityMode bypass (403
     getSessionSecret: () => sessionSecret,
   };
 
+  // Explicitly seed test fixtures (production ensureSeedData does not create fake users/payments)
+  store.set('users/tg_8842109', {
+    uid: 'tg_8842109',
+    telegramUserId: 'tg_8842109',
+    displayName: 'Abebe Bikila',
+    username: '@abebe_adey',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 450,
+    accountStatus: 'active',
+  });
+  store.set('users/tg_7777777', {
+    uid: 'tg_7777777',
+    telegramUserId: 'tg_7777777',
+    displayName: 'Dawit Mekonnen',
+    username: '@dawit_m',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 185,
+    accountStatus: 'active',
+  });
+  store.set('depositRequests/DEP-2026-401', {
+    id: 'DEP-2026-401',
+    uid: 'tg_7777777',
+    telegramUserId: 7777777,
+    playerName: 'Dawit Mekonnen',
+    method: 'Telebirr',
+    amountEtb: 100,
+    referenceCode: 'TB-TEST-401',
+    status: 'Pending',
+    demoSandboxOnly: true,
+    createdAt: new Date(nowUnix * 1000).toISOString(),
+  });
+  store.set('payoutRequests/PO-2026-901', {
+    id: 'PO-2026-901',
+    uid: 'tg_7777777',
+    telegramUserId: 7777777,
+    playerName: 'Dawit Mekonnen',
+    method: 'Telebirr',
+    accountMask: '+251 9•• ••• 210',
+    requestedAmountEtb: 75,
+    status: 'Pending',
+    demoSandboxOnly: true,
+    requestedAt: new Date(nowUnix * 1000).toISOString(),
+  });
+
   const sharedDeps = {
     getDb: () => db,
     getBotToken: () => botToken,
@@ -1872,6 +1918,41 @@ test('Consolidated Vercel catch-all routers (admin, telegram, game, player) rout
     language: 'am',
     phoneVerified: true,
     demoBalanceEtb: 500,
+    accountStatus: 'active',
+  });
+  store.set('users/tg_7777777', {
+    uid: 'tg_7777777',
+    telegramUserId: 'tg_7777777',
+    displayName: 'Dawit Mekonnen',
+    username: '@dawit_m',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 185,
+    accountStatus: 'active',
+  });
+  store.set('depositRequests/DEP-2026-401', {
+    id: 'DEP-2026-401',
+    uid: 'tg_7777777',
+    telegramUserId: 7777777,
+    playerName: 'Dawit Mekonnen',
+    method: 'Telebirr',
+    amountEtb: 100,
+    referenceCode: 'TB-ROUTER-401',
+    status: 'Pending',
+    demoSandboxOnly: true,
+    createdAt: new Date(nowUnix * 1000).toISOString(),
+  });
+  store.set('payoutRequests/PO-2026-901', {
+    id: 'PO-2026-901',
+    uid: 'tg_7777777',
+    telegramUserId: 7777777,
+    playerName: 'Dawit Mekonnen',
+    method: 'Telebirr',
+    accountMask: '+251 9•• ••• 210',
+    requestedAmountEtb: 75,
+    status: 'Pending',
+    demoSandboxOnly: true,
+    requestedAt: new Date(nowUnix * 1000).toISOString(),
   });
 
   const adminRouter = createAdminRouterHandler({

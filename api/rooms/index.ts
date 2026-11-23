@@ -66,10 +66,17 @@ export function createRoomsHandler(deps: RoomsHandlerDeps = {}) {
           sendError(res, 400, 'invalid_room_id', 'Invalid roomId query parameter.');
           return;
         }
-        const detail = await service.getRoomDetail(rawRoomId, caller.uid);
+        let detail = await service.getRoomDetail(rawRoomId, caller.uid);
         if (!detail.ok || !detail.room) {
           sendError(res, 404, 'room_not_found', 'Requested room does not exist.');
           return;
+        }
+        if (
+          (detail.room.status === 'countdown' || detail.room.status === 'waiting') &&
+          Number(detail.room.registrationDeadlineMs ?? 0) <= 0
+        ) {
+          await service.ensureSharedRegistrationDeadline(rawRoomId, Date.now());
+          detail = await service.getRoomDetail(rawRoomId, caller.uid);
         }
         sendJson(res, 200, {
           ok: true,
@@ -82,7 +89,21 @@ export function createRoomsHandler(deps: RoomsHandlerDeps = {}) {
         return;
       }
 
-      const rooms = await service.listAvailableRooms();
+      let rooms = await service.listAvailableRooms();
+      const missingDeadlineRooms = rooms.filter(
+        (r) =>
+          (r.status === 'countdown' || r.status === 'waiting') &&
+          Number(r.registrationDeadlineMs ?? 0) <= 0
+      );
+      if (missingDeadlineRooms.length > 0) {
+        const nowMs = Date.now();
+        await Promise.all(
+          missingDeadlineRooms.map((r) =>
+            service.ensureSharedRegistrationDeadline(r.roomId, nowMs)
+          )
+        );
+        rooms = await service.listAvailableRooms();
+      }
       sendJson(res, 200, {
         ok: true,
         serverNowMs: Date.now(),

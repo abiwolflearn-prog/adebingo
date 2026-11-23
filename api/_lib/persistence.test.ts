@@ -753,7 +753,8 @@ test('PersistentGameAuthorityService enforces concurrent 4-card cap, balance/led
     gameStore.ensureDefaultRooms(),
   ]);
   assert.equal(store.get('rooms/adey-main')?.status, 'countdown');
-  assert.equal(store.get('rooms/addis-express')?.status, 'live');
+  assert.equal(store.get('rooms/addis-express')?.status, 'countdown');
+  assert.equal(store.get('rooms/addis-express')?.activePlayersCount, 0);
 
   const roomId = 'adey-main';
   const gameId = 'game_adey-main_live';
@@ -804,6 +805,10 @@ test('PersistentGameAuthorityService enforces concurrent 4-card cap, balance/led
   assert.equal(store.has(`rooms/${roomId}/cards/50`), false);
 
   // Reservation in an already-live room (addis-express) is rejected
+  store.set('rooms/addis-express', {
+    ...(store.get('rooms/addis-express') ?? {}),
+    status: 'live',
+  });
   const liveRoomReserve = await gameService.reserveOrReleaseCard({
     roomId: 'addis-express',
     cardId: 55,
@@ -896,7 +901,7 @@ test('PersistentGameAuthorityService enforces concurrent 4-card cap, balance/led
     requestNonce: 'draw-nonce-1',
   });
   assert.equal(firstDraw.ok, true);
-  assert.equal(firstDraw.totalCalled, 6);
+  assert.equal(firstDraw.totalCalled, 1);
   assert.equal(store.get(`rooms/${roomId}`)?.status, 'live');
 
   const reserveAfterLive = await gameService.reserveOrReleaseCard({

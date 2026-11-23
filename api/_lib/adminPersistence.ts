@@ -5,6 +5,7 @@ import {
   calculateAuthoritativeGameFinancials,
   resolveGameLifecycleStage,
 } from '../../src/game/rules.ts';
+import { AUTHORITATIVE_PRODUCTION_ROOMS } from '../../src/game/roomCatalog.ts';
 import type { GameLifecycleStage, Language } from '../../src/types/bingo.ts';
 import type {
   AdminAuditRecord,
@@ -95,438 +96,56 @@ export class PersistentAdminService {
   }
 
   /**
-   * Idempotently seeds initial Demo Sandbox records into Firestore if `adminAuditMeta/seed_v1` does not exist.
-   * All subsequent mutations persist in Firestore across instances and cold starts.
+   * Idempotently ensures canonical production room documents and default bot configuration exist
+   * in Firestore without EVER overwriting existing production documents or injecting fake players,
+   * fake payments, fake payouts, fake referrals, or fake audit records.
    */
   public async ensureSeedData(): Promise<void> {
-    const seedRef = this.db.collection(ADMIN_AUDIT_META_COLLECTION).doc('seed_v1');
-    const seedSnap = await seedRef.get();
-    if (seedSnap.exists) {
-      return;
-    }
-
-    const usersCol = this.db.collection('users');
-    const payoutsCol = this.db.collection(PAYOUT_REQUESTS_COLLECTION);
-    const depositsCol = this.db.collection(DEPOSIT_REQUESTS_COLLECTION);
     const roomsCol = this.db.collection('rooms');
-    const referralsCol = this.db.collection('referrals');
     const botConfigRef = this.db.collection(BOT_CONFIG_COLLECTION).doc('default');
-    const chainRef = this.db.collection(ADMIN_AUDIT_META_COLLECTION).doc('chain');
-    const auditCol = this.db.collection(ADMIN_AUDIT_LOGS_COLLECTION);
+    const nowIso = new Date().toISOString();
 
-    const seedUsers: AdminManagedUserRecord[] = [
-      {
-        uid: 'tg_8842109',
-        telegramUserId: 8842109,
-        displayName: 'Abebe Bikila',
-        username: 'abebe_adey',
-        role: 'admin',
-        accountStatus: 'active',
-        phoneVerified: true,
-        maskedPhone: '+25191****44',
-        language: 'am',
-        demoBalanceEtb: 15.0,
-        gamesPlayed: 14,
-        gamesWon: 4,
-        referralCode: 'ADEY-8842',
-        referralsCount: 3,
-        lastActiveAt: '2026-03-30T09:15:00Z',
-        registeredAt: '2026-03-01T10:00:00Z',
-        walletLedger: [
-          {
-            id: 'tx-1001',
-            type: 'deposit_demo',
-            amountEtb: 200,
-            description: 'Initial Telebirr Sandbox Credit',
-            reference: 'ADB-902411',
-            timestamp: '2026-03-01 10:05 UTC',
-            status: 'demo_completed',
-          },
-          {
-            id: 'tx-1002',
-            type: 'bingo_win',
-            amountEtb: 60,
-            description: 'Round #4820 Win (Card #108)',
-            reference: 'ADB-903812',
-            timestamp: '2026-03-28 14:22 UTC',
-            status: 'demo_completed',
-          },
-          {
-            id: 'tx-1003',
-            type: 'card_entry',
-            amountEtb: -10,
-            description: 'Adey Main Hall Entry (1 Card)',
-            reference: 'ADB-904009',
-            timestamp: '2026-03-29 18:10 UTC',
-            status: 'demo_completed',
-          },
-        ],
-      },
-      {
-        uid: 'tg_7777777',
-        telegramUserId: 7777777,
-        displayName: 'Dawit Mekonnen',
-        username: 'dawit_m',
-        role: 'player',
-        accountStatus: 'active',
-        phoneVerified: true,
-        maskedPhone: '+25192****81',
-        language: 'am',
-        demoBalanceEtb: 185.0,
-        gamesPlayed: 9,
-        gamesWon: 2,
-        referralCode: 'ADEY-7777',
-        referredByCode: 'ADEY-8842',
-        referralsCount: 1,
-        lastActiveAt: '2026-03-30T08:50:00Z',
-        registeredAt: '2026-03-10T14:20:00Z',
-        walletLedger: [
-          {
-            id: 'tx-2001',
-            type: 'deposit_demo',
-            amountEtb: 150,
-            description: 'CBE Birr Demo Top-up',
-            reference: 'ADB-811204',
-            timestamp: '2026-03-10 14:25 UTC',
-            status: 'demo_completed',
-          },
-          {
-            id: 'tx-2002',
-            type: 'bingo_win',
-            amountEtb: 55,
-            description: 'Adey Fast 30 Win (Card #42)',
-            reference: 'ADB-812990',
-            timestamp: '2026-03-27 19:40 UTC',
-            status: 'demo_completed',
-          },
-          {
-            id: 'tx-2003',
-            type: 'card_entry',
-            amountEtb: -20,
-            description: 'Adey Main Hall Entry (2 Cards)',
-            reference: 'ADB-813102',
-            timestamp: '2026-03-29 20:15 UTC',
-            status: 'demo_completed',
-          },
-        ],
-      },
-      {
-        uid: 'tg_6543210',
-        telegramUserId: 6543210,
-        displayName: 'Meron Tadesse',
-        username: 'meron_et',
-        role: 'player',
-        accountStatus: 'active',
-        phoneVerified: true,
-        maskedPhone: '+25193****19',
-        language: 'en',
-        demoBalanceEtb: 320.0,
-        gamesPlayed: 22,
-        gamesWon: 6,
-        referralCode: 'ADEY-6543',
-        referredByCode: 'ADEY-8842',
-        referralsCount: 2,
-        lastActiveAt: '2026-03-30T07:30:00Z',
-        registeredAt: '2026-03-12T11:30:00Z',
-        walletLedger: [
-          {
-            id: 'tx-3001',
-            type: 'deposit_demo',
-            amountEtb: 250,
-            description: 'Telebirr Demo Deposit',
-            reference: 'ADB-700112',
-            timestamp: '2026-03-12 11:35 UTC',
-            status: 'demo_completed',
-          },
-          {
-            id: 'tx-3002',
-            type: 'bingo_win',
-            amountEtb: 90,
-            description: 'Adey Gold Lounge Win (Card #311)',
-            reference: 'ADB-709441',
-            timestamp: '2026-03-29 21:00 UTC',
-            status: 'demo_completed',
-          },
-        ],
-      },
-      {
-        uid: 'tg_5123999',
-        telegramUserId: 5123999,
-        displayName: 'Yonas Kebede',
-        username: 'yonas_bingo',
-        role: 'player',
-        accountStatus: 'suspended',
-        suspensionReason: 'Automated duplicate claim rate-limit violation (Demo Audit)',
-        phoneVerified: false,
-        maskedPhone: 'Unverified',
-        language: 'am',
-        demoBalanceEtb: 40.0,
-        gamesPlayed: 3,
-        gamesWon: 0,
-        referralCode: 'ADEY-5123',
-        referralsCount: 0,
-        lastActiveAt: '2026-03-25T16:00:00Z',
-        registeredAt: '2026-03-20T09:00:00Z',
-        walletLedger: [],
-      },
-    ];
-
-    const seedPayouts: AdminPayoutOrder[] = [
-      {
-        requestId: 'PO-2026-901',
-        uid: 'tg_7777777',
-        userDisplayName: 'Dawit Mekonnen',
-        telegramUserId: 7777777,
-        requestedAmountEtb: 75.0,
-        requestDate: '2026-03-30 08:15 UTC',
-        paymentMethod: 'Telebirr (Demo)',
-        destinationMasked: '+25192****81',
-        status: 'Pending',
-        reviewNotes: 'Awaiting administrator verification of Demo win history',
-        demoSandboxOnly: true,
-        auditTrail: [
-          {
-            timestamp: '2026-03-30T08:15:00Z',
-            fromStatus: 'Created',
-            toStatus: 'Pending',
-            reviewedBy: 'system_demo_queue',
-            notes: 'Demo payout request submitted by player',
-          },
-        ],
-      },
-      {
-        requestId: 'PO-2026-902',
-        uid: 'tg_6543210',
-        userDisplayName: 'Meron Tadesse',
-        telegramUserId: 6543210,
-        requestedAmountEtb: 120.0,
-        requestDate: '2026-03-29 21:40 UTC',
-        paymentMethod: 'CBE Birr (Demo)',
-        destinationMasked: '+25193****19',
-        status: 'Under Review',
-        reviewNotes: 'Verifying round #4819 winning card #311',
-        reviewedBy: 'Abebe Bikila (Lead Admin)',
-        reviewedAt: '2026-03-30T07:10:00Z',
-        demoSandboxOnly: true,
-        auditTrail: [
-          {
-            timestamp: '2026-03-29T21:40:00Z',
-            fromStatus: 'Created',
-            toStatus: 'Pending',
-            reviewedBy: 'system_demo_queue',
-            notes: 'Demo payout request submitted by player',
-          },
-          {
-            timestamp: '2026-03-30T07:10:00Z',
-            fromStatus: 'Pending',
-            toStatus: 'Under Review',
-            reviewedBy: 'Abebe Bikila (Lead Admin)',
-            notes: 'Verifying round #4819 winning card #311',
-          },
-        ],
-      },
-      {
-        requestId: 'PO-2026-903',
-        uid: 'tg_8842109',
-        userDisplayName: 'Abebe Bikila',
-        telegramUserId: 8842109,
-        requestedAmountEtb: 50.0,
-        requestDate: '2026-03-28 15:20 UTC',
-        paymentMethod: 'Chapa Sandbox (Demo)',
-        destinationMasked: '+25191****44',
-        status: 'Completed',
-        reviewNotes: 'Demo sandbox payout simulation completed',
-        reviewedBy: 'Abebe Bikila (Lead Admin)',
-        reviewedAt: '2026-03-28T16:00:00Z',
-        demoSandboxOnly: true,
-        auditTrail: [
-          {
-            timestamp: '2026-03-28T15:20:00Z',
-            fromStatus: 'Created',
-            toStatus: 'Pending',
-            reviewedBy: 'system_demo_queue',
-            notes: 'Demo payout request created',
-          },
-          {
-            timestamp: '2026-03-28T15:45:00Z',
-            fromStatus: 'Pending',
-            toStatus: 'Approved',
-            reviewedBy: 'Abebe Bikila (Lead Admin)',
-            notes: 'Verified demo win ledger',
-          },
-          {
-            timestamp: '2026-03-28T16:00:00Z',
-            fromStatus: 'Approved',
-            toStatus: 'Completed',
-            reviewedBy: 'Abebe Bikila (Lead Admin)',
-            notes: 'Demo sandbox payout simulation completed',
-          },
-        ],
-      },
-    ];
-
-    const seedDeposits: AdminDepositRequest[] = [
-      {
-        depositId: 'DEP-2026-401',
-        uid: 'tg_7777777',
-        userDisplayName: 'Dawit Mekonnen',
-        telegramUserId: 7777777,
-        amountEtb: 100.0,
-        requestDate: '2026-03-30 08:45 UTC',
-        provider: 'Telebirr (Demo)',
-        referenceCode: 'ADB-DEP-88219',
-        status: 'Pending',
-        reviewNotes: 'Demo deposit credit awaiting admin confirmation',
-        demoSandboxOnly: true,
-      },
-      {
-        depositId: 'DEP-2026-400',
-        uid: 'tg_6543210',
-        userDisplayName: 'Meron Tadesse',
-        telegramUserId: 6543210,
-        amountEtb: 200.0,
-        requestDate: '2026-03-29 19:10 UTC',
-        provider: 'CBE Birr (Demo)',
-        referenceCode: 'ADB-DEP-64109',
-        status: 'Approved',
-        reviewNotes: 'Approved in Demo Sandbox mode',
-        reviewedBy: 'Abebe Bikila (Lead Admin)',
-        reviewedAt: '2026-03-29T19:25:00Z',
-        demoSandboxOnly: true,
-      },
-    ];
-
-    const seedRooms: AdminRoomConfigRecord[] = [
-      {
-        id: 'adey-main',
-        nameAm: 'አደይ ዋና አዳራሽ',
-        nameEn: 'Adey Main Hall',
-        cardPriceEtb: 10,
-        maxCardsPerRoom: 600,
-        maxCardsPerPlayer: 4,
-        lobbyCountdownSeconds: 60,
-        minPlayers: 3,
-        activePlayers: 42,
-        status: 'live',
-        updatedAt: '2026-03-30T08:00:00Z',
-      },
-      {
-        id: 'adey-fast',
-        nameAm: 'አደይ ፈጣን 30',
-        nameEn: 'Adey Fast 30',
-        cardPriceEtb: 10,
-        maxCardsPerRoom: 600,
-        maxCardsPerPlayer: 4,
-        lobbyCountdownSeconds: 60,
-        minPlayers: 3,
-        activePlayers: 27,
-        status: 'open',
-        updatedAt: '2026-03-30T08:00:00Z',
-      },
-      {
-        id: 'adey-vip',
-        nameAm: 'አደይ ወርቃማ ክፍል',
-        nameEn: 'Adey Gold Lounge',
-        cardPriceEtb: 20,
-        maxCardsPerRoom: 600,
-        maxCardsPerPlayer: 4,
-        lobbyCountdownSeconds: 60,
-        minPlayers: 3,
-        activePlayers: 19,
-        status: 'starting',
-        updatedAt: '2026-03-30T08:00:00Z',
-      },
-    ];
-
-    const seedReferrals: AdminReferralRecord[] = [
-      {
-        id: 'ref-1001',
-        inviterUid: 'tg_8842109',
-        inviterName: 'Abebe Bikila',
-        inviterTelegramId: 8842109,
-        inviteeUid: 'tg_7777777',
-        inviteeName: 'Dawit Mekonnen',
-        inviteeHandle: '@dawit_m',
-        joinedAt: '2026-03-10 14:20 UTC',
-        status: 'qualified',
-        inviterBonusEtb: 20,
-        inviteeBonusEtb: 0,
-      },
-      {
-        id: 'ref-1002',
-        inviterUid: 'tg_8842109',
-        inviterName: 'Abebe Bikila',
-        inviterTelegramId: 8842109,
-        inviteeUid: 'tg_6543210',
-        inviteeName: 'Meron Tadesse',
-        inviteeHandle: '@meron_et',
-        joinedAt: '2026-03-12 11:30 UTC',
-        status: 'qualified',
-        inviterBonusEtb: 20,
-        inviteeBonusEtb: 0,
-      },
-    ];
-
-    for (const u of seedUsers) {
-      const uRef = usersCol.doc(u.uid);
-      const snap = await uRef.get();
-      if (!snap.exists) {
-        await uRef.set({
-          ...u,
-          telegramUserIdStr: u.uid,
-          updatedAt: FieldValue.serverTimestamp(),
-        });
-      }
-    }
-
-    for (const p of seedPayouts) {
-      const pRef = payoutsCol.doc(p.requestId);
-      const snap = await pRef.get();
-      if (!snap.exists) {
-        await pRef.set(p);
-      }
-    }
-
-    for (const d of seedDeposits) {
-      const dRef = depositsCol.doc(d.depositId);
-      const snap = await dRef.get();
-      if (!snap.exists) {
-        await dRef.set(d);
-      }
-    }
-
-    for (const r of seedRooms) {
-      const rRef = roomsCol.doc(r.id);
+    for (const def of AUTHORITATIVE_PRODUCTION_ROOMS) {
+      const rRef = roomsCol.doc(def.id);
       const snap = await rRef.get();
       if (!snap.exists) {
         await rRef.set({
-          roomId: r.id,
-          id: r.id,
-          nameAm: r.nameAm,
-          nameEn: r.nameEn,
-          cardPrice: r.cardPriceEtb,
-          cardPriceEtb: r.cardPriceEtb,
-          maxCardsPerRoom: r.maxCardsPerRoom,
-          maxCardsPerPlayer: r.maxCardsPerPlayer,
-          minPlayers: r.minPlayers,
-          countdownSeconds: r.lobbyCountdownSeconds,
-          lobbyCountdownSeconds: r.lobbyCountdownSeconds,
-          activePlayersCount: r.activePlayers,
-          activePlayers: r.activePlayers,
+          roomId: def.id,
+          id: def.id,
+          nameAm: def.nameAm,
+          nameEn: def.nameEn,
+          cardPrice: def.cardPrice,
+          cardPriceEtb: def.cardPrice,
+          maxPlayersPerRoom: def.maxPlayersPerRoom,
+          maxCardsPerRoom: def.maxCardsPerRoom,
+          maxCardsPerPlayer: def.maxCardsPerPlayer,
+          minPlayers: def.minPlayers,
+          countdownSeconds: def.countdownSeconds,
+          lobbyCountdownSeconds: def.countdownSeconds,
+          activePlayersCount: 0,
+          activePlayers: 0,
+          confirmedPlayersCount: 0,
+          verifiedPaidEntriesCount: 0,
+          availableSpaces: def.maxPlayersPerRoom,
           reservedCardsCount: 0,
-          adminStatus: r.status,
-          status: mapAdminStatusToRoomStatus(r.status),
-          currentGameId: `game_${r.id}_live`,
-          updatedAt: r.updatedAt,
+          totalCardsSold: 0,
+          totalCollectedEtb: 0,
+          adeyShareEtb: 0,
+          winnersPrizePoolEtb: 0,
+          roundNumber: 1,
+          roundStartedAtMs: 0,
+          registrationDeadlineMs: 0,
+          nextBallDrawAtMs: 0,
+          intermissionEndsAtMs: 0,
+          extendedRegistrationCount: 0,
+          scheduleNoticeAm: '',
+          scheduleNoticeEn: '',
+          adminStatus: 'open',
+          status: 'countdown',
+          lifecycleStage: 'WAITING',
+          currentGameId: `game_${def.id}_live`,
+          updatedAt: nowIso,
         });
-      }
-    }
-
-    for (const ref of seedReferrals) {
-      const refDoc = referralsCol.doc(ref.id);
-      const snap = await refDoc.get();
-      if (!snap.exists) {
-        await refDoc.set(ref);
       }
     }
 
@@ -538,69 +157,24 @@ export class PersistentAdminService {
         customWelcomeEn: null,
         buttonLabels: { ...DEFAULT_BOT_BUTTON_LABELS },
         stats: {
-          totalUpdatesProcessed: 12,
-          callbacksHandled: 7,
-          duplicateCallbacksBlocked: 1,
+          totalUpdatesProcessed: 0,
+          callbacksHandled: 0,
+          duplicateCallbacksBlocked: 0,
           announcementsSent: 0,
         },
-        updatedAt: new Date().toISOString(),
-        updatedBy: 'system_seed',
+        updatedAt: nowIso,
+        updatedBy: 'system_init',
       });
     } else if (isDisallowedMiniAppPreviewUrl(String(botCfgSnap.get('miniAppUrl') || ''))) {
       await botConfigRef.set(
         {
           miniAppUrl: DEFAULT_DEPLOYED_MINI_APP_URL,
-          updatedAt: new Date().toISOString(),
+          updatedAt: nowIso,
           updatedBy: 'system_url_heal',
         },
         { merge: true }
       );
     }
-
-    const chainSnap = await chainRef.get();
-    if (!chainSnap.exists) {
-      const nowIso = '2026-03-30T07:10:00.000Z';
-      const prevHash = 'GENESIS_ADEYBINGO_AUDIT_CHAIN_V1';
-      const entryHash = computeAuditEntryHash({
-        sequence: 1,
-        timestamp: nowIso,
-        adminUid: 'tg_8842109',
-        action: 'PAYOUT_STATUS_REVIEWED',
-        targetId: 'PO-2026-902',
-        summary: 'Moved payout request PO-2026-902 to Under Review',
-        previousValue: 'Pending',
-        newValue: 'Under Review',
-        notes: 'Checking winning round #game_adey-main_live card #108',
-        prevHash,
-      });
-      const initialAudit: AdminAuditRecord = {
-        id: 'AUD-0001',
-        sequence: 1,
-        timestamp: nowIso,
-        adminUid: 'tg_8842109',
-        adminName: 'Abebe Bikila (Lead Admin)',
-        adminTelegramId: 8842109,
-        action: 'PAYOUT_STATUS_REVIEWED',
-        targetId: 'PO-2026-902',
-        summary: 'Moved payout request PO-2026-902 to Under Review',
-        previousValue: 'Pending',
-        newValue: 'Under Review',
-        notes: 'Checking winning round #game_adey-main_live card #108',
-        prevHash,
-        entryHash,
-      };
-      await auditCol.doc(initialAudit.id).set(initialAudit);
-      await chainRef.set({
-        sequence: 1,
-        lastHash: entryHash,
-        updatedAt: nowIso,
-      });
-    }
-
-    await seedRef.set({
-      seededAt: new Date().toISOString(),
-      version: 1,
-    });
   }
 
   /**
@@ -1120,7 +694,7 @@ export class PersistentAdminService {
     adminActor: VerifiedSessionActor;
   }): Promise<{
     ok: boolean;
-    reason?: 'payout_not_found' | 'invalid_status' | 'already_finalized';
+    reason?: 'payout_not_found' | 'invalid_status' | 'already_finalized' | 'invalid_transition';
     payout?: AdminPayoutOrder;
     refundedBalanceEtb?: number;
     auditRecord?: AdminAuditRecord;
@@ -1168,6 +742,16 @@ export class PersistentAdminService {
         return { ok: false, reason: 'already_finalized' as const };
       }
 
+      const allowedNextByPrev: Record<string, PayoutOrderStatus[]> = {
+        Pending: ['Under Review', 'Approved', 'Rejected'],
+        'Under Review': ['Approved', 'Rejected'],
+        Approved: ['Completed', 'Rejected'],
+      };
+      const validNext = allowedNextByPrev[prevStatus] || [];
+      if (!validNext.includes(params.nextStatus)) {
+        return { ok: false, reason: 'invalid_transition' as const };
+      }
+
       const cleanNotes =
         params.reviewNotes.trim() || `Status updated to ${params.nextStatus} (Demo Sandbox)`;
       const nowIso = new Date().toISOString();
@@ -1203,7 +787,7 @@ export class PersistentAdminService {
             ? Number(botPlayerSnap.get('demoBalanceEtb') ?? 0)
             : 0;
         const refundAmt = Number(order.requestedAmountEtb);
-        const nextBalance = Math.min(100000, Number((currentBalance + refundAmt).toFixed(2)));
+        const nextBalance = Math.min(1_000_000, Number((currentBalance + refundAmt).toFixed(2)));
         refundedBalanceEtb = nextBalance;
 
         if (userSnap.exists) {
@@ -1288,7 +872,7 @@ export class PersistentAdminService {
     adminActor: VerifiedSessionActor;
   }): Promise<{
     ok: boolean;
-    reason?: 'deposit_not_found' | 'invalid_status' | 'already_finalized';
+    reason?: 'deposit_not_found' | 'invalid_status' | 'already_finalized' | 'invalid_transition';
     deposit?: AdminDepositRequest;
     creditedBalanceEtb?: number;
     auditRecord?: AdminAuditRecord;
@@ -1329,6 +913,9 @@ export class PersistentAdminService {
       if (prevStatus === 'Approved' || prevStatus === 'Rejected') {
         return { ok: false, reason: 'already_finalized' as const };
       }
+      if (params.nextStatus !== 'Approved' && params.nextStatus !== 'Rejected') {
+        return { ok: false, reason: 'invalid_transition' as const };
+      }
 
       const cleanNotes =
         params.reviewNotes.trim() || `Deposit ${params.nextStatus} (Demo Sandbox)`;
@@ -1353,7 +940,7 @@ export class PersistentAdminService {
             ? Number(botPlayerSnap.get('demoBalanceEtb') ?? 0)
             : 0;
         const creditAmt = Number(dep.amountEtb);
-        const nextBalance = Math.min(100000, Number((currentBalance + creditAmt).toFixed(2)));
+        const nextBalance = Math.min(1_000_000, Number((currentBalance + creditAmt).toFixed(2)));
         creditedBalanceEtb = nextBalance;
 
         if (userSnap.exists) {
@@ -1690,9 +1277,9 @@ export class PersistentAdminService {
       },
       announcements,
       stats: {
-        totalUpdatesProcessed: Number(cfgData.stats?.totalUpdatesProcessed ?? 12),
-        callbacksHandled: Number(cfgData.stats?.callbacksHandled ?? 7),
-        duplicateCallbacksBlocked: Number(cfgData.stats?.duplicateCallbacksBlocked ?? 1),
+        totalUpdatesProcessed: Number(cfgData.stats?.totalUpdatesProcessed ?? 0),
+        callbacksHandled: Number(cfgData.stats?.callbacksHandled ?? 0),
+        duplicateCallbacksBlocked: Number(cfgData.stats?.duplicateCallbacksBlocked ?? 0),
         announcementsSent: announcements.length,
       },
       updatedAt: String(cfgData.updatedAt || new Date().toISOString()),
@@ -1984,10 +1571,11 @@ export class PersistentAdminService {
       confirmedPlayersCount,
       Number(primaryRoom?.totalCardsSold ?? primaryRoom?.reservedCardsCount ?? confirmedPlayersCount)
     );
+    const primaryCardPrice = Math.max(1, Number(primaryRoom?.cardPriceEtb ?? 10));
     const financials = calculateAuthoritativeGameFinancials(
       confirmedPlayersCount,
       totalCardsSold,
-      10
+      primaryCardPrice
     );
 
     const pendingDeposits = allDeposits.filter((d) => d.status === 'Pending');

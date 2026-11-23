@@ -17,6 +17,7 @@ import {
   resolveAdminSessionSecret,
 } from './auth.ts';
 import {
+  classifyCustomTokenError,
   createTelegramCustomToken,
   getAdminDb,
   getTelegramFirebaseUid,
@@ -417,12 +418,13 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
         username: tgUser.username,
         languageCode: tgUser.language_code,
       });
-    } catch {
+    } catch (mintErr) {
+      const classified = classifyCustomTokenError(mintErr);
       sendError(
         res,
         503,
-        'token_mint_failed',
-        'Unable to issue authentication token at this time.'
+        classified.code,
+        classified.message
       );
       return;
     }
@@ -1277,6 +1279,27 @@ export function createBotCommandHandler(deps: BotCommandHandlerDeps = {}) {
         ? body.updateId
         : undefined;
 
+    const rawContact =
+      body.contact && typeof body.contact === 'object' && !Array.isArray(body.contact)
+        ? (body.contact as Record<string, unknown>)
+        : undefined;
+    const contact =
+      rawContact && typeof rawContact.phone_number === 'string' && rawContact.phone_number.trim()
+        ? {
+            phone_number: rawContact.phone_number.trim().slice(0, 32),
+            first_name:
+              typeof rawContact.first_name === 'string'
+                ? rawContact.first_name.trim().slice(0, 80)
+                : caller.displayName,
+            // If client supplies contact.user_id, pass it through so handleIncomingUpdate rejects mismatched user_id;
+            // otherwise bind to the cryptographically verified caller.telegramId.
+            user_id:
+              rawContact.user_id !== undefined && Number.isInteger(Number(rawContact.user_id))
+                ? Number(rawContact.user_id)
+                : caller.telegramId,
+          }
+        : undefined;
+
     const store = createFirestoreTelegramStore(db);
     const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 86400);
     const botService = new PersistentTelegramBotService(
@@ -1295,6 +1318,7 @@ export function createBotCommandHandler(deps: BotCommandHandlerDeps = {}) {
       username: caller.uid,
       text,
       callbackData,
+      ...(contact ? { contact } : {}),
     });
 
     if (

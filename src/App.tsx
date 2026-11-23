@@ -304,7 +304,9 @@ export default function App() {
     try {
       const token = await getActiveBearerToken();
       const [serverRooms, detail] = await Promise.all([
-        fetchRoomsFromServerApi().catch(() => []),
+        fetchRoomsFromServerApi((serverNowMs) => {
+          serverClockOffsetMsRef.current = serverNowMs - Date.now();
+        }).catch(() => []),
         fetchRoomDetailFromServerApi(roomIdToLoad).catch(() => null),
       ]);
 
@@ -692,11 +694,21 @@ export default function App() {
                 : 'Joined via friend invite! Your 15.00 ETB initial balance is ready.'
             );
           }
+          let fbAuthNote = '';
           if (d.customToken) {
-            await signInWithCustomToken(auth, d.customToken).catch(() => {});
+            try {
+              await signInWithCustomToken(auth, d.customToken);
+            } catch (fbErr) {
+              const errCode =
+                fbErr && typeof fbErr === 'object' && 'code' in fbErr
+                  ? String((fbErr as { code?: unknown }).code || 'custom_token_failed')
+                  : 'custom_token_failed';
+              console.warn('Firebase signInWithCustomToken fallback to API polling:', errCode);
+              fbAuthNote = ` (Polling sync: ${errCode})`;
+            }
           }
           setTelegramBackendStatus(
-            `✓ Authenticated on Server: TG User #${verifiedId || d.telegramUser?.id || ''}`
+            `✓ Authenticated on Server: TG User #${verifiedId || d.telegramUser?.id || ''}${fbAuthNote}`
           );
           await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoomId)]);
         } else {
@@ -767,28 +779,34 @@ export default function App() {
           (sum, p) => sum + (Array.isArray(p.cardIds) ? p.cardIds.length : 0),
           0
         );
-        const financials = calculateAuthoritativeGameFinancials(confirmedCount, totalSold, 10);
         setRooms((prev) =>
-          prev.map((rm) =>
-            rm.id === activeRoomId
-              ? {
-                  ...rm,
-                  activePlayers: financials.confirmedPlayersCount,
-                  confirmedPlayersCount: financials.confirmedPlayersCount,
-                  verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
-                  availableSpaces: financials.availableSpaces,
-                  totalCardsSold: financials.totalCardsSold,
-                  totalCollectedEtb: financials.totalCollectedEtb,
-                  adeyShareEtb: financials.adeyShareEtb,
-                  winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
-                }
-              : rm
-          )
+          prev.map((rm) => {
+            if (rm.id !== activeRoomId) return rm;
+            const roomPrice = Number(rm.cardPrice || DEFAULT_GAME_RULES.defaultCardPrice);
+            const financials = calculateAuthoritativeGameFinancials(
+              confirmedCount,
+              totalSold,
+              roomPrice
+            );
+            return {
+              ...rm,
+              activePlayers: financials.confirmedPlayersCount,
+              confirmedPlayersCount: financials.confirmedPlayersCount,
+              verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+              availableSpaces: financials.availableSpaces,
+              totalCardsSold: financials.totalCardsSold,
+              totalCollectedEtb: financials.totalCollectedEtb,
+              adeyShareEtb: financials.adeyShareEtb,
+              winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+            };
+          })
         );
       },
       (roomDoc) => {
+        const nextStatus = roomDoc.status || 'countdown';
+        const prevStatus = prevRoomStatusRef.current;
         if (
-          roomDoc.status === 'countdown' &&
+          nextStatus === 'countdown' &&
           typeof roomDoc.registrationDeadlineMs === 'number' &&
           roomDoc.registrationDeadlineMs > 0
         ) {
@@ -803,7 +821,7 @@ export default function App() {
             )
           );
         } else if (typeof roomDoc.countdownSeconds === 'number') {
-          if (roomDoc.status !== 'countdown') roomDeadlineMsRef.current = 0;
+          if (nextStatus !== 'countdown') roomDeadlineMsRef.current = 0;
           setCountdown(roomDoc.countdownSeconds);
         }
         if (typeof roomDoc.cardPrice === 'number' && roomDoc.cardPrice > 0) {
@@ -816,14 +834,15 @@ export default function App() {
         const financials = calculateAuthoritativeGameFinancials(
           confirmedPlayers,
           totalCards,
-          Number(roomDoc.cardPrice || 10)
+          Number(roomDoc.cardPrice || DEFAULT_GAME_RULES.defaultCardPrice)
         );
         setRooms((prev) =>
           prev.map((rm) =>
             rm.id === activeRoomId
               ? {
                   ...rm,
-                  status: roomDoc.status || rm.status,
+                  cardPrice: Number(roomDoc.cardPrice || rm.cardPrice),
+                  status: nextStatus,
                   lifecycleStage: roomDoc.lifecycleStage || rm.lifecycleStage,
                   activePlayers: financials.confirmedPlayersCount,
                   confirmedPlayersCount: financials.confirmedPlayersCount,
@@ -843,15 +862,28 @@ export default function App() {
               : rm
           )
         );
+        if (prevStatus !== nextStatus) {
+          void hydrateRoomState(activeRoomId);
+        }
       },
       (connState) => {
         setFirestoreConnected(connState === 'online');
-      }
+      },
+      () => serverClockOffsetMsRef.current
     );
 
     const unsubGame = subscribeToGameState(`game_${activeRoomId}_live`, (liveGame) => {
       if (Array.isArray(liveGame.calledNumbers)) {
         setCalls(liveGame.calledNumbers);
+      }
+      if (
+        liveGame.status === 'completed' &&
+        Array.isArray(liveGame.winners) &&
+        liveGame.winners.length > 0 &&
+        prevRoomStatusRef.current !== 'completed'
+      ) {
+        void hydrateRoomState(activeRoomId);
+        void hydratePlayerState();
       }
     });
 
@@ -871,7 +903,7 @@ export default function App() {
       unsubGame();
       unsubProfile();
     };
-  }, [fbUser, activeRoomId, hydrateRoomState]);
+  }, [fbUser, activeRoomId, hydratePlayerState, hydrateRoomState]);
 
   // Mirror game state to document.body.dataset.state
   useEffect(() => {
@@ -885,7 +917,8 @@ export default function App() {
     }
   }, [screen, winnerModalOpen]);
 
-  // 2B. Real-time Server-Sent Events (SSE) push sync & visibility/reconnect re-hydration
+  // 2B. Vercel-compatible real-time synchronization: foreground/visibility/online re-hydration
+  // plus authenticated player wallet & referral polling (paired with Firestore onSnapshot listeners above).
   useEffect(() => {
     const onForegroundSync = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
@@ -896,73 +929,49 @@ export default function App() {
     window.addEventListener('online', onForegroundSync);
     document.addEventListener('visibilitychange', onForegroundSync);
 
-    let es: EventSource | null = null;
-    if (activeSessionToken && typeof window !== 'undefined' && typeof EventSource !== 'undefined') {
-      try {
-        es = new EventSource(
-          `/api/realtime/stream?token=${encodeURIComponent(activeSessionToken)}`
-        );
-        es.addEventListener('sync', (ev) => {
-          try {
-            const payload = JSON.parse((ev as MessageEvent).data || '{}') as {
-              serverNowMs?: number;
-            };
-            if (typeof payload.serverNowMs === 'number') {
-              serverClockOffsetMsRef.current = payload.serverNowMs - Date.now();
-            }
-          } catch {
-            // Ignore malformed event
-          }
-          void hydrateRoomState(activeRoomId);
-          void hydratePlayerState();
-        });
-        es.addEventListener('room_update', (ev) => {
-          try {
-            const payload = JSON.parse((ev as MessageEvent).data || '{}') as {
-              roomId?: string;
-              serverNowMs?: number;
-            };
-            if (typeof payload.serverNowMs === 'number') {
-              serverClockOffsetMsRef.current = payload.serverNowMs - Date.now();
-            }
-            if (!payload.roomId || payload.roomId === activeRoomId) {
-              void hydrateRoomState(activeRoomId);
-            }
-          } catch {
-            void hydrateRoomState(activeRoomId);
-          }
-        });
-        es.addEventListener('wallet_update', () => {
-          void hydratePlayerState();
-        });
-        es.addEventListener('heartbeat', (ev) => {
-          try {
-            const payload = JSON.parse((ev as MessageEvent).data || '{}') as {
-              serverNowMs?: number;
-            };
-            if (typeof payload.serverNowMs === 'number') {
-              serverClockOffsetMsRef.current = payload.serverNowMs - Date.now();
-            }
-          } catch {
-            // Ignore
-          }
-        });
-      } catch {
-        // Fallback polling remains active when SSE is unavailable (e.g., serverless static deploy)
-      }
-    }
+    const playerSyncPoll =
+      activeSessionToken || fbUser
+        ? window.setInterval(() => {
+            if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+            void hydratePlayerState();
+          }, 6000)
+        : null;
 
     return () => {
       window.removeEventListener('focus', onForegroundSync);
       window.removeEventListener('online', onForegroundSync);
       document.removeEventListener('visibilitychange', onForegroundSync);
-      es?.close();
+      if (playerSyncPoll !== null) {
+        window.clearInterval(playerSyncPoll);
+      }
     };
-  }, [activeRoomId, activeSessionToken, hydratePlayerState, hydrateRoomState]);
+  }, [activeRoomId, activeSessionToken, fbUser, hydratePlayerState, hydrateRoomState]);
+
+  // 2C. Referral deep-link synchronization for returning/cached sessions (e.g. ?start=ADEY-...)
+  useEffect(() => {
+    const rawStart = (user.startParam || '').trim().toUpperCase();
+    if (
+      autoAppliedStartRef.current ||
+      !rawStart ||
+      !/^ADEY-[1-9]\d*$/.test(rawStart) ||
+      referredByCode ||
+      (!activeSessionToken && !fbUser)
+    ) {
+      return;
+    }
+    autoAppliedStartRef.current = true;
+    void submitPlayerWalletAction({ action: 'apply_promo', code: rawStart }).then((res) => {
+      if (res.ok) {
+        void hydratePlayerState();
+      }
+    });
+  }, [activeSessionToken, fbUser, hydratePlayerState, referredByCode, user.startParam]);
 
   // Server-authoritative countdown display computed strictly from server deadline & clock offset
+  // Never decrements locally without an authoritative server registrationDeadlineMs.
   useEffect(() => {
     if (activeRoom.status !== 'countdown') return;
+    let lastZeroHydrateAt = 0;
     const timer = window.setInterval(() => {
       if (roomDeadlineMsRef.current > 0) {
         const remaining = Math.max(
@@ -972,17 +981,13 @@ export default function App() {
           )
         );
         setCountdown(remaining);
-        if (remaining === 0) {
+        if (remaining === 0 && Date.now() - lastZeroHydrateAt >= 1500) {
+          lastZeroHydrateAt = Date.now();
           void hydrateRoomState(activeRoomId);
         }
-      } else {
-        setCountdown((prev) => {
-          if (prev <= 1) {
-            void hydrateRoomState(activeRoomId);
-            return 0;
-          }
-          return prev - 1;
-        });
+      } else if (Date.now() - lastZeroHydrateAt >= 2000) {
+        lastZeroHydrateAt = Date.now();
+        void hydrateRoomState(activeRoomId);
       }
     }, 500);
     return () => window.clearInterval(timer);
@@ -1003,9 +1008,11 @@ export default function App() {
     }
   }, [winnerModalOpen, activeRoom.status]);
 
-  // Auto-Caller interval when enabled in Live Game (only during active live round)
+  // Auto-Caller interval (restricted strictly to verified Admin/Host; regular players receive autonomous server ticks)
   useEffect(() => {
-    if (!autoCallerActive || winnerModalOpen || activeRoom.status !== 'live') return;
+    if (!isVerifiedAdmin || !autoCallerActive || winnerModalOpen || activeRoom.status !== 'live') {
+      return;
+    }
     const timer = window.setInterval(() => {
       handleCallNextNumber();
     }, callerIntervalSec * 1000);
@@ -1222,18 +1229,12 @@ export default function App() {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          senderTelegramId: serverVerifiedTelegramId ?? user.id,
-          firstName: user.firstName,
-          lastName: user.lastName || '',
-          username: user.username.replace(/^@/, ''),
-          firebaseUid: fbUser?.uid || `tg_${serverVerifiedTelegramId ?? user.id}`,
           text: '',
           contact:
             method === 'telegram_contact'
               ? {
                   phone_number: cleanedPhone,
                   first_name: user.firstName,
-                  user_id: serverVerifiedTelegramId ?? user.id,
                 }
               : null,
         }),

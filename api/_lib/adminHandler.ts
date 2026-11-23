@@ -645,7 +645,7 @@ export function createAdminPayoutReviewHandler(deps: AdminHandlerDeps = {}) {
       const status =
         result.reason === 'payout_not_found'
           ? 404
-          : result.reason === 'already_finalized'
+          : result.reason === 'already_finalized' || result.reason === 'invalid_transition'
             ? 409
             : 400;
       sendError(
@@ -713,7 +713,7 @@ export function createAdminDepositReviewHandler(deps: AdminHandlerDeps = {}) {
       const status =
         result.reason === 'deposit_not_found'
           ? 404
-          : result.reason === 'already_finalized'
+          : result.reason === 'already_finalized' || result.reason === 'invalid_transition'
             ? 409
             : 400;
       sendError(
@@ -1060,7 +1060,79 @@ export function createAdminReconcileInitialCreditHandler(deps: AdminHandlerDeps 
 }
 
 /**
- * Consolidated router for all 17 `/api/admin/*` endpoints.
+ * GET /api/admin/audit/rooms
+ * Non-destructive validation of room counts, reserved cards, cardPrice, and financials against subcollections.
+ */
+export function createAdminAuditRoomsHandler(deps: AdminHandlerDeps = {}) {
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    if (!enforceMethod(req, res, ['GET'])) return;
+    const actor = await requireVerifiedAdminActor(req, res, deps);
+    if (!actor) return;
+    const db = resolveDbOrSend503(res, deps);
+    if (!db) return;
+
+    const rawRoomId = typeof req.query?.roomId === 'string' ? req.query.roomId.trim() : '';
+    const gameStore = createFirestoreGameStore(db);
+    const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300);
+    const gameService = new PersistentGameAuthorityService(gameStore, replayGuard);
+
+    const reports = rawRoomId
+      ? [await gameService.validateRoomIntegrity(rawRoomId)]
+      : await gameService.validateAllRoomsIntegrity();
+    const invalidCount = reports.filter((r) => !r.valid).length;
+    sendJson(res, 200, {
+      ok: true,
+      valid: invalidCount === 0,
+      checkedCount: reports.length,
+      invalidCount,
+      reports,
+    });
+  };
+}
+
+/**
+ * POST /api/admin/audit/rooms/reconcile
+ * Safe, non-destructive reconciliation of room counts, deadlines, and financials from subcollections.
+ */
+export function createAdminReconcileRoomsHandler(deps: AdminHandlerDeps = {}) {
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    if (!enforceMethod(req, res, ['POST'])) return;
+    const actor = await requireVerifiedAdminActor(req, res, deps);
+    if (!actor) return;
+    const db = resolveDbOrSend503(res, deps);
+    if (!db) return;
+
+    const body = await parseJsonBody(req, res, { maxBytes: 8 * 1024, required: false });
+    if (!body) return;
+    const targetRoomId = typeof body.roomId === 'string' ? body.roomId.trim() : '';
+    const gameStore = createFirestoreGameStore(db);
+    const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300);
+    const gameService = new PersistentGameAuthorityService(gameStore, replayGuard);
+
+    const results = targetRoomId
+      ? [await gameService.reconcileRoomState(targetRoomId)]
+      : await gameService.reconcileAllRooms();
+    const failed = results.filter((r) => !r.ok);
+    if (failed.length > 0 && results.length === 1) {
+      sendError(
+        res,
+        failed[0].reason === 'room_not_found' ? 404 : 400,
+        failed[0].reason || 'reconcile_failed',
+        `Cannot reconcile room (${failed[0].reason}).`
+      );
+      return;
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      reconciledCount: results.filter((r) => r.reconciled).length,
+      results,
+    });
+  };
+}
+
+/**
+ * Consolidated router for all `/api/admin/*` endpoints.
  * Preserves every route, method, authentication, RBAC, and dynamic parameter contract.
  */
 export function createAdminRouterHandler(deps: AdminHandlerDeps = {}) {
@@ -1085,6 +1157,8 @@ export function createAdminRouterHandler(deps: AdminHandlerDeps = {}) {
   const settingsHandler = createAdminSettingsHandler(deps);
   const auditInitialCreditsHandler = createAdminAuditInitialCreditsHandler(deps);
   const reconcileInitialCreditHandler = createAdminReconcileInitialCreditHandler(deps);
+  const auditRoomsHandler = createAdminAuditRoomsHandler(deps);
+  const reconcileRoomsHandler = createAdminReconcileRoomsHandler(deps);
 
   return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
     const subRoute = extractSubRoute(req, '/api/admin');
@@ -1120,6 +1194,10 @@ export function createAdminRouterHandler(deps: AdminHandlerDeps = {}) {
         return await auditInitialCreditsHandler(req, res);
       case 'audit/initial-credits/reconcile':
         return await reconcileInitialCreditHandler(req, res);
+      case 'audit/rooms':
+        return await auditRoomsHandler(req, res);
+      case 'audit/rooms/reconcile':
+        return await reconcileRoomsHandler(req, res);
       default:
         break;
     }

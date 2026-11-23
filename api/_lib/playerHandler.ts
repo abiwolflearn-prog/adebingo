@@ -262,15 +262,45 @@ export function createPlayerStateHandler(deps: PlayerStateHandlerDeps = {}) {
       .map((d) => {
         const data = d.data() || {};
         const winningCardId = Number(data.winningCardId ?? 0);
+        const winnersArr = Array.isArray(data.winners)
+          ? (data.winners as Array<Record<string, unknown>>)
+          : [];
+        const myWinnerEntries = winnersArr.filter(
+          (w) => String(w.uid || '') === caller.uid
+        );
+        const myCardIds =
+          myWinnerEntries.length > 0
+            ? myWinnerEntries
+                .map((w) => Number(w.cardId ?? 0))
+                .filter((id) => Number.isInteger(id) && id > 0)
+            : winningCardId > 0
+              ? [winningCardId]
+              : [];
+        const myPrizeFromSplit =
+          myWinnerEntries.length > 0
+            ? Number(
+                myWinnerEntries
+                  .reduce((sum, w) => sum + Number(w.prizeEtb ?? 0), 0)
+                  .toFixed(2)
+              )
+            : undefined;
+        const resolvedEntryFee = Number(
+          data.entryFeeDemo ?? data.cardPrice ?? data.cardPriceEtb ?? 10
+        );
+        const resolvedPrize =
+          myPrizeFromSplit !== undefined
+            ? myPrizeFromSplit
+            : Number(data.demoPrizeEtb ?? data.winnersPrizePoolEtb ?? 0);
+
         return {
           id: String(data.gameId || d.id),
           roomNameAm: String(data.roomNameAm || data.roomId || 'አደይ ዋና አዳራሽ'),
           roomNameEn: String(data.roomNameEn || data.roomId || 'Adey Main Hall'),
           playedAt: String(data.completedAt || toIsoString(data.updatedAt)),
-          cardIds: winningCardId > 0 ? [winningCardId] : [],
-          entryFeeDemo: Number(data.entryFeeDemo ?? 10),
+          cardIds: myCardIds,
+          entryFeeDemo: resolvedEntryFee,
           outcome: 'won' as const,
-          prizeDemo: Number(data.demoPrizeEtb ?? 0),
+          prizeDemo: resolvedPrize,
           callsCount: Array.isArray(data.calledNumbers) ? data.calledNumbers.length : 0,
           patternEn: typeof data.winningPattern === 'string' ? data.winningPattern : undefined,
           patternAm: typeof data.winningPattern === 'string' ? data.winningPattern : undefined,
@@ -834,6 +864,18 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
       if (userSnap.exists) {
         tx.update(userRef, {
           demoBalanceEtb: nextBalanceEtb,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      } else if (botPlayerSnap?.exists) {
+        tx.set(userRef, {
+          uid: caller.uid,
+          telegramUserId: resolvedTgId > 0 ? `tg_${resolvedTgId}` : caller.uid,
+          displayName: caller.displayName,
+          username: String(botPlayerSnap.get('username') || caller.uid),
+          language: botPlayerSnap.get('language') === 'en' ? 'en' : 'am',
+          phoneVerified: Boolean(botPlayerSnap.get('phoneVerified')),
+          demoBalanceEtb: nextBalanceEtb,
+          createdAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         });
       }

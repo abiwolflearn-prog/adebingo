@@ -434,6 +434,65 @@ export function getTelegramFirebaseUid(telegramUserId: number): string {
   return `tg_${telegramUserId}`;
 }
 
+export type CustomTokenErrorCode =
+  | 'iam_sign_blob_permission_denied'
+  | 'invalid_private_key'
+  | 'firebase_admin_unconfigured'
+  | 'token_mint_failed';
+
+/**
+ * Classifies Firebase Admin `createCustomToken` failures into safe diagnostic codes
+ * without ever exposing credentials, private keys, or raw IAM emails.
+ */
+export function classifyCustomTokenError(err: unknown): {
+  code: CustomTokenErrorCode;
+  message: string;
+} {
+  const msg = err instanceof Error ? err.message : String(err || '');
+  const lower = msg.toLowerCase();
+
+  if (
+    lower.includes('iam.serviceaccounts.signblob') ||
+    lower.includes('service account token creator') ||
+    lower.includes('permission_denied') ||
+    lower.includes('failed to determine service account') ||
+    lower.includes('caller does not have permission')
+  ) {
+    return {
+      code: 'iam_sign_blob_permission_denied',
+      message:
+        'Firebase Admin service account lacks IAM Service Account Token Creator (iam.serviceAccounts.signBlob) permission to sign custom tokens.',
+    };
+  }
+  if (
+    lower.includes('invalid_private_key') ||
+    lower.includes('pem') ||
+    lower.includes('asn1') ||
+    lower.includes('decoder routines') ||
+    lower.includes('error:090') ||
+    lower.includes('error:1e0')
+  ) {
+    return {
+      code: 'invalid_private_key',
+      message: 'Firebase Admin private key could not sign custom tokens. Verify PEM formatting.',
+    };
+  }
+  if (
+    lower.includes('credentials are missing') ||
+    lower.includes('missing_credentials') ||
+    lower.includes('credentials are not configured')
+  ) {
+    return {
+      code: 'firebase_admin_unconfigured',
+      message: 'Firebase Admin credentials are not configured on the server.',
+    };
+  }
+  return {
+    code: 'token_mint_failed',
+    message: 'Unable to issue Firebase custom authentication token at this time.',
+  };
+}
+
 /**
  * Mints a Firebase Custom Authentication Token for a server-verified Telegram user,
  * embedding `telegram_verified: true` in custom claims for Firestore Security Rules.

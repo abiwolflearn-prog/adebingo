@@ -1,6 +1,7 @@
+import crypto from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
-import { type AuthBackendDeps, authenticateRequest } from './auth.ts';
+import { type AuthBackendDeps, authenticateRequest, extractBearerToken } from './auth.ts';
 import { getAdminDb } from './firebaseAdmin.ts';
 import { createFirestoreGameStore, PersistentGameAuthorityService } from './gamePersistence.ts';
 import {
@@ -65,6 +66,7 @@ export interface GameHandlerDeps {
   getDb?: () => Firestore;
   authDeps?: AuthBackendDeps;
   limiter?: BoundedRateLimiter;
+  getCronSecret?: () => string | undefined;
 }
 
 export type StartGameHandlerDeps = GameHandlerDeps;
@@ -534,20 +536,130 @@ export function createVerifyWinnerHandler(deps: VerifyWinnerHandlerDeps = {}) {
   };
 }
 
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function extractHeaderString(req: VercelRequest, headerName: string): string | null {
+  const raw = req.headers?.[headerName];
+  if (typeof raw === 'string' && raw.trim() !== '') return raw.trim();
+  if (Array.isArray(raw) && typeof raw[0] === 'string' && raw[0].trim() !== '') {
+    return raw[0].trim();
+  }
+  return null;
+}
+
 /**
- * POST /api/game/tick
- * Persistent idempotent 24/7 scheduler tick endpoint (for Cloud Scheduler / background worker).
+ * GET / POST /api/game/tick
+ * Persistent idempotent 24/7 scheduler tick endpoint (compatible with Vercel Cron GET
+ * and external Cloud Scheduler / admin POST invocations).
+ * Requires either a valid CRON_SECRET (`Authorization: Bearer <CRON_SECRET>` or `x-cron-secret`)
+ * OR a cryptographically verified Administrator token. Fails closed if unauthorized.
  */
 export function createSchedulerTickHandler(deps: GameHandlerDeps = {}) {
   return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
-    if (!enforceMethod(req, res, ['POST'])) return;
+    if (!enforceMethod(req, res, ['GET', 'POST'])) return;
 
-    const body = (await parseJsonBody(req, res, { maxBytes: 8 * 1024, required: false })) || {};
-    const roomId = typeof body.roomId === 'string' && isValidRoomId(body.roomId) ? body.roomId : undefined;
+    const configuredCronSecret = (
+      deps.getCronSecret ? deps.getCronSecret() : process.env.CRON_SECRET
+    )?.trim();
+    const bearerToken = extractBearerToken(req);
+    const cronHeaderToken = extractHeaderString(req, 'x-cron-secret');
+    const providedCronToken = cronHeaderToken || bearerToken;
+
+    let authorizedVia: 'cron_secret' | 'admin_token' | null = null;
+
+    const looksLikeSignedToken = Boolean(
+      bearerToken &&
+        (bearerToken.split('.').length === 2 || bearerToken.split('.').length === 3)
+    );
+
+    if (
+      configuredCronSecret &&
+      configuredCronSecret.length >= 16 &&
+      providedCronToken &&
+      timingSafeEqualStrings(providedCronToken, configuredCronSecret)
+    ) {
+      authorizedVia = 'cron_secret';
+    } else if (!cronHeaderToken && looksLikeSignedToken) {
+      // Fall back to verified admin caller if a Firebase ID token or signed server session token was supplied
+      const caller = await authenticateRequest(req, res, deps.authDeps, {
+        requireAdmin: true,
+      });
+      if (!caller) return;
+      authorizedVia = 'admin_token';
+    } else if (!configuredCronSecret || configuredCronSecret.length < 16) {
+      sendError(
+        res,
+        503,
+        'cron_secret_not_configured',
+        'Scheduler CRON_SECRET is not configured on the server.'
+      );
+      return;
+    } else {
+      sendError(
+        res,
+        401,
+        'invalid_cron_secret',
+        'Valid CRON_SECRET authorization is required to invoke the scheduler tick.'
+      );
+      return;
+    }
+
+    const isPost = (req.method || 'GET').toUpperCase() === 'POST';
+    let body: Record<string, unknown> = {};
+    if (isPost) {
+      const parsed = await parseJsonBody(req, res, { maxBytes: 8 * 1024, required: false });
+      if (!parsed) return;
+      body = parsed;
+    }
+
+    const rawRoomIdQuery = Array.isArray(req.query?.roomId)
+      ? req.query.roomId[0]
+      : req.query?.roomId;
+    const rawRoomId =
+      typeof body.roomId === 'string'
+        ? body.roomId
+        : typeof rawRoomIdQuery === 'string'
+          ? rawRoomIdQuery
+          : undefined;
+    if (rawRoomId !== undefined && rawRoomId !== '' && !isValidRoomId(rawRoomId)) {
+      sendError(res, 400, 'invalid_room_id', 'Invalid roomId parameter.');
+      return;
+    }
+    const roomId = rawRoomId && rawRoomId !== '' ? rawRoomId : undefined;
+
+    const rawWorkerQuery = Array.isArray(req.query?.workerId)
+      ? req.query.workerId[0]
+      : req.query?.workerId;
     const workerId =
       typeof body.workerId === 'string' && body.workerId.trim()
         ? body.workerId.trim().slice(0, 64)
-        : 'cron_worker';
+        : typeof rawWorkerQuery === 'string' && rawWorkerQuery.trim()
+          ? rawWorkerQuery.trim().slice(0, 64)
+          : authorizedVia === 'cron_secret'
+            ? 'vercel_cron_worker'
+            : 'admin_manual_worker';
+
+    const rawMaxSteps =
+      body.maxSteps !== undefined
+        ? Number(body.maxSteps)
+        : req.query?.maxSteps !== undefined
+          ? Number(Array.isArray(req.query.maxSteps) ? req.query.maxSteps[0] : req.query.maxSteps)
+          : 6;
+    const maxSteps = Number.isFinite(rawMaxSteps)
+      ? Math.max(1, Math.min(20, Math.floor(rawMaxSteps)))
+      : 6;
+
+    const rawCatchUp =
+      body.catchUp !== undefined
+        ? Boolean(body.catchUp)
+        : req.query?.catchUp !== undefined
+          ? String(Array.isArray(req.query.catchUp) ? req.query.catchUp[0] : req.query.catchUp) !== 'false'
+          : true;
 
     let db: Firestore;
     try {
@@ -567,13 +679,32 @@ export function createSchedulerTickHandler(deps: GameHandlerDeps = {}) {
     const service = new PersistentGameAuthorityService(gameStore, replayGuard);
 
     if (roomId) {
-      const result = await service.tickRoomScheduler({ roomId, workerId });
-      sendJson(res, 200, { ok: true, serverNowMs: Date.now(), results: [result] });
+      const results = await service.tickRoomSchedulerCatchUp({
+        roomId,
+        workerId,
+        maxSteps,
+        catchUpMissedIntervals: rawCatchUp,
+      });
+      sendJson(res, 200, {
+        ok: true,
+        authorizedVia,
+        serverNowMs: Date.now(),
+        results,
+      });
       return;
     }
 
-    const results = await service.tickAllRooms({ workerId });
-    sendJson(res, 200, { ok: true, serverNowMs: Date.now(), results });
+    const results = await service.tickAllRoomsCatchUp({
+      workerId,
+      maxStepsPerRoom: maxSteps,
+      catchUpMissedIntervals: rawCatchUp,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      authorizedVia,
+      serverNowMs: Date.now(),
+      results,
+    });
   };
 }
 
