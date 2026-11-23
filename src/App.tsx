@@ -217,6 +217,8 @@ export default function App() {
   const roomDeadlineMsRef = useRef<number>(0);
   const hasServerRoomSyncRef = useRef<boolean>(false);
   const prevRoomStatusRef = useRef<RoomConfig['status']>('countdown');
+  const lastRoundNumberRef = useRef<number>(0);
+  const lastExtendedCountRef = useRef<Record<string, number>>({});
   const localWinnerSettledRoundRef = useRef<boolean>(false);
   const langRef = useRef<Language>(lang);
   langRef.current = lang;
@@ -418,6 +420,14 @@ export default function App() {
         const rawNextStatus: RoomConfig['status'] = detail.room.status || 'countdown';
         const prevStatus = prevRoomStatusRef.current;
 
+        const serverRoundNumber = Number(detail.room.roundNumber ?? detail.game?.roundNumber ?? 0);
+        if (serverRoundNumber > 0 && lastRoundNumberRef.current > 0 && serverRoundNumber > lastRoundNumberRef.current) {
+          localWinnerSettledRoundRef.current = false;
+        }
+        if (serverRoundNumber > 0) {
+          lastRoundNumberRef.current = serverRoundNumber;
+        }
+
         // If local round already announced a winner while server was mid-round, wait until server restarts countdown
         if (localWinnerSettledRoundRef.current && rawNextStatus === 'live') {
           return;
@@ -425,7 +435,7 @@ export default function App() {
         const nextStatus = rawNextStatus;
 
         // Countdown finished -> switch into live game ONLY if player has selected at least 1 card
-        if (prevStatus === 'countdown' && nextStatus === 'live') {
+        if ((prevStatus === 'countdown' || prevStatus === 'waiting') && nextStatus === 'live') {
           const hasCards =
             (token ? detail.myCardIds.length : selectedCardIdsRef.current.length) > 0;
           if (hasCards) {
@@ -525,6 +535,24 @@ export default function App() {
         }
         prevRoomStatusRef.current = nextStatus;
 
+        const extendedCount = Number(detail.room.extendedRegistrationCount ?? 0);
+        const prevExtendedCount = lastExtendedCountRef.current[roomIdToLoad] ?? 0;
+        if (
+          (nextStatus === 'countdown' || nextStatus === 'waiting') &&
+          extendedCount > prevExtendedCount &&
+          prevExtendedCount >= 0 &&
+          hasServerRoomSyncRef.current
+        ) {
+          const noticeText =
+            langRef.current === 'am'
+              ? detail.room.scheduleNoticeAm ||
+                'ዝቅተኛው የተጫዋች ቁጥር (3) ስላልሞላ ምዝገባ ተራዝሟል። ካርድዎ ተጠብቋል።'
+              : detail.room.scheduleNoticeEn ||
+                'Minimum 3 paid players not yet reached — registration extended; your cards are preserved.';
+          setToast(noticeText);
+        }
+        lastExtendedCountRef.current[roomIdToLoad] = extendedCount;
+
         if (typeof detail.serverNowMs === 'number' && Number.isFinite(detail.serverNowMs)) {
           serverClockOffsetMsRef.current = detail.serverNowMs - Date.now();
         }
@@ -540,7 +568,7 @@ export default function App() {
           detail.room.intermissionEndsAtMs > 0
             ? detail.room.intermissionEndsAtMs
             : 0;
-        if (nextStatus === 'countdown' && deadlineMs > 0) {
+        if ((nextStatus === 'countdown' || nextStatus === 'waiting') && deadlineMs > 0) {
           roomDeadlineMsRef.current = deadlineMs;
           const syncedRemaining = Math.max(
             0,
@@ -900,7 +928,7 @@ export default function App() {
         const nextStatus = roomDoc.status || 'countdown';
         const prevStatus = prevRoomStatusRef.current;
         if (
-          nextStatus === 'countdown' &&
+          (nextStatus === 'countdown' || nextStatus === 'waiting') &&
           typeof roomDoc.registrationDeadlineMs === 'number' &&
           roomDoc.registrationDeadlineMs > 0
         ) {
@@ -930,7 +958,7 @@ export default function App() {
             )
           );
         } else if (typeof roomDoc.countdownSeconds === 'number') {
-          if (nextStatus !== 'countdown' && nextStatus !== 'completed') {
+          if (nextStatus !== 'countdown' && nextStatus !== 'waiting' && nextStatus !== 'completed') {
             roomDeadlineMsRef.current = 0;
           }
           setCountdown(roomDoc.countdownSeconds);
@@ -1087,10 +1115,16 @@ export default function App() {
     user.startParam,
   ]);
 
-  // Server-authoritative countdown & intermission display computed strictly from server deadline & clock offset
-  // Never decrements locally without an authoritative server deadline.
+  // Server-authoritative countdown & intermission display computed strictly from server deadline & clock offset.
+  // Never starts rounds or draws numbers from the frontend; simply re-hydrates server state when deadline hits 00:00.
   useEffect(() => {
-    if (activeRoom.status !== 'countdown' && activeRoom.status !== 'completed') return;
+    if (
+      activeRoom.status !== 'countdown' &&
+      activeRoom.status !== 'waiting' &&
+      activeRoom.status !== 'completed'
+    ) {
+      return;
+    }
     let lastZeroHydrateAt = 0;
     const timer = window.setInterval(() => {
       if (roomDeadlineMsRef.current > 0) {
@@ -1101,11 +1135,11 @@ export default function App() {
           )
         );
         setCountdown(remaining);
-        if (remaining === 0 && Date.now() - lastZeroHydrateAt >= 1500) {
+        if (remaining === 0 && Date.now() - lastZeroHydrateAt >= 1000) {
           lastZeroHydrateAt = Date.now();
           void hydrateRoomState(activeRoomId);
         }
-      } else if (Date.now() - lastZeroHydrateAt >= 2000) {
+      } else if (Date.now() - lastZeroHydrateAt >= 1500) {
         lastZeroHydrateAt = Date.now();
         void hydrateRoomState(activeRoomId);
       }

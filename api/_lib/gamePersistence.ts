@@ -282,6 +282,7 @@ export interface GamePersistenceStore {
     ballDrawIntervalMs?: number;
     intermissionMs?: number;
     stuckSessionTimeoutMs?: number;
+    skipCountdownSync?: boolean;
   }): Promise<SchedulerTickResult>;
   ensureSharedRegistrationDeadline(roomId: string, nowMs?: number): Promise<number>;
   validateRoomIntegrity(roomId: string): Promise<RoomIntegrityReport>;
@@ -338,6 +339,32 @@ export interface RoomReconcileResult {
   reason?: 'room_not_found';
 }
 
+/**
+ * Pure server-side predicate: returns true ONLY when a room's authoritative Firestore
+ * deadline has expired and requires a server scheduler transition.
+ */
+export function isRoomDueForSchedulerTick(
+  room: Pick<
+    RoomSummary,
+    'status' | 'registrationDeadlineMs' | 'nextBallDrawAtMs' | 'intermissionEndsAtMs'
+  >,
+  nowMs: number = Date.now()
+): boolean {
+  if (room.status === 'countdown' || room.status === 'waiting') {
+    const deadlineMs = Number(room.registrationDeadlineMs ?? 0);
+    return deadlineMs > 0 && nowMs >= deadlineMs;
+  }
+  if (room.status === 'live') {
+    const nextDrawMs = Number(room.nextBallDrawAtMs ?? 0);
+    return nextDrawMs <= 0 || nowMs >= nextDrawMs;
+  }
+  if (room.status === 'completed') {
+    const intermissionEndMs = Number(room.intermissionEndsAtMs ?? 0);
+    return intermissionEndMs <= 0 || nowMs >= intermissionEndMs;
+  }
+  return false;
+}
+
 export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
   const roomsCol = db.collection('rooms');
   const gamesCol = db.collection('games');
@@ -365,15 +392,20 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
     const cardPrice = Number(data.cardPrice ?? data.cardPriceEtb ?? 10);
     const minPlayers = Number(data.minPlayers ?? 3);
     const registrationDeadlineMs = Number(data.registrationDeadlineMs ?? 0);
+    const intermissionEndsAtMs = Number(data.intermissionEndsAtMs ?? 0);
     const roundStartedAtMs = Number(data.roundStartedAtMs ?? 0);
     const storedCountdownSeconds = Number(data.countdownSeconds ?? 60);
-    // Server-authoritative live remaining seconds derived from persistent registrationDeadlineMs
+    // Server-authoritative live remaining seconds derived from persistent deadlines
     const countdownSeconds =
-      status === 'live' || status === 'completed'
+      status === 'live'
         ? 0
-        : registrationDeadlineMs > 0
-          ? Math.max(0, Math.ceil((registrationDeadlineMs - nowMs) / 1000))
-          : storedCountdownSeconds;
+        : status === 'completed'
+          ? intermissionEndsAtMs > 0
+            ? Math.max(0, Math.ceil((intermissionEndsAtMs - nowMs) / 1000))
+            : 0
+          : registrationDeadlineMs > 0
+            ? Math.max(0, Math.ceil((registrationDeadlineMs - nowMs) / 1000))
+            : storedCountdownSeconds;
     const activePlayersCount = Number(data.activePlayersCount ?? 0);
     const reservedCardsCount = Number(data.reservedCardsCount ?? 0);
     const financials = calculateAuthoritativeGameFinancials(
@@ -636,6 +668,8 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         }
 
         const openingBall = crypto.randomInt(1, 76);
+        const nowMs = Date.now();
+        const nextBallDrawAtMs = nowMs + DEFAULT_BALL_DRAW_INTERVAL_MS;
         const resolvedHost = existingHost || callerUid;
         const roundNumber = gameSnap.exists ? Number(gameSnap.get('roundNumber') ?? 1) : 1;
         const financials = calculateAuthoritativeGameFinancials(
@@ -663,6 +697,8 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           totalCollectedEtb: financials.totalCollectedEtb,
           adeyShareEtb: financials.adeyShareEtb,
           winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+          nextBallDrawAtMs,
+          intermissionEndsAtMs: 0,
         };
 
         if (gameSnap.exists) {
@@ -681,6 +717,10 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         tx.update(roomRef, {
           status: 'live',
           lifecycleStage: 'IN_PROGRESS',
+          countdownSeconds: 0,
+          nextBallDrawAtMs,
+          intermissionEndsAtMs: 0,
+          lastSchedulerTickMs: nowMs,
           confirmedPlayersCount: financials.confirmedPlayersCount,
           verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
           availableSpaces: financials.availableSpaces,
@@ -1445,6 +1485,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
       ballDrawIntervalMs = DEFAULT_BALL_DRAW_INTERVAL_MS,
       intermissionMs = DEFAULT_INTERMISSION_MS,
       stuckSessionTimeoutMs = DEFAULT_STUCK_SESSION_TIMEOUT_MS,
+      skipCountdownSync = false,
     }): Promise<SchedulerTickResult> {
       const roomRef = roomsCol.doc(roomId);
       const leaseRef = schedulerLeasesCol.doc(roomId);
@@ -1553,6 +1594,14 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         let extendedRegistrationCount = Number(roomData.extendedRegistrationCount ?? 0);
 
         // Lease guard: prevent concurrent workers from overlapping on the same tick or active lease window
+        // without ever blocking a genuinely expired phase deadline.
+        const isCurrentPhaseDue =
+          status === 'waiting' || status === 'countdown'
+            ? registrationDeadlineMs > 0 && nowMs >= registrationDeadlineMs
+            : status === 'live'
+              ? nextBallDrawAtMs <= 0 || nowMs >= nextBallDrawAtMs
+              : intermissionEndsAtMs <= 0 || nowMs >= intermissionEndsAtMs;
+
         if (leaseSnap.exists) {
           const leaseData = (leaseSnap.data() || {}) as Record<string, unknown>;
           const leaseWorker = String(leaseData.workerId || '');
@@ -1564,7 +1613,9 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
             leaseWorker !== workerId &&
             leaseStatus === status &&
             (leaseTickMs === nowMs ||
-              (leasedUntilMs > nowMs && leaseLastAction !== 'countdown_synced'));
+              (leasedUntilMs > nowMs &&
+                leaseLastAction !== 'countdown_synced' &&
+                !isCurrentPhaseDue));
           if (activeLeaseOverlap) {
             const currentStage = resolveGameLifecycleStage({
               status,
@@ -1613,12 +1664,21 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           });
         };
 
-        const updateLease = (action: SchedulerActionType, nextStatus: string) => {
+        const updateLease = (
+          action: SchedulerActionType,
+          nextStatus: string,
+          nextScheduledDeadlineMs = 0
+        ) => {
+          const rawLeaseUntil = nowMs + 2_000;
+          const boundedLeaseUntil =
+            nextScheduledDeadlineMs > nowMs
+              ? Math.min(rawLeaseUntil, Math.max(nowMs + 250, nextScheduledDeadlineMs - 50))
+              : rawLeaseUntil;
           tx.set(leaseRef, {
             roomId,
             workerId,
             lastTickMs: nowMs,
-            leasedUntilMs: nowMs + 2_000,
+            leasedUntilMs: boundedLeaseUntil,
             lastAction: action,
             status: nextStatus,
             updatedAtMs: nowMs,
@@ -1629,7 +1689,8 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         // PHASE 1: WAITING FOR PLAYERS -> REGISTRATION OPEN -> DEADLINE CHECK
         // ====================================================================
         if (status === 'waiting' || status === 'countdown') {
-          if (registrationDeadlineMs <= 0) {
+          const hadExistingDeadline = registrationDeadlineMs > 0;
+          if (!hadExistingDeadline) {
             registrationDeadlineMs = nowMs + registrationWindowMs;
           }
 
@@ -1644,7 +1705,28 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
               countdownSeconds: remainingSeconds,
               minPlayers,
             });
-            updateLease('countdown_synced', 'countdown');
+            if (skipCountdownSync && hadExistingDeadline) {
+              return {
+                ok: true,
+                roomId,
+                gameId,
+                roundNumber,
+                action: 'noop',
+                status: 'countdown',
+                lifecycleStage: nextLifecycle,
+                confirmedPlayersCount: financials.confirmedPlayersCount,
+                availableSpaces: financials.availableSpaces,
+                totalCardsSold: financials.totalCardsSold,
+                totalCollectedEtb: financials.totalCollectedEtb,
+                adeyShareEtb: financials.adeyShareEtb,
+                winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+                registrationDeadlineMs,
+                nextBallDrawAtMs: 0,
+                intermissionEndsAtMs: 0,
+                extendedRegistrationCount,
+              };
+            }
+            updateLease('countdown_synced', 'countdown', registrationDeadlineMs);
             tx.update(roomRef, {
               status: 'countdown',
               lifecycleStage: nextLifecycle,
@@ -1701,7 +1783,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
             const noticeAm = `ዝቅተኛው የተጫዋች ቁጥር (${minPlayers}) ስላልሞላ ምዝገባ ተራዝሟል። ክፍያዎ እና ካርድዎ ተጠብቋል።`;
             const noticeEn = `Minimum ${minPlayers} paid players not yet reached (${financials.confirmedPlayersCount}/${minPlayers}). Registration extended; your verified payment & cards are preserved.`;
 
-            updateLease('registration_extended', 'countdown');
+            updateLease('registration_extended', 'countdown', registrationDeadlineMs);
             writeAudit(
               'registration_extended',
               `Extended registration window #${extendedRegistrationCount} (${financials.confirmedPlayersCount}/${minPlayers} paid players). Preserved ${financials.totalCardsSold} cards.`
@@ -1780,7 +1862,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           const openingCalls = [openingBall];
           nextBallDrawAtMs = nowMs + ballDrawIntervalMs;
 
-          updateLease('game_auto_started', 'live');
+          updateLease('game_auto_started', 'live', nextBallDrawAtMs);
           writeAudit(
             'game_auto_started',
             `Auto-started Round #${roundNumber} with ${financials.confirmedPlayersCount} paid players (${financials.totalCardsSold} cards, ${financials.totalCollectedEtb} ETB collected, ${financials.winnersPrizePoolEtb} ETB 80% prize pool).`
@@ -1872,7 +1954,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
             const syncedIntermissionMs =
               Number(gameSnap.get('intermissionEndsAtMs') ?? intermissionEndsAtMs) ||
               nowMs + intermissionMs;
-            updateLease('noop', 'completed');
+            updateLease('noop', 'completed', syncedIntermissionMs);
             tx.update(roomRef, {
               status: 'completed',
               lifecycleStage: 'COMPLETED',
@@ -1906,7 +1988,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           if (financials.confirmedPlayersCount === 0 && financials.totalCardsSold === 0) {
             const recoveredDeadlineMs = nowMs + registrationWindowMs;
             const recoveredCountdown = Math.max(1, Math.ceil(registrationWindowMs / 1000));
-            updateLease('stuck_session_recovered', 'countdown');
+            updateLease('stuck_session_recovered', 'countdown', recoveredDeadlineMs);
             writeAudit(
               'stuck_session_recovered',
               `Recovered empty live room ${roomId} (0 players / 0 cards) back to registration countdown.`
@@ -2032,7 +2114,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
             intermissionEndsAtMs = nowMs + intermissionMs;
             nextBallDrawAtMs = 0;
 
-            updateLease('winner_auto_settled', 'completed');
+            updateLease('winner_auto_settled', 'completed', intermissionEndsAtMs);
             writeAudit(
               'winner_auto_settled',
               `Round #${roundNumber} settled after ${updatedCalls.length} balls. Distributed ${settlement.prizePoolEtb} ETB (80% of ${financials.totalCollectedEtb} ETB) across ${settlement.payoutsByPlayer.length} winner(s). ADEYBINGO 20% share: ${financials.adeyShareEtb} ETB.`
@@ -2208,7 +2290,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
             ? 'stuck_session_recovered'
             : 'ball_auto_drawn';
 
-          updateLease(action, 'live');
+          updateLease(action, 'live', nextBallDrawAtMs);
           if (isStuckSession) {
             writeAudit(
               'stuck_session_recovered',
@@ -2314,7 +2396,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           tx.delete(pDoc.ref);
         }
 
-        updateLease('next_game_auto_created', 'countdown');
+        updateLease('next_game_auto_created', 'countdown', nextRegistrationDeadlineMs);
         writeAudit(
           'next_game_auto_created',
           `Automatically created next game Round #${nextRound} for ${roomId}. Registration open (0/600 players, min ${minPlayers}).`,
@@ -3024,6 +3106,7 @@ export class PersistentGameAuthorityService {
     ballDrawIntervalMs?: number;
     intermissionMs?: number;
     stuckSessionTimeoutMs?: number;
+    skipCountdownSync?: boolean;
   }): Promise<SchedulerTickResult[]> {
     await this.store.ensureDefaultRooms();
     const nowMs = params.nowMs ?? Date.now();
@@ -3048,8 +3131,17 @@ export class PersistentGameAuthorityService {
           maxSteps,
           Math.floor((nowMs - nextDrawMs) / ballDrawIntervalMs) + 1
         );
+        // Anchor the catch-up series so the final step runs at exact nowMs, preventing stale past
+        // nextBallDrawAtMs timestamps or false lease overlap with more recent lease records.
+        const firstStepNowMs = Math.max(
+          nextDrawMs,
+          nowMs - (missedSteps - 1) * ballDrawIntervalMs
+        );
         for (let step = 0; step < missedSteps; step++) {
-          const stepNowMs = Math.min(nowMs, nextDrawMs + step * ballDrawIntervalMs);
+          const stepNowMs =
+            step === missedSteps - 1
+              ? nowMs
+              : Math.min(nowMs, firstStepNowMs + step * ballDrawIntervalMs);
           const tickRes = await this.store.tickRoomSchedulerAtomic({
             roomId: params.roomId,
             nowMs: stepNowMs,
@@ -3058,6 +3150,7 @@ export class PersistentGameAuthorityService {
             ballDrawIntervalMs,
             intermissionMs: params.intermissionMs,
             stuckSessionTimeoutMs: params.stuckSessionTimeoutMs,
+            skipCountdownSync: params.skipCountdownSync,
           });
           results.push(tickRes);
           if (
@@ -3077,7 +3170,7 @@ export class PersistentGameAuthorityService {
       }
     }
 
-    // Standard step (plus 1 follow-up if an expired intermission immediately created next round)
+    // Standard atomic tick for the room
     const primary = await this.store.tickRoomSchedulerAtomic({
       roomId: params.roomId,
       nowMs,
@@ -3086,9 +3179,47 @@ export class PersistentGameAuthorityService {
       ballDrawIntervalMs,
       intermissionMs: params.intermissionMs,
       stuckSessionTimeoutMs: params.stuckSessionTimeoutMs,
+      skipCountdownSync: params.skipCountdownSync,
     });
     results.push(primary);
     return results;
+  }
+
+  /**
+   * Server-side due-deadline progression guard (used by authenticated room reads so
+   * serverless deployments never stall at 00:00 between external scheduler invocations).
+   * Performs ZERO Firestore writes when the room's deadline has not expired.
+   */
+  public async advanceRoomIfDue(params: {
+    roomId: string;
+    room?: RoomSummary;
+    nowMs?: number;
+    workerId?: string;
+    maxSteps?: number;
+  }): Promise<{ advanced: boolean; results: SchedulerTickResult[] }> {
+    const nowMs = params.nowMs ?? Date.now();
+    let targetRoom = params.room;
+    if (!targetRoom) {
+      await this.store.ensureDefaultRooms();
+      const rooms = await this.store.listRooms();
+      targetRoom = rooms.find((r) => r.roomId === params.roomId);
+    }
+    if (!targetRoom || !isRoomDueForSchedulerTick(targetRoom, nowMs)) {
+      return { advanced: false, results: [] };
+    }
+    const workerId = params.workerId || `server_due_${crypto.randomUUID().slice(0, 8)}`;
+    const results = await this.tickRoomSchedulerCatchUp({
+      roomId: params.roomId,
+      nowMs,
+      workerId,
+      maxSteps: Math.max(1, Math.min(6, Math.floor(params.maxSteps ?? 4))),
+      catchUpMissedIntervals: true,
+      skipCountdownSync: true,
+    });
+    const advanced = results.some(
+      (r) => r.ok && r.action !== 'noop' && r.action !== 'lease_busy_skipped'
+    );
+    return { advanced, results };
   }
 
   public async tickAllRoomsCatchUp(params: {

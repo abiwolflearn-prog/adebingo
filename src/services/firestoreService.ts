@@ -402,7 +402,9 @@ export function subscribeToRoomState(
           : undefined;
       const serverNowEstimate = Date.now() + (getServerClockOffsetMs?.() ?? 0);
       const countdownSeconds =
-        status === 'countdown' && registrationDeadlineMs && registrationDeadlineMs > 0
+        (status === 'countdown' || status === 'waiting') &&
+        registrationDeadlineMs &&
+        registrationDeadlineMs > 0
           ? Math.max(0, Math.ceil((registrationDeadlineMs - serverNowEstimate) / 1000))
           : status === 'completed' && intermissionEndsAtMs && intermissionEndsAtMs > 0
             ? Math.max(0, Math.ceil((intermissionEndsAtMs - serverNowEstimate) / 1000))
@@ -439,6 +441,9 @@ export function subscribeToRoomState(
         nextBallDrawAtMs,
         roundStartedAtMs,
         roundNumber,
+        extendedRegistrationCount: Number(d.extendedRegistrationCount ?? 0),
+        scheduleNoticeAm: typeof d.scheduleNoticeAm === 'string' ? d.scheduleNoticeAm : undefined,
+        scheduleNoticeEn: typeof d.scheduleNoticeEn === 'string' ? d.scheduleNoticeEn : undefined,
         activePlayersCount: financials.confirmedPlayersCount,
         confirmedPlayersCount: financials.confirmedPlayersCount,
         verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
@@ -897,6 +902,9 @@ export interface ServerRoomSummary {
   nextBallDrawAtMs?: number;
   roundStartedAtMs?: number;
   roundNumber?: number;
+  extendedRegistrationCount?: number;
+  scheduleNoticeAm?: string;
+  scheduleNoticeEn?: string;
   activePlayersCount: number;
   confirmedPlayersCount?: number;
   verifiedPaidEntriesCount?: number;

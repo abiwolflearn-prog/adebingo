@@ -2047,7 +2047,7 @@ async function startServer() {
     const reservedCardsCount = roomCards?.size ?? 0;
     const liveGame = localLiveGames.get(r.id);
     const remainingCountdown =
-      cycle.status === 'countdown'
+      cycle.status === 'countdown' || cycle.status === 'completed'
         ? Math.max(0, Math.ceil((cycle.phaseEndsAtMs - Date.now()) / 1000))
         : 0;
     const financials = calculateAuthoritativeGameFinancials(
@@ -2082,6 +2082,8 @@ async function startServer() {
       countdownSeconds: remainingCountdown,
       roundNumber: cycle.roundNumber,
       registrationDeadlineMs: cycle.status === 'countdown' ? cycle.phaseEndsAtMs : 0,
+      intermissionEndsAtMs: cycle.status === 'completed' ? cycle.phaseEndsAtMs : 0,
+      nextBallDrawAtMs: cycle.status === 'live' ? cycle.lastDrawAtMs + 3_000 : 0,
       extendedRegistrationCount: cycle.extendedRegistrationCount,
       scheduleNoticeAm: cycle.scheduleNoticeAm,
       scheduleNoticeEn: cycle.scheduleNoticeEn,

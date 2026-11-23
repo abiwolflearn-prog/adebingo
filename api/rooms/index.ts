@@ -2,7 +2,11 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
 import { type AuthBackendDeps, authenticateRequest } from '../_lib/auth.ts';
 import { getAdminDb } from '../_lib/firebaseAdmin.ts';
-import { createFirestoreGameStore, PersistentGameAuthorityService } from '../_lib/gamePersistence.ts';
+import {
+  createFirestoreGameStore,
+  isRoomDueForSchedulerTick,
+  PersistentGameAuthorityService,
+} from '../_lib/gamePersistence.ts';
 import {
   BoundedRateLimiter,
   enforceMethod,
@@ -71,11 +75,19 @@ export function createRoomsHandler(deps: RoomsHandlerDeps = {}) {
           sendError(res, 404, 'room_not_found', 'Requested room does not exist.');
           return;
         }
+        const nowMs = Date.now();
         if (
           (detail.room.status === 'countdown' || detail.room.status === 'waiting') &&
           Number(detail.room.registrationDeadlineMs ?? 0) <= 0
         ) {
-          await service.ensureSharedRegistrationDeadline(rawRoomId, Date.now());
+          await service.ensureSharedRegistrationDeadline(rawRoomId, nowMs);
+          detail = await service.getRoomDetail(rawRoomId, caller.uid);
+        } else if (isRoomDueForSchedulerTick(detail.room, nowMs)) {
+          await service.advanceRoomIfDue({
+            roomId: rawRoomId,
+            room: detail.room,
+            nowMs,
+          });
           detail = await service.getRoomDetail(rawRoomId, caller.uid);
         }
         sendJson(res, 200, {
@@ -90,18 +102,26 @@ export function createRoomsHandler(deps: RoomsHandlerDeps = {}) {
       }
 
       let rooms = await service.listAvailableRooms();
+      const nowMs = Date.now();
       const missingDeadlineRooms = rooms.filter(
         (r) =>
           (r.status === 'countdown' || r.status === 'waiting') &&
           Number(r.registrationDeadlineMs ?? 0) <= 0
       );
-      if (missingDeadlineRooms.length > 0) {
-        const nowMs = Date.now();
-        await Promise.all(
-          missingDeadlineRooms.map((r) =>
+      const dueRooms = rooms.filter((r) => isRoomDueForSchedulerTick(r, nowMs));
+      if (missingDeadlineRooms.length > 0 || dueRooms.length > 0) {
+        await Promise.all([
+          ...missingDeadlineRooms.map((r) =>
             service.ensureSharedRegistrationDeadline(r.roomId, nowMs)
-          )
-        );
+          ),
+          ...dueRooms.map((r) =>
+            service.advanceRoomIfDue({
+              roomId: r.roomId,
+              room: r,
+              nowMs,
+            })
+          ),
+        ]);
         rooms = await service.listAvailableRooms();
       }
       sendJson(res, 200, {

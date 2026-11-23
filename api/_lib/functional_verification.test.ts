@@ -18,6 +18,11 @@ import {
   createStartGameHandler,
 } from './gameHandler.ts';
 import {
+  createFirestoreGameStore,
+  PersistentGameAuthorityService,
+} from './gamePersistence.ts';
+import { createFirestoreReplayAdapter, PersistentReplayGuard } from './replayGuard.ts';
+import {
   createPlayerStateHandler,
   createPlayerWalletHandler,
 } from './playerHandler.ts';
@@ -953,3 +958,309 @@ test('Admin dashboard real operations: RBAC, enriched player view, suspension en
   assert.equal(integrity.valid, true);
   assert.ok(integrity.totalEntries >= 4);
 });
+
+test('Countdown 00:00 never stalls: server-side due-deadline progression triggers registration extension, auto-start, missed-tick catch-up, and intermission reset exactly once across concurrent players', async () => {
+  const { db, store } = createInMemoryFirestore();
+  const botToken = '999999:TEST_ADEBINGO_TIMER_00';
+  const cronSecret = 'cron_secret_timer_verification_32_chars';
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const limiter = new BoundedRateLimiter();
+
+  const authHandler = createTelegramAuthHandler({
+    getDb: () => db,
+    getBotToken: () => botToken,
+    nowUnixSeconds: () => nowUnix,
+    mintCustomToken: async ({ telegramUserId }) => ({
+      uid: `tg_${telegramUserId}`,
+      customToken: `custom_tg_${telegramUserId}`,
+    }),
+    limiter,
+  });
+
+  // Authenticate 5 players
+  const playerTokens: string[] = [];
+  for (let i = 1; i <= 5; i++) {
+    const authRes = await invoke(authHandler, {
+      method: 'POST',
+      body: {
+        initData: buildSignedInitData(botToken, nowUnix, {
+          id: 810000 + i,
+          first_name: `TimerPlayer${i}`,
+          username: `timer_p${i}`,
+        }),
+      },
+    });
+    assert.equal(authRes.statusCode, 200);
+    playerTokens.push(String(authRes.body.sessionToken));
+  }
+
+  const authDeps = createAuthDeps(
+    {
+      admin_tok: {
+        uid: 'admin_timer_owner',
+        email: 'abelbimrew868@gmail.com',
+        email_verified: true,
+        name: 'Adey Owner',
+      },
+    },
+    ['admin_timer_owner'],
+    botToken
+  );
+
+  const roomsHandler = createRoomsHandler({ getDb: () => db, authDeps, limiter });
+  const reserveHandler = createReserveCardHandler({ getDb: () => db, authDeps, limiter });
+  const startHandler = createStartGameHandler({ getDb: () => db, authDeps, limiter });
+  const drawHandler = createDrawBallHandler({ getDb: () => db, authDeps, limiter });
+  const resetHandler = createResetRoundHandler({ getDb: () => db, authDeps, limiter });
+  const tickHandler = createSchedulerTickHandler({
+    getDb: () => db,
+    getCronSecret: () => cronSecret,
+    authDeps,
+    limiter,
+  });
+
+  // Regular players must NEVER be able to start, draw, reset, or invoke /api/game/tick
+  for (const [h, body] of [
+    [startHandler, { roomId: 'adey-main' }],
+    [drawHandler, { roomId: 'adey-main' }],
+    [resetHandler, { roomId: 'adey-main' }],
+    [tickHandler, { roomId: 'adey-main' }],
+  ] as const) {
+    const forbidden = await invoke(h, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${playerTokens[0]}` },
+      body,
+    });
+    assert.equal(forbidden.statusCode, 403);
+  }
+
+  // Initialize rooms & let 2 players reserve cards (< minPlayers = 3)
+  const initList = await invoke(roomsHandler, {
+    headers: { authorization: `Bearer ${playerTokens[0]}` },
+  });
+  assert.equal(initList.statusCode, 200);
+
+  for (let i = 0; i < 2; i++) {
+    const r = await invoke(reserveHandler, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${playerTokens[i]}` },
+      body: { roomId: 'adey-main', cardId: i + 1, action: 'reserve', idempotencyKey: `t_res_${i}` },
+    });
+    assert.equal(r.statusCode, 200);
+  }
+
+  // 1. REGISTRATION EXPIRY AT 00:00 WITH < 3 PLAYERS -> 5 concurrent GET /api/rooms polls
+  // MUST extend registration EXACTLY ONCE without external cron, preserving all 2 cards
+  store.set('rooms/adey-main', {
+    ...(store.get('rooms/adey-main') ?? {}),
+    status: 'countdown',
+    registrationDeadlineMs: Date.now() - 500, // expired!
+  });
+
+  const extResponses = await Promise.all(
+    playerTokens.map((tok) =>
+      invoke(roomsHandler, {
+        headers: { authorization: `Bearer ${tok}` },
+        query: { roomId: 'adey-main' },
+      })
+    )
+  );
+  for (const resp of extResponses) {
+    assert.equal(resp.statusCode, 200);
+    const room = resp.body.room as {
+      status: string;
+      extendedRegistrationCount: number;
+      registrationDeadlineMs: number;
+      countdownSeconds: number;
+      totalCardsSold: number;
+    };
+    assert.equal(room.status, 'countdown');
+    assert.equal(room.extendedRegistrationCount, 1, 'Registration must extend exactly once');
+    assert.ok(room.registrationDeadlineMs > Number(resp.body.serverNowMs));
+    assert.ok(room.countdownSeconds >= 55 && room.countdownSeconds <= 60);
+    assert.equal(room.totalCardsSold, 2, 'Reserved cards must be preserved');
+  }
+
+  // 2. REGISTRATION EXPIRY AT 00:00 WITH >= 3 PLAYERS -> 5 concurrent GET /api/rooms polls
+  // MUST auto-start EXACTLY ONCE, draw 1 opening ball, and schedule nextBallDrawAtMs in future
+  const thirdCard = await invoke(reserveHandler, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${playerTokens[2]}` },
+    body: { roomId: 'adey-main', cardId: 3, action: 'reserve', idempotencyKey: 't_res_2' },
+  });
+  assert.equal(thirdCard.statusCode, 200);
+
+  store.set('rooms/adey-main', {
+    ...(store.get('rooms/adey-main') ?? {}),
+    status: 'countdown',
+    registrationDeadlineMs: Date.now() - 250, // expired!
+  });
+
+  const startResponses = await Promise.all(
+    playerTokens.map((tok) =>
+      invoke(roomsHandler, {
+        headers: { authorization: `Bearer ${tok}` },
+        query: { roomId: 'adey-main' },
+      })
+    )
+  );
+  for (const resp of startResponses) {
+    assert.equal(resp.statusCode, 200);
+    const room = resp.body.room as {
+      status: string;
+      nextBallDrawAtMs: number;
+      totalCollectedEtb: number;
+      winnersPrizePoolEtb: number;
+    };
+    const game = resp.body.game as { status: string; calledNumbers: number[] };
+    assert.equal(room.status, 'live');
+    assert.ok(room.nextBallDrawAtMs > Number(resp.body.serverNowMs) - 100);
+    assert.equal(room.totalCollectedEtb, 30);
+    assert.equal(room.winnersPrizePoolEtb, 24);
+    assert.equal(game.status, 'live');
+    assert.equal(game.calledNumbers.length, 1, 'Exactly 1 opening ball drawn');
+  }
+
+  // 3. MISSED SCHEDULER TICKS WITH RECENT LEASE -> catch-up must NOT stall on lease_busy_skipped,
+  // must anchor nextBallDrawAtMs in the future, and must never produce duplicate called numbers
+  const gameService = new PersistentGameAuthorityService(
+    createFirestoreGameStore(db),
+    new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300)
+  );
+  const nowCatchUp = Date.now() + 25_000; // 25s missed-tick outage!
+  // Simulate a recent lease written 10s ago by another worker inside the outage window
+  store.set('schedulerLeases/adey-main', {
+    roomId: 'adey-main',
+    workerId: 'other_worker',
+    lastTickMs: nowCatchUp - 10_000,
+    leasedUntilMs: nowCatchUp - 8_000,
+    lastAction: 'ball_auto_drawn',
+    status: 'live',
+    updatedAtMs: nowCatchUp - 10_000,
+  });
+  const catchUpResults = await gameService.tickRoomSchedulerCatchUp({
+    roomId: 'adey-main',
+    nowMs: nowCatchUp,
+    workerId: 'cron_recovery_worker',
+    maxSteps: 4,
+  });
+  assert.ok(catchUpResults.length >= 1);
+  assert.ok(
+    catchUpResults.some(
+      (r) => r.action === 'ball_auto_drawn' || r.action === 'winner_auto_settled'
+    ),
+    'Missed-tick catch-up must draw balls without stalling on stale lease timestamps'
+  );
+  const liveGameAfterCatchUp = store.get('games/game_adey-main_live');
+  const calledAfterCatchUp = (liveGameAfterCatchUp?.calledNumbers as number[]) || [];
+  assert.equal(new Set(calledAfterCatchUp).size, calledAfterCatchUp.length, 'No duplicate balls');
+  if (store.get('rooms/adey-main')?.status === 'live') {
+    assert.ok(
+      Number(store.get('rooms/adey-main')?.nextBallDrawAtMs) > nowCatchUp,
+      'nextBallDrawAtMs must be anchored cleanly in the future after catch-up'
+    );
+  }
+
+  // 4. INTERMISSION DISPLAY & EXPIRY AT 00:00 -> live intermission countdown while active,
+  // then 5 concurrent GET /api/rooms polls after expiry create Round #2 EXACTLY ONCE
+  const activeIntermissionEnd = Date.now() + 5_000;
+  store.set('rooms/adey-main', {
+    ...(store.get('rooms/adey-main') ?? {}),
+    status: 'completed',
+    roundNumber: 1,
+    nextBallDrawAtMs: 0,
+    intermissionEndsAtMs: activeIntermissionEnd,
+  });
+  store.set('games/game_adey-main_live', {
+    ...(store.get('games/game_adey-main_live') ?? {}),
+    status: 'completed',
+    roundNumber: 1,
+    intermissionEndsAtMs: activeIntermissionEnd,
+  });
+
+  const duringIntermission = await invoke(roomsHandler, {
+    headers: { authorization: `Bearer ${playerTokens[0]}` },
+    query: { roomId: 'adey-main' },
+  });
+  assert.equal(duringIntermission.statusCode, 200);
+  assert.equal((duringIntermission.body.room as { status: string }).status, 'completed');
+  assert.ok(
+    (duringIntermission.body.room as { countdownSeconds: number }).countdownSeconds >= 3,
+    'Active intermission must expose positive remaining countdownSeconds'
+  );
+
+  // Now expire intermission -> 5 concurrent GET /api/rooms polls advance to Round #2 exactly once
+  store.set('rooms/adey-main', {
+    ...(store.get('rooms/adey-main') ?? {}),
+    status: 'completed',
+    roundNumber: 1,
+    intermissionEndsAtMs: Date.now() - 500,
+  });
+  store.set('games/game_adey-main_live', {
+    ...(store.get('games/game_adey-main_live') ?? {}),
+    status: 'completed',
+    roundNumber: 1,
+    intermissionEndsAtMs: Date.now() - 500,
+  });
+
+  const nextRoundResponses = await Promise.all(
+    playerTokens.map((tok) =>
+      invoke(roomsHandler, {
+        headers: { authorization: `Bearer ${tok}` },
+        query: { roomId: 'adey-main' },
+      })
+    )
+  );
+  for (const resp of nextRoundResponses) {
+    assert.equal(resp.statusCode, 200);
+    const room = resp.body.room as {
+      status: string;
+      roundNumber: number;
+      registrationDeadlineMs: number;
+      totalCardsSold: number;
+    };
+    assert.equal(room.status, 'countdown');
+    assert.equal(room.roundNumber, 2, 'Intermission expiry must increment roundNumber exactly once');
+    assert.ok(room.registrationDeadlineMs > Number(resp.body.serverNowMs));
+    assert.equal(room.totalCardsSold, 0, 'Old round cards must be cleared');
+  }
+
+  // 5. Manual admin start sets nextBallDrawAtMs in the future so immediate GET /api/rooms does NOT double-draw
+  for (let i = 0; i < 3; i++) {
+    await invoke(reserveHandler, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${playerTokens[i]}` },
+      body: { roomId: 'meskel-gold', cardId: i + 10, action: 'reserve', idempotencyKey: `m_res_${i}` },
+    });
+  }
+  // Ensure players have enough balance for 20 ETB Meskel Gold
+  for (let i = 1; i <= 3; i++) {
+    store.set(`users/tg_${810000 + i}`, {
+      ...(store.get(`users/tg_${810000 + i}`) ?? {}),
+      demoBalanceEtb: 100,
+    });
+    const r = await invoke(reserveHandler, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${playerTokens[i - 1]}` },
+      body: { roomId: 'meskel-gold', cardId: i + 20, action: 'reserve', idempotencyKey: `m2_res_${i}` },
+    });
+    assert.equal(r.statusCode, 200);
+  }
+  const manualStart = await invoke(startHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin_tok' },
+    body: { roomId: 'meskel-gold' },
+  });
+  assert.equal(manualStart.statusCode, 200);
+  const immediatePoll = await invoke(roomsHandler, {
+    headers: { authorization: `Bearer ${playerTokens[0]}` },
+    query: { roomId: 'meskel-gold' },
+  });
+  assert.equal(immediatePoll.statusCode, 200);
+  assert.equal((immediatePoll.body.game as { calledNumbers: number[] }).calledNumbers.length, 1);
+  assert.ok(
+    Number((immediatePoll.body.room as { nextBallDrawAtMs: number }).nextBallDrawAtMs) >
+      Number(immediatePoll.body.serverNowMs) - 500
+  );
+});
+
