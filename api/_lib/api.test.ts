@@ -660,7 +660,7 @@ test('Telegram webhook & secret-protected endpoints enforce fail-closed secret, 
   });
   assert.equal(validStart.statusCode, 200);
   assert.equal(validStart.body.ok, true);
-  assert.equal(telegramSendCalls, 1);
+  assert.equal(telegramSendCalls, 2);
   assert.equal(store.get('telegramBindings/tg_778899')?.uid, 'tg_778899');
 
   // Duplicate webhook update_id -> 409 and does NOT call Telegram API again
@@ -678,7 +678,7 @@ test('Telegram webhook & secret-protected endpoints enforce fail-closed secret, 
   });
   assert.equal(duplicateUpdate.statusCode, 409);
   assert.equal(duplicateUpdate.body.reason, 'replay_detected');
-  assert.equal(telegramSendCalls, 1);
+  assert.equal(telegramSendCalls, 2);
 
   // Other secret-protected endpoints reject missing/bad secret
   const infoHandler = createWebhookInfoHandler({

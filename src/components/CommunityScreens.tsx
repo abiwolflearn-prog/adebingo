@@ -20,6 +20,7 @@ import {
   ChevronDown,
   ChevronUp,
   CircleHelp,
+  ExternalLink,
 } from 'lucide-react';
 import {
   GameHistoryItem,
@@ -138,12 +139,14 @@ export function CommunityScreens({
   const [showAdvancedBot, setShowAdvancedBot] = useState(false);
 
   const fallbackRefCode =
-    Number.isInteger(user.id) && user.id > 0 ? buildTelegramReferralCode(user.id) : `ADEY-${user.id}`;
+    Number.isInteger(user.id) && user.id > 0 ? buildTelegramReferralCode(user.id) : '';
   const effectiveRefCode =
     serverVerifiedTelegramId && Number.isInteger(serverVerifiedTelegramId) && serverVerifiedTelegramId > 0
       ? buildTelegramReferralCode(serverVerifiedTelegramId)
       : referralCode || fallbackRefCode;
-  const inviteLink = buildTelegramInviteLink(effectiveRefCode);
+  const inviteLink = effectiveRefCode
+    ? buildTelegramInviteLink(effectiveRefCode)
+    : 'https://t.me/AdeyBingoGameBot';
 
   const copyTextSafely = async (value: string) => {
     try {
@@ -208,11 +211,18 @@ export function CommunityScreens({
             ? 'የቴሌግራም ስልክ ቁጥርዎ ተልኳል — በጥቂት ሰከንዶች ውስጥ ይረጋገጣል።'
             : 'Telegram contact shared — verification will sync automatically in a few seconds.'
         );
-      } else if (!result.supported) {
+        await onVerifyPhone('', 'telegram_contact');
+      } else if (result.supported && !result.sent) {
         setPhoneError(
           lang === 'am'
-            ? 'በቴሌግራም @AdeyBingoGameBot ውስጥ /start በመጫን ስልክ ቁጥርዎን ያጋሩ ወይም ከታች ያረጋግጡ።'
-            : 'Open inside @AdeyBingoGameBot to share native Telegram contact, or verify below.'
+            ? 'የስልክ ቁጥር ማጋራቱ ተሰርዟል። ስልክዎን ለማረጋገጥ በፈለጉት ጊዜ እንደገና መሞከር ይችላሉ።'
+            : 'Contact sharing was cancelled. You can tap the button again anytime to verify your phone.'
+        );
+      } else {
+        setPhoneError(
+          lang === 'am'
+            ? '🔒 ስልክ ቁጥር የሚረጋገጠው በቴሌግራም ቀጥተኛ የስልክ ማጋራት ብቻ ነው። እባክዎ @AdeyBingoGameBot በመክፈት "📲 ስልክ ቁጥርዎን ያጋሩ" የሚለውን ቁልፍ ይጫኑ።'
+            : '🔒 Phone verification requires native Telegram contact sharing. Open @AdeyBingoGameBot and tap "📲 Share Telegram Phone Contact".'
         );
       }
     } finally {
@@ -220,26 +230,13 @@ export function CommunityScreens({
     }
   };
 
-  const handlePhoneSubmit = async (e: React.FormEvent) => {
+  const handlePhoneSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleaned = phoneInput.replace(/[\s\-()]/g, '');
-    if (!/^\+?[0-9]{9,15}$/.test(cleaned)) {
-      setPhoneError(
-        lang === 'am'
-          ? 'ትክክለኛ የስልክ ቁጥር ያስገቡ (+2519...)'
-          : 'Enter a valid 9–15 digit phone number (+2519...).'
-      );
-      return;
-    }
-    setPhoneError('');
-    setPhoneBusy(true);
-    try {
-      await onVerifyPhone(cleaned, 'telegram_contact');
-    } catch (err) {
-      setPhoneError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setPhoneBusy(false);
-    }
+    setPhoneError(
+      lang === 'am'
+        ? '🔒 በጽሁፍ የተጻፈ ስልክ ቁጥር አይረጋገጥም። እባክዎ "በቴሌግራም ስልክ አጋራ" ቁልፍን ወይም በ@AdeyBingoGameBot ውስጥ "📲 ስልክ ቁጥርዎን ያጋሩ" ይጫኑ።'
+        : '🔒 Manually typed phone numbers are never marked as verified. Please tap "Share Telegram Contact" or use "📲 Share Telegram Phone Contact" in @AdeyBingoGameBot.'
+    );
   };
 
   const handleSupportSubmit = (e: React.FormEvent) => {
@@ -766,29 +763,35 @@ export function CommunityScreens({
                   className="w-full px-2.5 py-1 rounded-lg border border-[#159447]/40 bg-[#E6F6EB] text-[#08743A] text-[11px] font-extrabold flex items-center justify-center gap-1 min-h-[32px] disabled:opacity-60"
                 >
                   <Phone size={11} />
-                  {lang === 'am' ? 'በቴሌግራም ስልክ አጋራ' : 'Share Telegram Contact'}
+                  {phoneBusy
+                    ? '...'
+                    : lang === 'am'
+                      ? 'በቴሌግራም ስልክ አጋራ'
+                      : 'Share Telegram Contact'}
                 </button>
 
-                <div className="flex gap-1">
-                  <input
-                    type="tel"
-                    value={phoneInput}
-                    onChange={(e) => setPhoneInput(e.target.value)}
-                    placeholder="+2519..."
-                    disabled={phoneVerified}
-                    aria-label="Phone Number for Verification"
-                    className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[11px] font-mono font-bold text-[#183326] min-h-[32px] focus:outline-none focus:border-[#159447] disabled:opacity-60"
-                  />
-                  <button
-                    type="submit"
-                    disabled={phoneBusy || phoneVerified}
-                    className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-[11px] font-extrabold flex items-center gap-1 shrink-0 min-h-[32px] disabled:opacity-60"
-                  >
-                    <Phone size={11} />
-                    {phoneBusy ? '...' : lang === 'am' ? 'አረጋግጥ' : 'Verify'}
-                  </button>
-                </div>
+                <a
+                  href="https://t.me/AdeyBingoGameBot"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full px-2.5 py-1 rounded-lg border border-[#E7EDE8] bg-[#FFF9ED] text-[#183326] text-[11px] font-extrabold flex items-center justify-center gap-1 min-h-[32px]"
+                >
+                  <ExternalLink size={11} className="text-[#159447]" />
+                  {lang === 'am' ? 'በ@AdeyBingoGameBot ያጋሩ' : 'Share in @AdeyBingoGameBot'}
+                </a>
               </div>
+
+              {phoneVerified && phoneInput ? (
+                <p className="text-[10.5px] font-mono font-bold text-[#08743A]">
+                  {lang === 'am' ? `የተረጋገጠ ስልክ፦ ${phoneInput}` : `Verified Phone: ${phoneInput}`}
+                </p>
+              ) : (
+                <p className="text-[10px] font-bold text-[#68776D]">
+                  {lang === 'am'
+                    ? '🔒 ስልክ ቁጥር የሚረጋገጠው በቴሌግራም ቀጥተኛ የስልክ ማጋራት (Share Contact) ብቻ ነው፤ በጽሁፍ የሚገባ ቁጥር አይረጋገጥም።'
+                    : '🔒 Phone numbers are verified only via native Telegram contact sharing; typed numbers are never verified.'}
+                </p>
+              )}
 
               {phoneError && <p className="text-[10.5px] font-bold text-[#D94B4B]">{phoneError}</p>}
             </form>

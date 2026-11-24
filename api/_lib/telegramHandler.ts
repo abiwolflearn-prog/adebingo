@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
 import { mintServerSessionToken } from '../../src/utils/adminAuthority.ts';
 import {
+  formatTelegramNotification,
   normalizeWebhookSecretForTelegram,
   type NotificationEventType,
 } from '../../src/utils/telegramBot.ts';
@@ -389,22 +390,52 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
       store.processReferralDeepLink
     ) {
       const normalizedRefCode = candidateStartParam.toUpperCase();
-      const refRes = await store.processReferralDeepLink({
-        inviteeTelegramId: tgUser.id,
-        inviteeName: `${persisted.player.firstName} ${persisted.player.lastName || ''}`.trim(),
-        inviteeUsername: persisted.player.username,
-        referralCode: normalizedRefCode,
-      });
-      referralApplied = {
-        applied: refRes.applied,
-        reason: refRes.reason,
-        code: normalizedRefCode,
-        inviterTelegramId: refRes.inviterTelegramId,
-        inviterBonusEtb: refRes.inviterBonusEtb,
-        inviteeBonusEtb: refRes.inviteeBonusEtb,
-      };
-      if (refRes.applied && typeof refRes.inviteeBalanceEtb === 'number') {
-        finalBalanceEtb = refRes.inviteeBalanceEtb;
+      if (persisted.isNew === false) {
+        referralApplied = {
+          applied: false,
+          reason: persisted.player.referredByUid
+            ? 'already_referred'
+            : 'existing_account_not_eligible',
+          code: normalizedRefCode,
+        };
+      } else {
+        const refRes = await store.processReferralDeepLink({
+          inviteeTelegramId: tgUser.id,
+          inviteeName: `${persisted.player.firstName} ${persisted.player.lastName || ''}`.trim(),
+          inviteeUsername: persisted.player.username,
+          referralCode: normalizedRefCode,
+        });
+        referralApplied = {
+          applied: refRes.applied,
+          reason: refRes.reason,
+          code: normalizedRefCode,
+          inviterTelegramId: refRes.inviterTelegramId,
+          inviterBonusEtb: refRes.inviterBonusEtb,
+          inviteeBonusEtb: refRes.inviteeBonusEtb,
+        };
+        if (refRes.applied && typeof refRes.inviteeBalanceEtb === 'number') {
+          finalBalanceEtb = refRes.inviteeBalanceEtb;
+        }
+        if (refRes.applied && refRes.inviterTelegramId) {
+          const inviterProfile = await store.getPlayer(refRes.inviterTelegramId).catch(() => null);
+          const inviterLang = inviterProfile?.language === 'en' ? 'en' : 'am';
+          const formattedNtf = formatTelegramNotification('referral_confirmation', inviterLang, {
+            friendName: persisted.player.firstName,
+            inviterBonusEtb: refRes.inviterBonusEtb ?? 20,
+          });
+          await store
+            .appendNotification({
+              id: `ntf_ref_${tgUser.id}_${Date.now()}`,
+              event: 'referral_confirmation',
+              telegramUserId: refRes.inviterTelegramId,
+              language: inviterLang,
+              title: formattedNtf.title,
+              body: formattedNtf.body,
+              createdAt: new Date().toISOString(),
+              deliveredViaBotApi: false,
+            })
+            .catch(() => undefined);
+        }
       }
     }
 
@@ -880,15 +911,41 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
         }
 
         const rawMarkup = botResponse.replyMarkup;
-        const telegramReplyMarkup = rawMarkup?.inline_keyboard?.length
-          ? { inline_keyboard: rawMarkup.inline_keyboard }
-          : rawMarkup?.keyboard?.length
-            ? {
-                keyboard: rawMarkup.keyboard,
-                resize_keyboard: rawMarkup.resize_keyboard ?? true,
-                one_time_keyboard: rawMarkup.one_time_keyboard ?? false,
-              }
-            : undefined;
+        const shouldSendReplyKeyboard =
+          Boolean(rawMarkup?.keyboard?.length) &&
+          (botResponse.securityCode === 'start_welcome_delivered' ||
+            botResponse.securityCode === 'callback_main_menu' ||
+            botResponse.securityCode === 'language_updated' ||
+            botResponse.securityCode === 'contact_verified' ||
+            botResponse.securityCode === 'plain_text_phone_rejected' ||
+            botResponse.securityCode === 'contact_owner_mismatch' ||
+            botResponse.securityCode === 'missing_contact_user_id' ||
+            botResponse.securityCode === 'invalid_phone_format' ||
+            botResponse.securityCode === 'duplicate_phone_number' ||
+            botResponse.securityCode === 'verified_contact_locked');
+        const shouldSendSeparateInlineKeyboard =
+          shouldSendReplyKeyboard &&
+          Boolean(rawMarkup?.inline_keyboard?.length) &&
+          (botResponse.securityCode === 'start_welcome_delivered' ||
+            botResponse.securityCode === 'callback_main_menu' ||
+            botResponse.securityCode === 'language_updated' ||
+            botResponse.securityCode === 'contact_verified');
+
+        const primaryReplyMarkup = shouldSendReplyKeyboard
+          ? {
+              keyboard: rawMarkup!.keyboard,
+              resize_keyboard: rawMarkup!.resize_keyboard ?? true,
+              one_time_keyboard: rawMarkup!.one_time_keyboard ?? false,
+            }
+          : rawMarkup?.inline_keyboard?.length
+            ? { inline_keyboard: rawMarkup.inline_keyboard }
+            : rawMarkup?.keyboard?.length
+              ? {
+                  keyboard: rawMarkup.keyboard,
+                  resize_keyboard: rawMarkup.resize_keyboard ?? true,
+                  one_time_keyboard: rawMarkup.one_time_keyboard ?? false,
+                }
+              : undefined;
 
         const tgResp = await fetchFn(`https://api.telegram.org/bot${botToken}/sendMessage`, {
           method: 'POST',
@@ -897,15 +954,63 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
             chat_id: botResponse.chatId,
             text: botResponse.text,
             parse_mode: botResponse.parseMode,
-            ...(telegramReplyMarkup ? { reply_markup: telegramReplyMarkup } : {}),
+            ...(primaryReplyMarkup ? { reply_markup: primaryReplyMarkup } : {}),
           }),
         });
         const tgData = (await tgResp.json().catch(() => ({}))) as {
           ok?: boolean;
           description?: string;
         };
-        deliveredToTelegramApi = Boolean(tgResp.ok && tgData.ok);
-        telegramDeliveryNote = deliveredToTelegramApi ? 'delivered' : 'send_failed';
+        const primaryDelivered = Boolean(tgResp.ok && tgData.ok);
+        deliveredToTelegramApi = primaryDelivered;
+        telegramDeliveryNote = primaryDelivered
+          ? 'delivered'
+          : tgData.description || 'send_failed';
+
+        // Telegram Bot API only supports one reply_markup per sendMessage.
+        // When both the persistent main reply keyboard and contextual inline buttons are required,
+        // send the contextual inline keyboard in a separate follow-up message.
+        if (primaryDelivered && shouldSendSeparateInlineKeyboard) {
+          const inlinePrompt =
+            botResponse.language === 'am' ? '👇 ፈጣን አማራጮች፦' : '👇 Quick Actions:';
+          const tgInlineResp = await fetchFn(
+            `https://api.telegram.org/bot${botToken}/sendMessage`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: botResponse.chatId,
+                text: inlinePrompt,
+                reply_markup: { inline_keyboard: rawMarkup!.inline_keyboard },
+              }),
+            }
+          );
+          const tgInlineData = (await tgInlineResp.json().catch(() => ({}))) as {
+            ok?: boolean;
+            description?: string;
+          };
+          if (!tgInlineResp.ok || !tgInlineData.ok) {
+            deliveredToTelegramApi = false;
+            telegramDeliveryNote = tgInlineData.description || 'inline_send_failed';
+          }
+        }
+
+        // Also deliver real-time referral confirmation to the inviter when a new referral succeeds
+        if (
+          botResponse.inviterNotification &&
+          botResponse.inviterNotification.telegramUserId > 0 &&
+          botResponse.inviterNotification.telegramUserId !== botResponse.chatId
+        ) {
+          await fetchFn(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: botResponse.inviterNotification.telegramUserId,
+              text: `${botResponse.inviterNotification.title}\n\n${botResponse.inviterNotification.body}`,
+              parse_mode: 'Markdown',
+            }),
+          }).catch(() => undefined);
+        }
       } catch {
         deliveredToTelegramApi = false;
         telegramDeliveryNote = 'network_error';
@@ -1279,26 +1384,18 @@ export function createBotCommandHandler(deps: BotCommandHandlerDeps = {}) {
         ? body.updateId
         : undefined;
 
-    const rawContact =
-      body.contact && typeof body.contact === 'object' && !Array.isArray(body.contact)
-        ? (body.contact as Record<string, unknown>)
-        : undefined;
-    const contact =
-      rawContact && typeof rawContact.phone_number === 'string' && rawContact.phone_number.trim()
-        ? {
-            phone_number: rawContact.phone_number.trim().slice(0, 32),
-            first_name:
-              typeof rawContact.first_name === 'string'
-                ? rawContact.first_name.trim().slice(0, 80)
-                : caller.displayName,
-            // If client supplies contact.user_id, pass it through so handleIncomingUpdate rejects mismatched user_id;
-            // otherwise bind to the cryptographically verified caller.telegramId.
-            user_id:
-              rawContact.user_id !== undefined && Number.isInteger(Number(rawContact.user_id))
-                ? Number(rawContact.user_id)
-                : caller.telegramId,
-          }
-        : undefined;
+    // Client-supplied contact objects on /api/telegram/bot-command can never establish Telegram-verified
+    // phone ownership. Only real native Telegram contact-sharing updates delivered via Telegram's
+    // secret-verified webhook (/api/telegram/webhook) may mark a phone number as verified.
+    if (body.contact !== undefined && body.contact !== null) {
+      sendError(
+        res,
+        403,
+        'native_telegram_contact_required',
+        'በጽሁፍ ወይም በቀጥታ ጥያቄ የሚላክ ስልክ ቁጥር አይረጋገጥም። እባክዎ በ@AdeyBingoGameBot ውስጥ "📲 ስልክ ቁጥርዎን ያጋሩ" የሚለውን የቴሌግራም ቁልፍ ይጠቀሙ። (Phone verification requires native Telegram contact sharing.)'
+      );
+      return;
+    }
 
     const store = createFirestoreTelegramStore(db);
     const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 86400);
@@ -1318,7 +1415,6 @@ export function createBotCommandHandler(deps: BotCommandHandlerDeps = {}) {
       username: caller.uid,
       text,
       callbackData,
-      ...(contact ? { contact } : {}),
     });
 
     if (

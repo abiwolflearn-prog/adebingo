@@ -232,16 +232,19 @@ export function initTelegramMiniApp(): TelegramUserProfile {
       } catch {
         // Ignore outside Telegram environment
       }
-      const u = tg.initDataUnsafe?.user;
-      if (u && u.first_name) {
+      const hasSignedInitData =
+        typeof tg.initData === 'string' && tg.initData.trim().length > 0;
+      const u = hasSignedInitData ? tg.initDataUnsafe?.user : undefined;
+      if (hasSignedInitData && u && Number.isInteger(u.id) && u.id > 0 && u.first_name) {
         const first = u.first_name;
         const last = u.last_name || '';
         const initials = `${first[0] || 'A'}${last[0] || 'B'}`.toUpperCase();
         return {
+          // Display preview only; authentication and UID binding occur strictly via server-verified /api/telegram/auth
           id: u.id,
           firstName: first,
           lastName: last,
-          username: u.username ? `@${u.username}` : '@adey_player',
+          username: u.username ? `@${u.username}` : '',
           languageCode: u.language_code || 'am',
           isTelegramWebApp: true,
           initials,
@@ -249,36 +252,13 @@ export function initTelegramMiniApp(): TelegramUserProfile {
         };
       }
     }
-
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const customId = Number(params.get('tgId'));
-      if (Number.isInteger(customId) && customId > 0) {
-        const first = params.get('firstName')?.trim() || 'Meron';
-        const last = params.get('lastName')?.trim() || 'Tadesse';
-        const rawUser = params.get('username')?.trim() || 'meron_et';
-        const initials = `${first[0] || 'M'}${last[0] || 'T'}`.toUpperCase();
-        return {
-          id: customId,
-          firstName: first,
-          lastName: last,
-          username: rawUser.startsWith('@') ? rawUser : `@${rawUser}`,
-          languageCode: 'am',
-          isTelegramWebApp: false,
-          initials,
-          startParam: startParam || undefined,
-        };
-      }
-    } catch {
-      // Fall back to default demo profile below
-    }
   }
 
   return {
-    id: 8842109,
-    firstName: 'Abebe',
-    lastName: 'Bikila',
-    username: '@abebe_adey',
+    id: 0,
+    firstName: 'ADEYBINGO',
+    lastName: 'Player',
+    username: '',
     languageCode: 'am',
     isTelegramWebApp: false,
     initials: 'AB',

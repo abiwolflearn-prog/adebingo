@@ -513,12 +513,31 @@ export function validateTelegramWebAppInitData(
 }
 
 /**
+ * Normalizes Telegram-shared and Ethiopian local/international phone numbers
+ * into canonical E.164 format (+[country][number]) so duplicate detection is consistent.
+ */
+export function normalizeTelegramPhoneNumber(rawInput: string): string {
+  let cleaned = String(rawInput || '').replace(/[\s\-().]/g, '');
+  if (!cleaned) return '';
+  if (cleaned.startsWith('00')) {
+    cleaned = `+${cleaned.slice(2)}`;
+  } else if (/^0[79][0-9]{8}$/.test(cleaned)) {
+    cleaned = `+251${cleaned.slice(1)}`;
+  } else if (/^251[79][0-9]{8}$/.test(cleaned)) {
+    cleaned = `+${cleaned}`;
+  } else if (!cleaned.startsWith('+')) {
+    cleaned = `+${cleaned}`;
+  }
+  return cleaned;
+}
+
+/**
  * Verifies that a shared Telegram contact strictly belongs to the Telegram sender.
  * Security Rules:
  * 1. Never accept plain-text messages as a verified phone number.
  * 2. Require a native Telegram `contact` payload.
  * 3. Require `contact.user_id` to exist and strictly equal `senderTelegramId` (blocks forwarded contacts).
- * 4. Normalize and validate E.164 phone format (9..15 digits).
+ * 4. Normalize and validate E.164 phone format (9..15 digits, non-zero country code).
  */
 export function verifyTelegramSharedContact(params: {
   senderTelegramId?: number;
@@ -555,9 +574,8 @@ export function verifyTelegramSharedContact(params: {
     return { valid: false, reason: 'contact_owner_mismatch' };
   }
 
-  const rawPhone = String(contact.phone_number || '').replace(/[\s\-()]/g, '');
-  const normalizedPhone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
-  if (!/^\+[0-9]{9,15}$/.test(normalizedPhone)) {
+  const normalizedPhone = normalizeTelegramPhoneNumber(String(contact.phone_number || ''));
+  if (!/^\+[1-9][0-9]{8,14}$/.test(normalizedPhone)) {
     return { valid: false, reason: 'invalid_phone_format' };
   }
 

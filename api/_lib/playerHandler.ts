@@ -554,6 +554,47 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
 
       // 1. Referral code format: ADEY-<telegramUserId>
       if (/^ADEY-[1-9]\d*$/.test(rawCode) && resolvedTgId > 0 && store.processReferralDeepLink) {
+        const targetInviterId = Number(rawCode.slice('ADEY-'.length));
+        if (targetInviterId === resolvedTgId) {
+          sendError(
+            res,
+            400,
+            'self_referral_forbidden',
+            'You cannot apply your own referral code.'
+          );
+          return;
+        }
+
+        const [existingUserSnap, existingBotSnap, existingRefSnap] = await Promise.all([
+          db.collection('users').doc(caller.uid).get(),
+          db.collection('botPlayers').doc(String(resolvedTgId)).get(),
+          db.collection('referrals').doc(`ref_tg_${resolvedTgId}`).get(),
+        ]);
+
+        if (
+          existingRefSnap.exists ||
+          (existingUserSnap.exists && Boolean(existingUserSnap.get('referredByUid'))) ||
+          (existingBotSnap.exists && Boolean(existingBotSnap.get('referredByUid')))
+        ) {
+          sendError(
+            res,
+            409,
+            'promo_already_applied',
+            'A referral or promo code has already been applied to your account.'
+          );
+          return;
+        }
+
+        if (existingUserSnap.exists || existingBotSnap.exists) {
+          sendError(
+            res,
+            409,
+            'existing_account_not_eligible',
+            'Referral rewards apply only once during initial new-player registration.'
+          );
+          return;
+        }
+
         const refRes = await store.processReferralDeepLink({
           inviteeTelegramId: resolvedTgId,
           inviteeName: caller.displayName,

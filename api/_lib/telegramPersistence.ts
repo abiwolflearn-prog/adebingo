@@ -102,7 +102,12 @@ export interface TelegramBotStore {
     lastName?: string;
     username: string;
     language: Language;
-  }): Promise<{ ok: boolean; reason?: 'duplicate_telegram_account' | 'invalid_uid'; player?: RegisteredTelegramPlayer }>;
+  }): Promise<{
+    ok: boolean;
+    isNew?: boolean;
+    reason?: 'duplicate_telegram_account' | 'invalid_uid';
+    player?: RegisteredTelegramPlayer;
+  }>;
   setLanguage(telegramUserId: number, language: Language): Promise<void>;
   setPendingFlow?(
     telegramUserId: number,
@@ -317,8 +322,9 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
           });
         }
 
+        const isNew = !playerSnap.exists && !userSnap.exists;
         tx.set(playerRef, player, { merge: true });
-        return { ok: true, player };
+        return { ok: true, isNew, player };
       });
     },
 
@@ -338,24 +344,6 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
 
         if (playerSnap.exists) {
           tx.update(playerRef, { language, updatedAt: nowIso });
-        } else {
-          tx.set(
-            playerRef,
-            {
-              telegramUserId,
-              telegramKey: canonicalUid,
-              uid: canonicalUid,
-              firstName: 'Adey Player',
-              username: canonicalUid,
-              language,
-              phoneVerified: false,
-              demoBalanceEtb: userSnap.exists ? Number(userSnap.get('demoBalanceEtb') ?? 0) : 15,
-              referralCode: `ADEY-${telegramUserId}`,
-              registeredAt: nowIso,
-              updatedAt: nowIso,
-            },
-            { merge: true }
-          );
         }
 
         if (userSnap.exists) {
@@ -1672,7 +1660,9 @@ export class PersistentTelegramBotService {
       trimmed === '🌐 ቋንቋ' ||
       trimmed === '🌐 Language' ||
       trimmed === '🌐 Change Language' ||
-      trimmed === '🌐 ቋንቋ ቀይር'
+      trimmed === '🌐 ቋንቋ ቀይር' ||
+      (customButtons?.languageAm && trimmed === customButtons.languageAm) ||
+      (customButtons?.languageEn && trimmed === customButtons.languageEn)
     ) {
       return {
         ok: true,
@@ -1729,6 +1719,7 @@ export class PersistentTelegramBotService {
         };
       }
 
+      const isNewUser = !existingPlayer;
       const saved = await this.store.savePlayerAndBinding({
         telegramUserId: senderTelegramId,
         uid,
@@ -1760,27 +1751,44 @@ export class PersistentTelegramBotService {
 
       let referralNoticeAm = '';
       let referralNoticeEn = '';
+      let inviterNotification: BotNotificationMessage | undefined;
       const referralCodeParam = extractStartCommandReferralCode(trimmed);
       if (referralCodeParam && this.store.processReferralDeepLink) {
-        const refRes = await this.store.processReferralDeepLink({
-          inviteeTelegramId: senderTelegramId,
-          inviteeName: saved.player.firstName,
-          inviteeUsername: saved.player.username,
-          referralCode: referralCodeParam,
-        });
-        if (refRes.applied && refRes.inviterTelegramId) {
-          if (typeof refRes.inviteeBalanceEtb === 'number') {
-            saved.player.demoBalanceEtb = refRes.inviteeBalanceEtb;
-          }
-          await this.queueNotification('referral_confirmation', refRes.inviterTelegramId, {
-            friendName: saved.player.firstName,
-            inviterBonusEtb: refRes.inviterBonusEtb ?? 20,
-          });
-          referralNoticeAm = `\n\n🎁 _በጓደኛ ግብዣ ተመዝግበዋል! የመጀመሪያ 15.00 ETB ሂሳብዎ ዝግጁ ነው (ጋባዥዎ +${refRes.inviterBonusEtb ?? 20}.00 ETB አግኝቷል)።_`;
-          referralNoticeEn = `\n\n🎁 _Welcome via friend invitation! Your 15.00 ETB initial balance is ready (your inviter earned +${refRes.inviterBonusEtb ?? 20}.00 ETB)._`;
-        } else if (refRes.reason === 'self_referral') {
+        const refMatch = /^ADEY-([1-9]\d*)$/i.exec(referralCodeParam);
+        const targetInviterId = refMatch ? Number(refMatch[1]) : 0;
+        if (targetInviterId === senderTelegramId) {
           referralNoticeAm = '\n\n⚠️ _የራስዎን የግብዣ ሊንክ መጠቀም አይችሉም።_';
           referralNoticeEn = '\n\n⚠️ _Self-referrals are not permitted._';
+        } else if (!isNewUser) {
+          referralNoticeAm =
+            '\n\nℹ️ _መለያዎ ቀደም ብሎ ተመዝግቧል — የግብዣ ሽልማት ለአዲስ ተጫዋቾች በመጀመሪያ ምዝገባ ብቻ ይሰጣል።_';
+          referralNoticeEn =
+            '\n\nℹ️ _Your account is already registered — referral rewards apply only once for new players._';
+        } else {
+          const refRes = await this.store.processReferralDeepLink({
+            inviteeTelegramId: senderTelegramId,
+            inviteeName: saved.player.firstName,
+            inviteeUsername: saved.player.username,
+            referralCode: referralCodeParam,
+          });
+          if (refRes.applied && refRes.inviterTelegramId) {
+            if (typeof refRes.inviteeBalanceEtb === 'number') {
+              saved.player.demoBalanceEtb = refRes.inviteeBalanceEtb;
+            }
+            inviterNotification = await this.queueNotification(
+              'referral_confirmation',
+              refRes.inviterTelegramId,
+              {
+                friendName: saved.player.firstName,
+                inviterBonusEtb: refRes.inviterBonusEtb ?? 20,
+              }
+            );
+            referralNoticeAm = `\n\n🎁 _በጓደኛ ግብዣ ተመዝግበዋል! የመጀመሪያ 15.00 ETB ሂሳብዎ ዝግጁ ነው (ጋባዥዎ +${refRes.inviterBonusEtb ?? 20}.00 ETB አግኝቷል)።_`;
+            referralNoticeEn = `\n\n🎁 _Welcome via friend invitation! Your 15.00 ETB initial balance is ready (your inviter earned +${refRes.inviterBonusEtb ?? 20}.00 ETB)._`;
+          } else if (refRes.reason === 'self_referral') {
+            referralNoticeAm = '\n\n⚠️ _የራስዎን የግብዣ ሊንክ መጠቀም አይችሉም።_';
+            referralNoticeEn = '\n\n⚠️ _Self-referrals are not permitted._';
+          }
         }
       }
 
@@ -1790,21 +1798,41 @@ export class PersistentTelegramBotService {
           ? customConfig?.customWelcomeAm
           : customConfig?.customWelcomeEn;
 
-      const coreWelcomeAm = [
-        '🎱 እንኳን ወደ ADEYBINGO በደህና መጡ!',
-        '',
-        'ቢንጎ ይጫወቱ፣ የቦርሳዎን መረጃ ይመልከቱ፣ ጓደኞችዎን ይጋብዙ እና በጨዋታው ይደሰቱ!',
-        '',
-        'ለመጀመር ከታች ካሉት አማራጮች አንዱን ይምረጡ።',
-      ].join('\n');
+      const coreWelcomeAm = isNewUser
+        ? [
+            '🎱 እንኳን ወደ ADEYBINGO በደህና መጡ!',
+            '',
+            `ሰላም *${player.firstName}*! የመጀመሪያ *15.00 ETB* የሙከራ ሂሳብዎ ተዘጋጅቷል።`,
+            'ለመቀላቀል፦ *🎱 ቢንጎ ይጫወቱ* በመጫን የሚኒ አፕ ክፍል ይምረጡ፣ ሰዓቱ ከማለቁ በፊት 1–4 ካርድ ይያዙ እና በቀጥታ ይጫወቱ!',
+            '',
+            'ለመጀመር ከታች ካሉት አማራጮች አንዱን ይምረጡ።',
+          ].join('\n')
+        : [
+            '🎱 እንኳን ወደ ADEYBINGO በደህና መጡ!',
+            '',
+            `እንኳን በደህና ተመለሱ *${player.firstName}*! የእርስዎ ቀሪ ሂሳብ *${player.demoBalanceEtb.toFixed(2)} ETB* ነው።`,
+            'ቢንጎ ይጫወቱ፣ የቦርሳዎን መረጃ ይመልከቱ፣ ጓደኞችዎን ይጋብዙ እና በጨዋታው ይደሰቱ!',
+            '',
+            'ለመጀመር ከታች ካሉት አማራጮች አንዱን ይምረጡ።',
+          ].join('\n');
 
-      const coreWelcomeEn = [
-        '🎱 Welcome to ADEYBINGO!',
-        '',
-        'Play live Bingo, manage your wallet, invite friends, and enjoy the game!',
-        '',
-        'Choose an option below to get started.',
-      ].join('\n');
+      const coreWelcomeEn = isNewUser
+        ? [
+            '🎱 Welcome to ADEYBINGO!',
+            '',
+            `Hello *${player.firstName}*! Your *15.00 ETB* initial balance is ready.`,
+            'How to join: Tap *🎱 Play Bingo* to open the Mini App, choose a room, reserve 1–4 cards before the timer ends, and play live!',
+            '',
+            'Choose an option below to get started.',
+          ].join('\n')
+        : [
+            '🎱 Welcome to ADEYBINGO!',
+            '',
+            `Welcome back, *${player.firstName}*! Your current balance is *${player.demoBalanceEtb.toFixed(2)} ETB*.`,
+            'Play live Bingo, manage your wallet, invite friends, and enjoy the game!',
+            '',
+            'Choose an option below to get started.',
+          ].join('\n');
 
       const privacyNoteAm = player.phoneVerified
         ? ''
@@ -1840,8 +1868,12 @@ export class PersistentTelegramBotService {
               : '🏠 Main Menu'
             : undefined,
         profile: player,
+        ...(inviterNotification ? { inviterNotification } : {}),
       };
     }
+
+    // Use existing player record without fabricating accounts or initial credits on non-/start commands
+    const activePlayer = existingPlayer;
 
     // 4B. Pending amount input for Demo Deposit or Demo Withdrawal
     if (
@@ -1995,7 +2027,9 @@ export class PersistentTelegramBotService {
       trimmed === '🎱 Play Bingo' ||
       trimmed === '🎮 Play Bingo' ||
       trimmed === '🎮 Start Playing' ||
-      trimmed === '🎮 ቢንጎ ይጫወቱ'
+      trimmed === '🎮 ቢንጎ ይጫወቱ' ||
+      (customButtons?.playBingoAm && trimmed === customButtons.playBingoAm) ||
+      (customButtons?.playBingoEn && trimmed === customButtons.playBingoEn)
     ) {
       return {
         ok: true,
@@ -2033,7 +2067,7 @@ export class PersistentTelegramBotService {
     const statsAndHistory: PlayerBotStatsAndHistory = this.store.getPlayerStatsAndHistory
       ? await this.store.getPlayerStatsAndHistory(senderTelegramId)
       : {
-          balanceEtb: existingPlayer?.demoBalanceEtb ?? 0,
+          balanceEtb: activePlayer?.demoBalanceEtb ?? 0,
           demoWinningsEtb: 0,
           gamesPlayed: 0,
           totalWins: 0,
@@ -2051,7 +2085,9 @@ export class PersistentTelegramBotService {
       trimmed === '/wallet' ||
       trimmed === '💰 My Wallet' ||
       trimmed === '💰 My Balance' ||
-      trimmed === '💰 የእኔ ቦርሳ'
+      trimmed === '💰 የእኔ ቦርሳ' ||
+      (customButtons?.myWalletAm && trimmed === customButtons.myWalletAm) ||
+      (customButtons?.myWalletEn && trimmed === customButtons.myWalletEn)
     ) {
       if (cleanCallback === 'cb:wallet_history') {
         const txLines =
@@ -2157,6 +2193,8 @@ export class PersistentTelegramBotService {
       trimmed === '➕ ገንዘብ ያስገቡ' ||
       trimmed === '➕ Deposit' ||
       trimmed === '/deposit' ||
+      (customButtons?.depositAm && trimmed === customButtons.depositAm) ||
+      (customButtons?.depositEn && trimmed === customButtons.depositEn) ||
       cleanCallback === 'cb:deposit' ||
       cleanCallback === 'cb:deposit_status' ||
       cleanCallback.startsWith('cb:deposit_method:') ||
@@ -2288,9 +2326,29 @@ export class PersistentTelegramBotService {
               registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
               securityCode: 'deposit_request_created',
               callbackAnswerText: currentLang === 'am' ? '✅ ጥያቄው ተልኳል' : '✅ Request submitted',
-              profile: existingPlayer ?? undefined,
+              profile: activePlayer ?? undefined,
             };
           }
+          return {
+            ok: false,
+            chatId: senderTelegramId,
+            language: currentLang,
+            text:
+              currentLang === 'am'
+                ? '⚠️ የሙከራ ገንዘብ ማስገቢያ መጠኑ ትክክል አይደለም (ከ10 እስከ 10,000 ETB ይምረጡ)።'
+                : '⚠️ Invalid Demo deposit amount (please select between 10 and 10,000 ETB).',
+            parseMode: 'Markdown',
+            replyMarkup: buildBotMainMenuMarkup(
+              currentLang,
+              effectiveMiniAppUrl,
+              Boolean(activePlayer?.phoneVerified),
+              customButtons,
+              'deposit'
+            ),
+            registrationStatus: activePlayer?.phoneVerified ? 'verified' : 'pending_contact',
+            securityCode: depRes.reason || 'invalid_deposit_amount',
+            profile: activePlayer ?? undefined,
+          };
         }
       }
 
@@ -2335,6 +2393,8 @@ export class PersistentTelegramBotService {
       trimmed === '💸 ገንዘብ ያውጡ' ||
       trimmed === '💸 Withdraw' ||
       trimmed === '/withdraw' ||
+      (customButtons?.withdrawAm && trimmed === customButtons.withdrawAm) ||
+      (customButtons?.withdrawEn && trimmed === customButtons.withdrawEn) ||
       cleanCallback === 'cb:withdraw' ||
       cleanCallback === 'cb:withdraw_status' ||
       cleanCallback.startsWith('cb:withdraw_method:') ||
@@ -2530,9 +2590,11 @@ export class PersistentTelegramBotService {
       trimmed === '🎁 ጓደኞችን ይጋብዙ' ||
       trimmed === '🎁 Invite Friends' ||
       trimmed === '👥 Invite Friends' ||
-      trimmed === '👥 ጓደኞችን ይጋብዙ'
+      trimmed === '👥 ጓደኞችን ይጋብዙ' ||
+      (customButtons?.inviteFriendsAm && trimmed === customButtons.inviteFriendsAm) ||
+      (customButtons?.inviteFriendsEn && trimmed === customButtons.inviteFriendsEn)
     ) {
-      const refCode = existingPlayer?.referralCode || buildTelegramReferralCode(senderTelegramId);
+      const refCode = activePlayer?.referralCode || buildTelegramReferralCode(senderTelegramId);
       const refLink = buildTelegramInviteLink(refCode);
 
       if (cleanCallback === 'cb:referral_copy') {
@@ -2604,6 +2666,8 @@ export class PersistentTelegramBotService {
       trimmed === '🏆 የደረጃ ሰንጠረዥ' ||
       trimmed === '🏆 Leaderboard' ||
       trimmed === '/leaderboard' ||
+      (customButtons?.leaderboardAm && trimmed === customButtons.leaderboardAm) ||
+      (customButtons?.leaderboardEn && trimmed === customButtons.leaderboardEn) ||
       cleanCallback === 'cb:leaderboard'
     ) {
       const leaders = this.store.getLeaderboard ? await this.store.getLeaderboard(10) : [];
@@ -2651,7 +2715,9 @@ export class PersistentTelegramBotService {
       trimmed === '/profile' ||
       trimmed === '👤 የእኔ መገለጫ' ||
       trimmed === '👤 My Profile' ||
-      trimmed === '👤 መገለጫዬ'
+      trimmed === '👤 መገለጫዬ' ||
+      (customButtons?.myProfileAm && trimmed === customButtons.myProfileAm) ||
+      (customButtons?.myProfileEn && trimmed === customButtons.myProfileEn)
     ) {
       if (cleanCallback === 'cb:copy_telegram_id') {
         return {
@@ -2732,7 +2798,9 @@ export class PersistentTelegramBotService {
       cleanCallback === 'menu:game_history' ||
       trimmed === '/history' ||
       trimmed === '📜 የጨዋታ ታሪክ' ||
-      trimmed === '📜 Game History'
+      trimmed === '📜 Game History' ||
+      (customButtons?.gameHistoryAm && trimmed === customButtons.gameHistoryAm) ||
+      (customButtons?.gameHistoryEn && trimmed === customButtons.gameHistoryEn)
     ) {
       const gameLines = statsAndHistory.recentGames.map((g, idx) => {
         return `${idx + 1}. \`${g.gameId}\` (${g.roomId}) — ካርድ *#${g.cardId}* · *${g.pattern}*`;
@@ -2817,6 +2885,8 @@ export class PersistentTelegramBotService {
       trimmed === '📞 Contact Support' ||
       trimmed === '💬 Support' ||
       trimmed === '💬 ድጋፍ' ||
+      (customButtons?.supportAm && trimmed === customButtons.supportAm) ||
+      (customButtons?.supportEn && trimmed === customButtons.supportEn) ||
       cleanCallback === 'cb:support' ||
       cleanCallback === 'menu:contact_support'
     ) {

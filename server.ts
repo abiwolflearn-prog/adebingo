@@ -168,16 +168,6 @@ async function startServer() {
   const gameAuthority = new ServerGameAuthority();
   const adminAuthority = new ServerAdminAuthority(botEngine);
 
-  // Seed default demo player profile in bot engine so outbox & profile queries work out of the box
-  botEngine.handleIncomingUpdate({
-    senderTelegramId: 8842109,
-    firstName: 'Abebe',
-    lastName: 'Bikila',
-    username: 'abebe_adey',
-    firebaseUid: 'tg_8842109',
-    text: '/start',
-  });
-
   app.use(express.json({ limit: '64kb' }));
 
   const resolveConfiguredBotToken = (): string | undefined => {
@@ -538,8 +528,12 @@ async function startServer() {
     const message = update.message || update.callback_query?.message || {};
     const from = update.message?.from || update.callback_query?.from || {};
     const senderTelegramId = Number(
-      from.id || message.chat?.id || update.senderTelegramId || 8842109
+      from.id || message.chat?.id || update.senderTelegramId || 0
     );
+    if (!Number.isInteger(senderTelegramId) || senderTelegramId <= 0) {
+      res.status(400).json({ ok: false, reason: 'invalid_sender_telegram_id' });
+      return;
+    }
     const callbackQueryId =
       typeof update.callback_query?.id === 'string'
         ? update.callback_query.id
@@ -569,6 +563,66 @@ async function startServer() {
       contact: update.message?.contact || update.contact || null,
     });
 
+    // Synchronize local wallet ledger & referral history when a new user registers or credits an inviter via webhook
+    if (botResponse.ok && botResponse.profile) {
+      const pUid = `tg_${senderTelegramId}`;
+      const existingInitTxs = localTransactionsByUid.get(pUid) || [];
+      const initTxId = `tx_init_${pUid}`;
+      if (!existingInitTxs.some((t) => t.id === initTxId)) {
+        existingInitTxs.unshift({
+          id: initTxId,
+          type: 'deposit_demo',
+          amount: 15,
+          balanceBeforeEtb: 0,
+          balanceAfterEtb: 15,
+          relatedId: pUid,
+          status: 'demo_completed',
+          labelAm: 'የመጀመሪያ ሂሳብ (+15 ብር)',
+          labelEn: 'Initial Account Balance (+15 ETB)',
+          timestamp: botResponse.profile.registeredAt || new Date().toISOString(),
+          reference: `ADB-INIT-${senderTelegramId}`,
+        });
+        localTransactionsByUid.set(pUid, existingInitTxs.slice(0, 50));
+      }
+      if (botResponse.inviterNotification && botResponse.inviterNotification.telegramUserId > 0) {
+        const inviterId = botResponse.inviterNotification.telegramUserId;
+        const inviterUid = `tg_${inviterId}`;
+        const inviterPlayer = botEngine.getPlayerByTelegramId(inviterId);
+        const inviterBalAfter = inviterPlayer ? Number(inviterPlayer.demoBalanceEtb ?? 0) : 20;
+        const inviterTxId = `tx_ref_inviter_${senderTelegramId}`;
+        const inviterTxs = localTransactionsByUid.get(inviterUid) || [];
+        if (!inviterTxs.some((t) => t.id === inviterTxId)) {
+          inviterTxs.unshift({
+            id: inviterTxId,
+            type: 'referral_bonus',
+            amount: 20,
+            balanceBeforeEtb: Math.max(0, Number((inviterBalAfter - 20).toFixed(2))),
+            balanceAfterEtb: inviterBalAfter,
+            relatedId: `ref_tg_${senderTelegramId}`,
+            status: 'demo_completed',
+            labelAm: `የግብዣ ሽልማት (+20 ብር · ${botResponse.profile.firstName})`,
+            labelEn: `Referral Reward (+20 ETB · ${botResponse.profile.firstName})`,
+            timestamp: new Date().toISOString(),
+            reference: `ADB-REF-${senderTelegramId}`,
+          });
+          localTransactionsByUid.set(inviterUid, inviterTxs.slice(0, 50));
+        }
+        const inviterRefs = localReferralsByUid.get(inviterUid) || [];
+        if (!inviterRefs.some((r) => r.id === `ref_tg_${senderTelegramId}`)) {
+          inviterRefs.unshift({
+            id: `ref_tg_${senderTelegramId}`,
+            friendName: botResponse.profile.firstName,
+            handle: `@${botResponse.profile.username.replace(/^@/, '')}`,
+            joinedAt: new Date().toISOString(),
+            status: 'qualified',
+            inviterBonus: 20,
+            inviteeBonus: 0,
+          });
+          localReferralsByUid.set(inviterUid, inviterRefs.slice(0, 50));
+        }
+      }
+    }
+
     // Deliver response to live Telegram chat unless explicitly marked as local simulation (simulateOnly: true)
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     let deliveredToTelegramApi = false;
@@ -594,15 +648,49 @@ async function startServer() {
         }
 
         const rawMarkup = botResponse.replyMarkup;
-        const telegramReplyMarkup = rawMarkup?.inline_keyboard?.length
-          ? { inline_keyboard: rawMarkup.inline_keyboard }
-          : rawMarkup?.keyboard?.length
-            ? {
-                keyboard: rawMarkup.keyboard,
-                resize_keyboard: rawMarkup.resize_keyboard ?? true,
-                one_time_keyboard: rawMarkup.one_time_keyboard ?? false,
-              }
-            : undefined;
+        const incomingText =
+          typeof update.message?.text === 'string'
+            ? update.message.text.trim()
+            : typeof update.text === 'string'
+            ? update.text.trim()
+            : '';
+        const isStartMsg = /^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(incomingText);
+        const shouldSendReplyKeyboard =
+          Boolean(rawMarkup?.keyboard?.length) &&
+          (isStartMsg ||
+            botResponse.securityCode === 'start_welcome_delivered' ||
+            botResponse.securityCode === 'callback_main_menu' ||
+            botResponse.securityCode === 'language_updated' ||
+            botResponse.securityCode === 'contact_verified' ||
+            botResponse.securityCode === 'plain_text_phone_rejected' ||
+            botResponse.securityCode === 'contact_owner_mismatch' ||
+            botResponse.securityCode === 'missing_contact_user_id' ||
+            botResponse.securityCode === 'invalid_phone_format' ||
+            botResponse.securityCode === 'duplicate_phone_number' ||
+            botResponse.securityCode === 'verified_contact_locked');
+        const shouldSendSeparateInlineKeyboard =
+          shouldSendReplyKeyboard &&
+          Boolean(rawMarkup?.inline_keyboard?.length) &&
+          (isStartMsg ||
+            botResponse.securityCode === 'start_welcome_delivered' ||
+            botResponse.securityCode === 'callback_main_menu' ||
+            botResponse.securityCode === 'language_updated' ||
+            botResponse.securityCode === 'contact_verified');
+        const primaryReplyMarkup = shouldSendReplyKeyboard
+          ? {
+              keyboard: rawMarkup!.keyboard,
+              resize_keyboard: rawMarkup!.resize_keyboard ?? true,
+              one_time_keyboard: rawMarkup!.one_time_keyboard ?? false,
+            }
+          : rawMarkup?.inline_keyboard?.length
+            ? { inline_keyboard: rawMarkup.inline_keyboard }
+            : rawMarkup?.keyboard?.length
+              ? {
+                  keyboard: rawMarkup.keyboard,
+                  resize_keyboard: rawMarkup.resize_keyboard ?? true,
+                  one_time_keyboard: rawMarkup.one_time_keyboard ?? false,
+                }
+              : undefined;
 
         const tgResp = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
           method: 'POST',
@@ -611,12 +699,48 @@ async function startServer() {
             chat_id: botResponse.chatId,
             text: botResponse.text,
             parse_mode: botResponse.parseMode,
-            ...(telegramReplyMarkup ? { reply_markup: telegramReplyMarkup } : {}),
+            ...(primaryReplyMarkup ? { reply_markup: primaryReplyMarkup } : {}),
           }),
         });
         const tgData = await tgResp.json().catch(() => ({}));
-        deliveredToTelegramApi = Boolean(tgResp.ok && tgData.ok);
-        telegramDeliveryNote = tgData.description || (deliveredToTelegramApi ? 'delivered' : 'send_failed');
+        const primaryDelivered = Boolean(tgResp.ok && tgData.ok);
+        deliveredToTelegramApi = primaryDelivered;
+        telegramDeliveryNote = tgData.description || (primaryDelivered ? 'delivered' : 'send_failed');
+
+        if (primaryDelivered && shouldSendSeparateInlineKeyboard) {
+          const inlinePrompt =
+            botResponse.language === 'am' ? '👇 ፈጣን አማራጮች፦' : '👇 Quick Actions:';
+          const tgInlineResp = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: botResponse.chatId,
+              text: inlinePrompt,
+              reply_markup: { inline_keyboard: rawMarkup!.inline_keyboard },
+            }),
+          });
+          const tgInlineData = await tgInlineResp.json().catch(() => ({}));
+          if (!tgInlineResp.ok || !tgInlineData.ok) {
+            deliveredToTelegramApi = false;
+            telegramDeliveryNote = tgInlineData.description || 'inline_send_failed';
+          }
+        }
+
+        if (
+          botResponse.inviterNotification &&
+          botResponse.inviterNotification.telegramUserId > 0 &&
+          botResponse.inviterNotification.telegramUserId !== botResponse.chatId
+        ) {
+          await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: botResponse.inviterNotification.telegramUserId,
+              text: `${botResponse.inviterNotification.title}\n\n${botResponse.inviterNotification.body}`,
+              parse_mode: 'Markdown',
+            }),
+          }).catch(() => undefined);
+        }
       } catch {
         deliveredToTelegramApi = false;
         telegramDeliveryNote = 'network_error';
@@ -926,7 +1050,16 @@ async function startServer() {
     const text = typeof req.body?.text === 'string' ? req.body.text.slice(0, 256) : '';
     const callbackData =
       typeof req.body?.callbackData === 'string' ? req.body.callbackData.slice(0, 128) : '';
-    const contact = req.body?.contact ?? null;
+    if (req.body?.contact !== undefined && req.body?.contact !== null) {
+      res.status(403).json({
+        ok: false,
+        error: 'native_telegram_contact_required',
+        message:
+          'በጽሁፍ ወይም በቀጥታ ጥያቄ የሚላክ ስልክ ቁጥር አይረጋገጥም። እባክዎ በ@AdeyBingoGameBot ውስጥ "📲 ስልክ ቁጥርዎን ያጋሩ" የሚለውን የቴሌግራም ቁልፍ ይጠቀሙ።',
+      });
+      return;
+    }
+
     const updateId =
       typeof req.body?.updateId === 'number' ? req.body.updateId : undefined;
     const callbackQueryId =
@@ -942,7 +1075,6 @@ async function startServer() {
       firebaseUid,
       text,
       callbackData,
-      contact,
     });
 
     persistLocalStateSnapshot();

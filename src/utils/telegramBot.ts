@@ -81,6 +81,7 @@ export interface TelegramBotResponse {
   callbackAnswerText?: string;
   profile?: RegisteredTelegramPlayer;
   notificationQueued?: BotNotificationMessage;
+  inviterNotification?: BotNotificationMessage;
 }
 
 export interface RegisteredTelegramPlayer {
@@ -648,6 +649,8 @@ export class AdeyBingoTelegramBotEngine {
     Array<{ inviteeTelegramId: number; inviteeName: string; bonusEtb: number; createdAt: string }>
   >();
   private referredInviteeIds = new Set<number>();
+  private verifiedPhoneOwners = new Map<string, number>();
+  private verifiedPhoneByTelegramId = new Map<number, string>();
   private miniAppUrl: string;
   private customWelcomeAm: string | null = null;
   private customWelcomeEn: string | null = null;
@@ -2160,12 +2163,27 @@ export class AdeyBingoTelegramBotEngine {
       };
       this.playersByTelegramId.set(senderTelegramId, player);
       this.telegramIdByUid.set(candidateUid, senderTelegramId);
+
+      // Synchronize initial 15 ETB welcome balance with player transaction ledger
+      const initTxList = this.transactionsByUser.get(senderTelegramId) || [];
+      if (!initTxList.some((tx) => tx.id === `tx_init_tg_${senderTelegramId}`)) {
+        initTxList.unshift({
+          id: `tx_init_tg_${senderTelegramId}`,
+          type: 'deposit_demo',
+          amountEtb: 15,
+          description: 'Initial Account Balance (+15 ETB)',
+          reference: `ADB-INIT-${senderTelegramId}`,
+          createdAt: nowIso,
+        });
+        this.transactionsByUser.set(senderTelegramId, initTxList.slice(0, 30));
+      }
     }
     player.pendingAction = null;
     player.pendingMethod = null;
 
     let referralNoticeAm = '';
     let referralNoticeEn = '';
+    let inviterNotification: BotNotificationMessage | undefined;
     const normalizedReferralCode = referralCode?.trim().toUpperCase();
     if (normalizedReferralCode && normalizedReferralCode.startsWith('ADEY-')) {
       const inviterId = Number(normalizedReferralCode.slice(5));
@@ -2176,6 +2194,7 @@ export class AdeyBingoTelegramBotEngine {
         } else if (!this.referredInviteeIds.has(senderTelegramId) && isNewUser) {
           const inviterPlayer = this.playersByTelegramId.get(inviterId);
           if (inviterPlayer) {
+            const refNowIso = new Date().toISOString();
             this.referredInviteeIds.add(senderTelegramId);
             player.referredByCode = normalizedReferralCode;
             player.referredByUid = `tg_${inviterId}`;
@@ -2184,11 +2203,28 @@ export class AdeyBingoTelegramBotEngine {
               inviteeTelegramId: senderTelegramId,
               inviteeName: player.firstName,
               bonusEtb: 20,
-              createdAt: new Date().toISOString(),
+              createdAt: refNowIso,
             });
             this.referralsByInviter.set(inviterId, inviterRefs);
             inviterPlayer.demoBalanceEtb = Number((inviterPlayer.demoBalanceEtb + 20).toFixed(2));
-            this.queueNotification('referral_confirmation', inviterId, {
+            inviterPlayer.updatedAt = refNowIso;
+
+            // Keep inviter wallet ledger synchronized with +20 ETB referral credit
+            const inviterTxList = this.transactionsByUser.get(inviterId) || [];
+            const inviterTxId = `tx_ref_inviter_${senderTelegramId}`;
+            if (!inviterTxList.some((tx) => tx.id === inviterTxId)) {
+              inviterTxList.unshift({
+                id: inviterTxId,
+                type: 'referral_bonus',
+                amountEtb: 20,
+                description: `Referral Reward (+20 ETB · ${player.firstName})`,
+                reference: `ADB-REF-${senderTelegramId}`,
+                createdAt: refNowIso,
+              });
+              this.transactionsByUser.set(inviterId, inviterTxList.slice(0, 30));
+            }
+
+            inviterNotification = this.queueNotification('referral_confirmation', inviterId, {
               friendName: player.firstName,
               inviterBonusEtb: 20,
             });
@@ -2197,25 +2233,50 @@ export class AdeyBingoTelegramBotEngine {
             referralNoticeEn =
               '\n\n🎁 _Welcome via friend invitation! Your 15.00 ETB initial balance is ready (your inviter earned +20.00 ETB)._';
           }
+        } else if (!isNewUser || this.referredInviteeIds.has(senderTelegramId)) {
+          referralNoticeAm =
+            '\n\nℹ️ _መለያዎ ቀደም ብሎ ተመዝግቧል — የግብዣ ሽልማት ለአዲስ ተጫዋቾች በመጀመሪያ ምዝገባ ብቻ ይሰጣል።_';
+          referralNoticeEn =
+            '\n\nℹ️ _Your account is already registered — referral rewards apply only once for new players._';
         }
       }
     }
 
-    const coreWelcomeAm = [
-      '🎱 እንኳን ወደ ADEYBINGO በደህና መጡ!',
-      '',
-      'ቢንጎ ይጫወቱ፣ የቦርሳዎን መረጃ ይመልከቱ፣ ጓደኞችዎን ይጋብዙ እና በጨዋታው ይደሰቱ!',
-      '',
-      'ለመጀመር ከታች ካሉት አማራጮች አንዱን ይምረጡ።',
-    ].join('\n');
+    const coreWelcomeAm = isNewUser
+      ? [
+          '🎱 እንኳን ወደ ADEYBINGO በደህና መጡ!',
+          '',
+          `ሰላም *${player.firstName}*! የመጀመሪያ *15.00 ETB* የሙከራ ሂሳብዎ ተዘጋጅቷል።`,
+          'ለመቀላቀል፦ *🎱 ቢንጎ ይጫወቱ* በመጫን የሚኒ አፕ ክፍል ይምረጡ፣ ሰዓቱ ከማለቁ በፊት 1–4 ካርድ ይያዙ እና በቀጥታ ይጫወቱ!',
+          '',
+          'ለመጀመር ከታች ካሉት አማራጮች አንዱን ይምረጡ።',
+        ].join('\n')
+      : [
+          '🎱 እንኳን ወደ ADEYBINGO በደህና መጡ!',
+          '',
+          `እንኳን በደህና ተመለሱ *${player.firstName}*! የእርስዎ ቀሪ ሂሳብ *${player.demoBalanceEtb.toFixed(2)} ETB* ነው።`,
+          'ቢንጎ ይጫወቱ፣ የቦርሳዎን መረጃ ይመልከቱ፣ ጓደኞችዎን ይጋብዙ እና በጨዋታው ይደሰቱ!',
+          '',
+          'ለመጀመር ከታች ካሉት አማራጮች አንዱን ይምረጡ።',
+        ].join('\n');
 
-    const coreWelcomeEn = [
-      '🎱 Welcome to ADEYBINGO!',
-      '',
-      'Play live Bingo, manage your wallet, invite friends, and enjoy the game!',
-      '',
-      'Choose an option below to get started.',
-    ].join('\n');
+    const coreWelcomeEn = isNewUser
+      ? [
+          '🎱 Welcome to ADEYBINGO!',
+          '',
+          `Hello *${player.firstName}*! Your *15.00 ETB* initial balance is ready.`,
+          'How to join: Tap *🎱 Play Bingo* to open the Mini App, choose a room, reserve 1–4 cards before the timer ends, and play live!',
+          '',
+          'Choose an option below to get started.',
+        ].join('\n')
+      : [
+          '🎱 Welcome to ADEYBINGO!',
+          '',
+          `Welcome back, *${player.firstName}*! Your current balance is *${player.demoBalanceEtb.toFixed(2)} ETB*.`,
+          'Play live Bingo, manage your wallet, invite friends, and enjoy the game!',
+          '',
+          'Choose an option below to get started.',
+        ].join('\n');
 
     const privacyVerificationNoteAm = player.phoneVerified
       ? ''
@@ -2240,6 +2301,7 @@ export class AdeyBingoTelegramBotEngine {
       replyMarkup: this.buildMenuMarkup(lang, player.phoneVerified, 'welcome'),
       registrationStatus: player.phoneVerified ? 'verified' : 'pending_contact',
       profile: player,
+      ...(inviterNotification ? { inviterNotification } : {}),
     };
   }
 
@@ -2282,6 +2344,41 @@ export class AdeyBingoTelegramBotEngine {
       };
     }
 
+    const normalizedPhone = verification.verifiedPhoneNumber;
+    const existingPhoneOwner = this.verifiedPhoneOwners.get(normalizedPhone);
+    if (existingPhoneOwner !== undefined && existingPhoneOwner !== senderTelegramId) {
+      return {
+        ok: false,
+        chatId: senderTelegramId,
+        language: lang,
+        text:
+          lang === 'am'
+            ? '🚫 *ይህ ስልክ ቁጥር ቀደም ብሎ ከሌላ የADEYBINGO መለያ ጋር ተመዝግቧል።*\nድጋሚ ምዝገባ አይፈቀድም።'
+            : '🚫 *This phone number is already registered with another ADEYBINGO account.*\nDuplicate phone registrations are blocked.',
+        parseMode: 'Markdown',
+        replyMarkup: buildBotMainMenuMarkup(lang, this.miniAppUrl, false, this.buttonLabels),
+        registrationStatus: 'duplicate_blocked',
+        securityCode: 'duplicate_phone_number',
+      };
+    }
+
+    const existingVerifiedPhone = this.verifiedPhoneByTelegramId.get(senderTelegramId);
+    if (existingVerifiedPhone && existingVerifiedPhone !== normalizedPhone) {
+      return {
+        ok: false,
+        chatId: senderTelegramId,
+        language: lang,
+        text:
+          lang === 'am'
+            ? '🔒 *የተረጋገጠ ስልክ ቁጥርዎ ቀደም ብሎ ተቆልፏል።*\nየተረጋገጠ ስልክ ቁጥርን በሌላ ቁጥር መተካት አይፈቀድም።'
+            : '🔒 *Your verified phone number is already locked.*\nReplacing a verified phone number with another number is not permitted.',
+        parseMode: 'Markdown',
+        replyMarkup: buildBotMainMenuMarkup(lang, this.miniAppUrl, true, this.buttonLabels),
+        registrationStatus: 'verified',
+        securityCode: 'verified_contact_locked',
+      };
+    }
+
     const startRes = this.handleStartCommand({
       senderTelegramId,
       firstName,
@@ -2294,8 +2391,10 @@ export class AdeyBingoTelegramBotEngine {
     }
 
     const player = startRes.profile;
+    this.verifiedPhoneOwners.set(normalizedPhone, senderTelegramId);
+    this.verifiedPhoneByTelegramId.set(senderTelegramId, normalizedPhone);
     player.phoneVerified = true;
-    player.verifiedPhoneMasked = maskPhoneNumber(verification.verifiedPhoneNumber);
+    player.verifiedPhoneMasked = maskPhoneNumber(normalizedPhone);
     player.updatedAt = new Date().toISOString();
 
     const ntf = this.queueNotification('registration_success', senderTelegramId, {

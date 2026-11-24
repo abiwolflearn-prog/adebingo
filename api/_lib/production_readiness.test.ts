@@ -25,6 +25,7 @@ import {
 import {
   createBotCommandHandler,
   createTelegramAuthHandler,
+  createTelegramWebhookHandler,
 } from './telegramHandler.ts';
 import {
   createPlayerStateHandler,
@@ -1150,7 +1151,8 @@ test('Phase 4: Telegram auth enforces HMAC validation, replay protection, IAM si
   });
   assert.equal(tamperedRes.statusCode, 401);
 
-  // 4. Verified phone contact sharing via /api/telegram/bot-command
+  // 4. Client-supplied contact payloads on /api/telegram/bot-command must be rejected;
+  //    only real native Telegram webhook updates may mark a phone as verified.
   const authDeps = createMockAuthDeps({
     'tok-6002': { uid: 'tg_6002', telegram_id: 6002, telegram_verified: true, name: 'Yonas' },
   });
@@ -1171,27 +1173,58 @@ test('Phase 4: Telegram auth enforces HMAC validation, replay protection, IAM si
   });
   assert.equal(spoofedRes.statusCode, 403);
 
-  // Mismatched contact.user_id rejected with 400 (does not mark phoneVerified)
-  const mismatchedContact = await invokeHandler(botCmdHandler, {
+  // Client-forged contact JSON on /api/telegram/bot-command rejected with 403 native_telegram_contact_required
+  const forgedClientContact = await invokeHandler(botCmdHandler, {
     method: 'POST',
     headers: { authorization: 'Bearer tok-6002' },
     body: {
-      contact: { phone_number: '+251911223344', first_name: 'Other', user_id: 99999 },
+      contact: { phone_number: '+251911223344', first_name: 'Yonas', user_id: 6002 },
     },
   });
-  assert.equal(mismatchedContact.statusCode, 400);
+  assert.equal(forgedClientContact.statusCode, 403);
+  assert.equal(forgedClientContact.body.reason, 'native_telegram_contact_required');
+  assert.equal(store.get('users/tg_6002')?.phoneVerified, false);
+
+  // Native Telegram webhook contact sharing: mismatched contact.user_id rejected (does not mark phoneVerified)
+  const webhookSecret = 'prod-readiness-webhook-secret-9999';
+  const webhookHandler = createTelegramWebhookHandler({
+    getDb: () => db,
+    getBotToken: () => botToken,
+    getWebhookSecret: () => webhookSecret,
+    isAdminReady: () => true,
+    fetchImpl: (async () => ({ ok: true, json: async () => ({ ok: true }) })) as unknown as typeof fetch,
+    limiter: new BoundedRateLimiter(),
+  });
+  const mismatchedContact = await invokeHandler(webhookHandler, {
+    method: 'POST',
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
+    body: {
+      update_id: 600201,
+      message: {
+        from: { id: 6002, first_name: 'Yonas', username: 'yonas_tg' },
+        chat: { id: 6002, type: 'private' },
+        contact: { phone_number: '+251911223344', first_name: 'Other', user_id: 99999 },
+      },
+    },
+  });
   assert.equal(mismatchedContact.body.ok, false);
   assert.equal(store.get('users/tg_6002')?.phoneVerified, false);
 
-  // Valid contact without forbidden override fields binds caller.telegramId and persists private contact
-  const verifiedContact = await invokeHandler(botCmdHandler, {
+  // Valid native Telegram webhook contact binds sender Telegram ID and persists private contact
+  const verifiedContact = await invokeHandler(webhookHandler, {
     method: 'POST',
-    headers: { authorization: 'Bearer tok-6002' },
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
     body: {
-      contact: { phone_number: '+251 911 223 344', first_name: 'Yonas' },
+      update_id: 600202,
+      message: {
+        from: { id: 6002, first_name: 'Yonas', username: 'yonas_tg' },
+        chat: { id: 6002, type: 'private' },
+        contact: { phone_number: '+251 911 223 344', first_name: 'Yonas', user_id: 6002 },
+      },
     },
   });
   assert.equal(verifiedContact.statusCode, 200);
+  assert.equal(verifiedContact.body.ok, true);
   assert.equal(store.get('users/tg_6002')?.phoneVerified, true);
   assert.equal(store.get('botPlayers/6002')?.phoneVerified, true);
   assert.equal(store.get('users/tg_6002/private/contact')?.phoneNumber, '+251911223344');

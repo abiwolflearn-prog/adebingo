@@ -215,6 +215,10 @@ export default function App() {
   const [countdown, setCountdown] = useState<number>(0);
   const serverClockOffsetMsRef = useRef<number>(0);
   const roomDeadlineMsRef = useRef<number>(0);
+  const nextBallDrawAtMsRef = useRef<number>(0);
+  const activeRoomIdRef = useRef<string>(activeRoomId);
+  activeRoomIdRef.current = activeRoomId;
+  const hydratedRoomIdRef = useRef<string>('');
   const hasServerRoomSyncRef = useRef<boolean>(false);
   const prevRoomStatusRef = useRef<RoomConfig['status']>('countdown');
   const lastRoundNumberRef = useRef<number>(0);
@@ -241,15 +245,16 @@ export default function App() {
   screenRef.current = screen;
   const selectedCardIdsRef = useRef<number[]>(selectedCardIds);
   selectedCardIdsRef.current = selectedCardIds;
-  const activeUidRef = useRef<string>(fbUser?.uid || `tg_${user.id}`);
-  activeUidRef.current = fbUser?.uid || `tg_${serverVerifiedTelegramId ?? user.id}`;
-  const activeTgIdRef = useRef<number>(serverVerifiedTelegramId ?? user.id);
-  activeTgIdRef.current = serverVerifiedTelegramId ?? user.id;
+  const activeUidRef = useRef<string>(fbUser?.uid || '');
+  activeUidRef.current =
+    fbUser?.uid || (serverVerifiedTelegramId ? `tg_${serverVerifiedTelegramId}` : '');
+  const activeTgIdRef = useRef<number>(serverVerifiedTelegramId ?? 0);
+  activeTgIdRef.current = serverVerifiedTelegramId ?? 0;
 
   // Account & financial state — hydrated strictly from persistent backend / Firestore (never fabricated locally)
   const [demoBalance, setDemoBalance] = useState<number>(0);
   const [winningsBalance, setWinningsBalance] = useState<number>(0);
-  const [referralCode, setReferralCode] = useState<string>(`ADEY-${user.id}`);
+  const [referralCode, setReferralCode] = useState<string>('');
   const [referredByCode, setReferredByCode] = useState<string>('');
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [depositRequests, setDepositRequests] = useState<DepositRequestSummary[]>([]);
@@ -424,12 +429,22 @@ export default function App() {
       }
 
       if (detail) {
+        // Ignore stale async response if the player switched to another room while this fetch was in flight
+        if (activeRoomIdRef.current !== roomIdToLoad) {
+          return;
+        }
         hasServerRoomSyncRef.current = true;
+        const isSameHydratedRoom = hydratedRoomIdRef.current === roomIdToLoad;
         const rawNextStatus: RoomConfig['status'] = detail.room.status || 'countdown';
-        const prevStatus = prevRoomStatusRef.current;
+        const prevStatus = isSameHydratedRoom ? prevRoomStatusRef.current : rawNextStatus;
 
         const serverRoundNumber = Number(detail.room.roundNumber ?? detail.game?.roundNumber ?? 0);
-        if (serverRoundNumber > 0 && lastRoundNumberRef.current > 0 && serverRoundNumber > lastRoundNumberRef.current) {
+        if (
+          isSameHydratedRoom &&
+          serverRoundNumber > 0 &&
+          lastRoundNumberRef.current > 0 &&
+          serverRoundNumber > lastRoundNumberRef.current
+        ) {
           localWinnerSettledRoundRef.current = false;
         }
         if (serverRoundNumber > 0) {
@@ -443,7 +458,11 @@ export default function App() {
         const nextStatus = rawNextStatus;
 
         // Countdown finished -> switch into live game ONLY if player has selected at least 1 card
-        if ((prevStatus === 'countdown' || prevStatus === 'waiting') && nextStatus === 'live') {
+        if (
+          isSameHydratedRoom &&
+          (prevStatus === 'countdown' || prevStatus === 'waiting') &&
+          nextStatus === 'live'
+        ) {
           const hasCards =
             (token ? detail.myCardIds.length : selectedCardIdsRef.current.length) > 0;
           if (hasCards) {
@@ -521,6 +540,7 @@ export default function App() {
 
         // New round started -> reset board & unlock 60s card selection
         if (
+          isSameHydratedRoom &&
           (prevStatus === 'live' || prevStatus === 'completed' || localWinnerSettledRoundRef.current) &&
           nextStatus === 'countdown'
         ) {
@@ -541,6 +561,7 @@ export default function App() {
               : 'New 60s round started — pick your cards!'
           );
         }
+        hydratedRoomIdRef.current = roomIdToLoad;
         prevRoomStatusRef.current = nextStatus;
 
         const extendedCount = Number(detail.room.extendedRegistrationCount ?? 0);
@@ -576,8 +597,15 @@ export default function App() {
           detail.room.intermissionEndsAtMs > 0
             ? detail.room.intermissionEndsAtMs
             : 0;
+        const liveNextDrawMs =
+          typeof detail.room.nextBallDrawAtMs === 'number' &&
+          Number.isFinite(detail.room.nextBallDrawAtMs) &&
+          detail.room.nextBallDrawAtMs > 0
+            ? detail.room.nextBallDrawAtMs
+            : 0;
         if ((nextStatus === 'countdown' || nextStatus === 'waiting') && deadlineMs > 0) {
           roomDeadlineMsRef.current = deadlineMs;
+          nextBallDrawAtMsRef.current = 0;
           const syncedRemaining = Math.max(
             0,
             Math.ceil((deadlineMs - (Date.now() + serverClockOffsetMsRef.current)) / 1000)
@@ -585,6 +613,7 @@ export default function App() {
           setCountdown(syncedRemaining);
         } else if (nextStatus === 'completed' && intermissionDeadlineMs > 0) {
           roomDeadlineMsRef.current = intermissionDeadlineMs;
+          nextBallDrawAtMsRef.current = 0;
           const syncedIntermission = Math.max(
             0,
             Math.ceil(
@@ -592,8 +621,13 @@ export default function App() {
             )
           );
           setCountdown(syncedIntermission);
+        } else if (nextStatus === 'live') {
+          roomDeadlineMsRef.current = 0;
+          nextBallDrawAtMsRef.current = liveNextDrawMs;
+          setCountdown(0);
         } else {
           roomDeadlineMsRef.current = 0;
+          nextBallDrawAtMsRef.current = 0;
           setCountdown(Number(detail.room.countdownSeconds ?? 0));
         }
         setCardPrice(Number(detail.room.cardPrice || DEFAULT_GAME_RULES.defaultCardPrice));
@@ -1124,25 +1158,33 @@ export default function App() {
     user.startParam,
   ]);
 
-  // Server-authoritative countdown & intermission display computed strictly from server deadline & clock offset.
-  // Never starts rounds or draws numbers from the frontend; simply re-hydrates server state when deadline hits 00:00.
+  // Server-authoritative countdown, intermission, and live next-ball synchronization computed strictly from
+  // server deadlines & clock offset. Never starts rounds or draws numbers from the frontend; re-hydrates server
+  // state immediately when registration, intermission, or next-ball draw deadlines are reached.
   useEffect(() => {
-    if (
-      activeRoom.status !== 'countdown' &&
-      activeRoom.status !== 'waiting' &&
-      activeRoom.status !== 'completed'
-    ) {
-      return;
-    }
     let lastZeroHydrateAt = 0;
     const timer = window.setInterval(() => {
+      const syncedNowMs = Date.now() + serverClockOffsetMsRef.current;
+      if (activeRoom.status === 'live') {
+        if (
+          nextBallDrawAtMsRef.current > 0 &&
+          syncedNowMs >= nextBallDrawAtMsRef.current &&
+          Date.now() - lastZeroHydrateAt >= 900
+        ) {
+          lastZeroHydrateAt = Date.now();
+          void hydrateRoomState(activeRoomId);
+        }
+        return;
+      }
+      if (
+        activeRoom.status !== 'countdown' &&
+        activeRoom.status !== 'waiting' &&
+        activeRoom.status !== 'completed'
+      ) {
+        return;
+      }
       if (roomDeadlineMsRef.current > 0) {
-        const remaining = Math.max(
-          0,
-          Math.ceil(
-            (roomDeadlineMsRef.current - (Date.now() + serverClockOffsetMsRef.current)) / 1000
-          )
-        );
+        const remaining = Math.max(0, Math.ceil((roomDeadlineMsRef.current - syncedNowMs) / 1000));
         setCountdown(remaining);
         if (remaining === 0 && Date.now() - lastZeroHydrateAt >= 1000) {
           lastZeroHydrateAt = Date.now();
@@ -1172,15 +1214,19 @@ export default function App() {
   }, [winnerModalOpen, activeRoom.status]);
 
   // Auto-Caller interval (restricted strictly to verified Admin/Host; regular players receive autonomous server ticks)
+  const callNextNumberRef = useRef<() => void>(() => {});
+  callNextNumberRef.current = () => {
+    void handleCallNextNumber();
+  };
   useEffect(() => {
     if (!isVerifiedAdmin || !autoCallerActive || winnerModalOpen || activeRoom.status !== 'live') {
       return;
     }
     const timer = window.setInterval(() => {
-      handleCallNextNumber();
+      callNextNumberRef.current();
     }, callerIntervalSec * 1000);
     return () => window.clearInterval(timer);
-  });
+  }, [isVerifiedAdmin, autoCallerActive, winnerModalOpen, activeRoom.status, callerIntervalSec]);
 
   // Sync auto-marked numbers whenever autoMark is turned on or new balls are called
   useEffect(() => {
@@ -1388,9 +1434,9 @@ export default function App() {
     }
   }
 
-  // Handler: Save & Verify Phone Number via Server-Authoritative Contact Endpoint
+  // Handler: Synchronize Native Telegram Contact Verification State (never submits typed phone numbers)
   async function handleVerifyPhone(
-    cleanedPhone: string,
+    _cleanedPhone: string,
     method: 'telegram_contact' | 'sms_otp_demo'
   ) {
     const token = await getActiveBearerToken();
@@ -1403,49 +1449,21 @@ export default function App() {
       );
       return;
     }
-    try {
-      const headers = await buildAuthenticatedHeaders();
-      const resp = await fetch('/api/telegram/bot-command', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          text: '',
-          contact:
-            method === 'telegram_contact'
-              ? {
-                  phone_number: cleanedPhone,
-                  first_name: user.firstName,
-                }
-              : null,
-        }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (resp.ok && data.registrationStatus === 'verified') {
-        setPhoneNumber(cleanedPhone);
-        setPhoneVerified(true);
-        await hydratePlayerState();
-        setToast(
-          lang === 'am'
-            ? `ስልክ ቁጥር (${cleanedPhone}) በሰርቨር እና Firestore /private/contact ተረጋግጧል!`
-            : `Phone (${cleanedPhone}) verified on server & saved in Firestore /private/contact!`
-        );
-        return;
-      }
-      soundFX.playError(sound);
-      setToast(
-        data.message ||
-          (lang === 'am'
-            ? 'የስልክ ቁጥር ማረጋገጫ አልተሳካም — ከቴሌግራም ቦት ያጋሩ'
-            : 'Phone verification failed on server. Share your contact via Telegram Bot.')
-      );
-    } catch {
+    if (method !== 'telegram_contact') {
       soundFX.playError(sound);
       setToast(
         lang === 'am'
-          ? 'የስልክ ቁጥር ማረጋገጫ ኔትወርክ ስህተት'
-          : 'Network error while verifying phone number on server.'
+          ? 'በጽሁፍ የተጻፈ ስልክ ቁጥር አይረጋገጥም — እባክዎ የቴሌግራም ስልክ ማጋራት (Share Contact) ቁልፍን ይጠቀሙ'
+          : 'Typed phone numbers are not verified — please use native Telegram Contact Sharing.'
       );
+      return;
     }
+    // Native Telegram contact sharing delivers a signed message.contact directly to /api/telegram/webhook.
+    // Re-hydrate the player profile from the authoritative server to reflect the verified phone state.
+    await hydratePlayerState();
+    window.setTimeout(() => {
+      void hydratePlayerState();
+    }, 2500);
   }
 
   // Handler: Server-Authoritative Call Next Ball (POST /api/game/draw-ball)
@@ -1473,7 +1491,7 @@ export default function App() {
       const res = await drawBallViaServerApi({
         roomId: activeRoom.id,
         gameId: `game_${activeRoom.id}_live`,
-        callerTelegramId: serverVerifiedTelegramId ?? user.id,
+        callerTelegramId: serverVerifiedTelegramId ?? 0,
       });
       triggerHaptic('light');
       setCalls(res.calledNumbers);
@@ -1549,7 +1567,7 @@ export default function App() {
         cardId,
         uid: fbUser?.uid,
         displayName: fbUser?.displayName || `${user.firstName} ${user.lastName || ''}`.trim(),
-        telegramUserId: `tg_${serverVerifiedTelegramId ?? user.id}`,
+        telegramUserId: serverVerifiedTelegramId ? `tg_${serverVerifiedTelegramId}` : '',
       });
       soundFX.playDaub(sound);
       triggerHaptic('light');
@@ -1783,7 +1801,7 @@ export default function App() {
             cardId: card.id,
             markedNumbers: marked,
             calledNumbers: calls,
-            claimantTelegramId: serverVerifiedTelegramId ?? user.id,
+            claimantTelegramId: serverVerifiedTelegramId ?? 0,
             playerName: `${user.firstName} ${user.lastName || ''}`.trim(),
           });
           if (!verification.verified) {
@@ -1902,6 +1920,11 @@ export default function App() {
     if (nextRoomId === activeRoomId) return;
     localWinnerSettledRoundRef.current = false;
     roomDeadlineMsRef.current = 0;
+    nextBallDrawAtMsRef.current = 0;
+    hydratedRoomIdRef.current = '';
+    prevRoomStatusRef.current = 'waiting';
+    lastRoundNumberRef.current = 0;
+    activeRoomIdRef.current = nextRoomId;
     setSelectedCardIds([]);
     setCalls([]);
     setMarked([]);
@@ -2033,7 +2056,9 @@ export default function App() {
     const nextLang =
       typeof nextLangOrUpdater === 'function' ? nextLangOrUpdater(lang) : nextLangOrUpdater;
     setLang(nextLang);
-    void syncLanguagePreference(nextLang, fbUser?.uid, serverVerifiedTelegramId ?? user.id);
+    if (fbUser?.uid || (serverVerifiedTelegramId !== null && serverVerifiedTelegramId > 0)) {
+      void syncLanguagePreference(nextLang, fbUser?.uid, serverVerifiedTelegramId ?? undefined);
+    }
   }
 
   // Referral attribution handled in effect 2C above.

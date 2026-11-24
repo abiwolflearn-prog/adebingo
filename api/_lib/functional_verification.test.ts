@@ -8,6 +8,7 @@ import { BoundedRateLimiter } from './http.ts';
 import {
   createBotCommandHandler,
   createTelegramAuthHandler,
+  createTelegramWebhookHandler,
 } from './telegramHandler.ts';
 import {
   createFirestoreTelegramStore,
@@ -656,24 +657,55 @@ test('Telegram contact sharing: enforces unique phone bindings across accounts, 
   });
   assert.equal(plainText.body.registrationStatus, 'pending_contact');
 
-  // Forwarded/third-party contact (mismatched user_id) must be rejected
-  const mismatched = await invoke(botCmdHandler, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${tok1}` },
-    body: {
-      text: '',
-      contact: { phone_number: '+251911223399', first_name: 'Other', user_id: 999999 },
-    },
-  });
-  assert.equal(mismatched.body.ok, false);
-
-  // User 1 verifies own phone contact -> stored in /users/tg_600001/private/contact and phoneBindings
-  const verify1 = await invoke(botCmdHandler, {
+  // Client-forged contact object on /api/telegram/bot-command must be rejected with 403
+  const forgedViaBotCmd = await invoke(botCmdHandler, {
     method: 'POST',
     headers: { authorization: `Bearer ${tok1}` },
     body: {
       text: '',
       contact: { phone_number: '+251911223399', first_name: 'Meron', user_id: 600001 },
+    },
+  });
+  assert.equal(forgedViaBotCmd.statusCode, 403);
+  assert.equal(forgedViaBotCmd.body.reason, 'native_telegram_contact_required');
+  assert.equal(store.get('users/tg_600001')?.phoneVerified, false);
+
+  const webhookSecret = 'func-verif-webhook-secret-9999';
+  const webhookHandler = createTelegramWebhookHandler({
+    getDb: () => db,
+    getBotToken: () => botToken,
+    getWebhookSecret: () => webhookSecret,
+    isAdminReady: () => true,
+    fetchImpl: (async () => ({ ok: true, json: async () => ({ ok: true }) })) as unknown as typeof fetch,
+    limiter,
+  });
+
+  // Forwarded/third-party contact (mismatched user_id) on webhook must be rejected
+  const mismatched = await invoke(webhookHandler, {
+    method: 'POST',
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
+    body: {
+      update_id: 600101,
+      message: {
+        from: { id: 600001, first_name: 'Meron', username: 'meron_c' },
+        chat: { id: 600001, type: 'private' },
+        contact: { phone_number: '+251911223399', first_name: 'Other', user_id: 999999 },
+      },
+    },
+  });
+  assert.equal(mismatched.body.ok, false);
+
+  // User 1 verifies own native Telegram phone contact -> stored in /users/tg_600001/private/contact and phoneBindings
+  const verify1 = await invoke(webhookHandler, {
+    method: 'POST',
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
+    body: {
+      update_id: 600102,
+      message: {
+        from: { id: 600001, first_name: 'Meron', username: 'meron_c' },
+        chat: { id: 600001, type: 'private' },
+        contact: { phone_number: '+251911223399', first_name: 'Meron', user_id: 600001 },
+      },
     },
   });
   assert.equal(verify1.statusCode, 200);
@@ -682,12 +714,16 @@ test('Telegram contact sharing: enforces unique phone bindings across accounts, 
   assert.equal(store.get('phoneBindings/251911223399')?.uid, 'tg_600001');
 
   // User 2 tries to verify the EXACT SAME phone number -> blocked as duplicate_phone_number
-  const dupPhone = await invoke(botCmdHandler, {
+  const dupPhone = await invoke(webhookHandler, {
     method: 'POST',
-    headers: { authorization: `Bearer ${tok2}` },
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
     body: {
-      text: '',
-      contact: { phone_number: '+251911223399', first_name: 'Bereket', user_id: 600002 },
+      update_id: 600103,
+      message: {
+        from: { id: 600002, first_name: 'Bereket', username: 'bereket_c' },
+        chat: { id: 600002, type: 'private' },
+        contact: { phone_number: '+251911223399', first_name: 'Bereket', user_id: 600002 },
+      },
     },
   });
   assert.equal(dupPhone.body.ok, false);
@@ -695,12 +731,16 @@ test('Telegram contact sharing: enforces unique phone bindings across accounts, 
   assert.equal(store.get('users/tg_600002')?.phoneVerified, false);
 
   // User 1 tries to overwrite already-verified contact with a different phone -> blocked as verified_contact_locked
-  const overwrite = await invoke(botCmdHandler, {
+  const overwrite = await invoke(webhookHandler, {
     method: 'POST',
-    headers: { authorization: `Bearer ${tok1}` },
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
     body: {
-      text: '',
-      contact: { phone_number: '+251922000111', first_name: 'Meron', user_id: 600001 },
+      update_id: 600104,
+      message: {
+        from: { id: 600001, first_name: 'Meron', username: 'meron_c' },
+        chat: { id: 600001, type: 'private' },
+        contact: { phone_number: '+251922000111', first_name: 'Meron', user_id: 600001 },
+      },
     },
   });
   assert.equal(overwrite.body.ok, false);
@@ -708,12 +748,16 @@ test('Telegram contact sharing: enforces unique phone bindings across accounts, 
   assert.equal(store.get('users/tg_600001/private/contact')?.phoneNumber, '+251911223399');
 
   // User 1 re-sharing same verified phone -> idempotent success
-  const sameAgain = await invoke(botCmdHandler, {
+  const sameAgain = await invoke(webhookHandler, {
     method: 'POST',
-    headers: { authorization: `Bearer ${tok1}` },
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
     body: {
-      text: '',
-      contact: { phone_number: '+251911223399', first_name: 'Meron', user_id: 600001 },
+      update_id: 600105,
+      message: {
+        from: { id: 600001, first_name: 'Meron', username: 'meron_c' },
+        chat: { id: 600001, type: 'private' },
+        contact: { phone_number: '+251911223399', first_name: 'Meron', user_id: 600001 },
+      },
     },
   });
   assert.equal(sameAgain.body.ok, true);

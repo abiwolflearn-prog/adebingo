@@ -2143,7 +2143,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
                   displayName: payout.displayName.slice(0, 80),
                   username: payout.uid,
                   language: 'am',
-                  phoneVerified: true,
+                  phoneVerified: false,
                   demoBalanceEtb: nextBal,
                   createdAt: FieldValue.serverTimestamp(),
                   updatedAt: FieldValue.serverTimestamp(),
