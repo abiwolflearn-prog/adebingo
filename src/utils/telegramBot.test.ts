@@ -4,9 +4,13 @@ import {
   AdeyBingoTelegramBotEngine,
   buildBotMainMenuMarkup,
   buildContextualInlineKeyboard,
+  buildTelegramInviteLink,
+  buildTelegramReferralCode,
   DEFAULT_DEPLOYED_MINI_APP_URL,
+  extractStartCommandReferralCode,
   formatTelegramNotification,
   normalizeWebhookSecretForTelegram,
+  OFFICIAL_TELEGRAM_BOT_USERNAME,
   sanitizeProductionMiniAppUrl,
   ServerGameAuthority,
   verifyWebhookSecretHeader,
@@ -543,6 +547,95 @@ test('Security Fix: Google AI Studio preview URLs (ais-pre-*, ais-dev-*, *.run.a
 
   const directInline = buildContextualInlineKeyboard('welcome', 'am', leakedPreviewUrl).flat();
   assert.equal(directInline.find((b) => b.web_app)?.web_app?.url, 'https://adebingo-3nta.vercel.app/');
+});
+
+test('Referral links use official @AdeyBingoGameBot username dynamically per player and parse /start deep-links', () => {
+  assert.equal(OFFICIAL_TELEGRAM_BOT_USERNAME, 'AdeyBingoGameBot');
+  assert.equal(buildTelegramReferralCode(5152447113), 'ADEY-5152447113');
+  assert.equal(
+    buildTelegramInviteLink(5152447113),
+    'https://t.me/AdeyBingoGameBot?start=ADEY-5152447113'
+  );
+  assert.equal(
+    buildTelegramInviteLink('adey-5152447113'),
+    'https://t.me/AdeyBingoGameBot?start=ADEY-5152447113'
+  );
+
+  // /start deep-link parameter parsing (exact, bot-qualified, and case-insensitive)
+  assert.equal(extractStartCommandReferralCode('/start ADEY-5152447113'), 'ADEY-5152447113');
+  assert.equal(
+    extractStartCommandReferralCode('/start@AdeyBingoGameBot ADEY-5152447113'),
+    'ADEY-5152447113'
+  );
+  assert.equal(extractStartCommandReferralCode('/start adey-5152447113'), 'ADEY-5152447113');
+  assert.equal(extractStartCommandReferralCode('/start'), undefined);
+
+  // Default referral inline keyboard fallback also uses official @AdeyBingoGameBot
+  const fallbackShareBtn = buildContextualInlineKeyboard('referral', 'en', DEFAULT_DEPLOYED_MINI_APP_URL)
+    .flat()
+    .find((b) => Boolean(b.url));
+  assert.ok(fallbackShareBtn?.url);
+  assert.match(
+    fallbackShareBtn.url,
+    new RegExp(encodeURIComponent('https://t.me/AdeyBingoGameBot'))
+  );
+  assert.ok(!fallbackShareBtn.url.includes('AdeyBingoBot'));
+
+  // Bot engine dynamically generates each player's personal @AdeyBingoGameBot invite link
+  const bot = new AdeyBingoTelegramBotEngine(DEFAULT_DEPLOYED_MINI_APP_URL);
+  bot.handleIncomingUpdate({
+    updateId: 7001,
+    senderTelegramId: 5152447113,
+    firstName: 'Dawit',
+    text: '/start',
+  });
+
+  const inviteRes = bot.handleIncomingUpdate({
+    updateId: 7002,
+    senderTelegramId: 5152447113,
+    text: '/invite',
+  });
+  const expectedUrl = 'https://t.me/AdeyBingoGameBot?start=ADEY-5152447113';
+  assert.ok(inviteRes.text.includes(expectedUrl));
+  assert.ok(!inviteRes.text.includes('AdeyBingoBot?'));
+
+  const shareBtn = (inviteRes.replyMarkup.inline_keyboard || []).flat().find((b) => Boolean(b.url));
+  assert.ok(shareBtn?.url);
+  assert.ok(shareBtn.url.includes(encodeURIComponent(expectedUrl)));
+
+  const copyRes = bot.handleIncomingUpdate({
+    updateId: 7003,
+    senderTelegramId: 5152447113,
+    callbackData: 'cb:referral_copy',
+  });
+  assert.ok(copyRes.text.includes(expectedUrl));
+  assert.ok(!copyRes.text.includes('AdeyBingoBot?'));
+
+  // Second player gets their own distinct Telegram ID in the URL
+  bot.handleIncomingUpdate({
+    updateId: 7004,
+    senderTelegramId: 6162447222,
+    firstName: 'Hana',
+    text: '/start@AdeyBingoGameBot adey-5152447113',
+  });
+  assert.equal(bot.getPlayerByTelegramId(6162447222)?.referredByCode, 'ADEY-5152447113');
+  assert.equal(bot.getPlayerByTelegramId(6162447222)?.demoBalanceEtb, 15);
+  assert.equal(bot.getPlayerByTelegramId(5152447113)?.demoBalanceEtb, 35);
+
+  const inviteRes2 = bot.handleIncomingUpdate({
+    updateId: 7005,
+    senderTelegramId: 6162447222,
+    text: '/invite',
+  });
+  assert.ok(inviteRes2.text.includes('https://t.me/AdeyBingoGameBot?start=ADEY-6162447222'));
+
+  // Duplicate /start ADEY-5152447113 from same invitee does NOT award bonus again
+  bot.handleIncomingUpdate({
+    updateId: 7006,
+    senderTelegramId: 6162447222,
+    text: '/start ADEY-5152447113',
+  });
+  assert.equal(bot.getPlayerByTelegramId(5152447113)?.demoBalanceEtb, 35);
 });
 
 

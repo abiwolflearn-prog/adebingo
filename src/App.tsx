@@ -276,6 +276,7 @@ export default function App() {
       lastName?: string;
       username?: string;
       language?: Language;
+      referralCode?: string;
     }) => {
       const nextId =
         typeof incoming.telegramUserId === 'number' &&
@@ -283,6 +284,12 @@ export default function App() {
         incoming.telegramUserId > 0
           ? incoming.telegramUserId
           : null;
+      const incomingRef = (incoming.referralCode || '').trim().toUpperCase();
+      if (incomingRef) {
+        setReferralCode(incomingRef);
+      } else if (nextId) {
+        setReferralCode(`ADEY-${nextId}`);
+      }
       const rawDisplay = (incoming.displayName || '').trim();
       const parts = rawDisplay ? rawDisplay.split(/\s+/) : [];
       const first = (incoming.firstName || parts[0] || '').trim();
@@ -337,6 +344,7 @@ export default function App() {
           displayName: state.profile.displayName,
           username: state.profile.username,
           language: state.profile.language,
+          referralCode: state.profile.referralCode,
         });
         if (
           typeof state.profile.telegramUserId === 'number' &&
@@ -757,7 +765,7 @@ export default function App() {
 
       if (!rawInitData) {
         setTelegramBackendStatus(
-          'No window.Telegram.WebApp.initData detected (open inside @AdeyBingoBot Mini App to authenticate).'
+          'No window.Telegram.WebApp.initData detected (open inside @AdeyBingoGameBot Mini App to authenticate).'
         );
         return;
       }
@@ -787,6 +795,7 @@ export default function App() {
             lastName: d.profile?.lastName ?? d.telegramUser?.last_name,
             username: d.profile?.username ?? d.telegramUser?.username,
             language: d.profile?.language === 'en' ? 'en' : d.profile?.language === 'am' ? 'am' : undefined,
+            referralCode: d.profile?.referralCode,
           });
           setIsVerifiedAdmin(Boolean(d.isAdmin === true || d.role === 'admin'));
           if (d.sessionToken) {

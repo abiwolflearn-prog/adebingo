@@ -10,6 +10,19 @@ import {
   TelegramReplayGuard,
   verifyTelegramSharedContact,
 } from './telegramVerify.ts';
+import {
+  buildTelegramInviteLink,
+  buildTelegramReferralCode,
+  extractStartCommandReferralCode,
+  OFFICIAL_TELEGRAM_BOT_USERNAME,
+} from './telegram.ts';
+
+export {
+  buildTelegramInviteLink,
+  buildTelegramReferralCode,
+  extractStartCommandReferralCode,
+  OFFICIAL_TELEGRAM_BOT_USERNAME,
+};
 
 export type BotCommandType =
   | '/start'
@@ -318,7 +331,8 @@ export function buildContextualInlineKeyboard(
       ];
 
     case 'referral': {
-      const refUrl = options.referralLink || 'https://t.me/AdeyBingoBot';
+      const refUrl =
+        options.referralLink || `https://t.me/${OFFICIAL_TELEGRAM_BOT_USERNAME}`;
       const shareMessage = am
         ? '🎱 ADEYBINGO ይቀላቀሉ እና ቢንጎ አብረን እንጫወት! (+15 ETB የሙከራ ቦነስ ያግኙ)'
         : '🎱 Join ADEYBINGO and play live Bingo with me! (+15 ETB Demo Welcome Bonus)';
@@ -1162,9 +1176,8 @@ export class AdeyBingoTelegramBotEngine {
     }
 
     // 3. Handle /start (with optional referral payload `/start ADEY-12345`) & cb:main_menu
-    if (trimmed.startsWith('/start') || cleanCb === 'cb:main_menu') {
-      const startMatch = /^\/start(?:\s+([A-Za-z0-9_-]{3,48}))?/.exec(trimmed);
-      const referralPayload = startMatch?.[1];
+    if (/^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(trimmed) || cleanCb === 'cb:main_menu') {
+      const referralPayload = extractStartCommandReferralCode(trimmed);
       return this.handleStartCommand({
         senderTelegramId,
         firstName,
@@ -1580,8 +1593,8 @@ export class AdeyBingoTelegramBotEngine {
       cleanCb === 'menu:invite_friends'
     ) {
       const player = ensureProfile();
-      const refCode = player.referralCode || `ADEY-${senderTelegramId}`;
-      const inviteUrl = `https://t.me/AdeyBingoBot?start=${refCode}`;
+      const refCode = player.referralCode || buildTelegramReferralCode(senderTelegramId);
+      const inviteUrl = buildTelegramInviteLink(refCode);
       const myRefs = this.referralsByInviter.get(senderTelegramId) || [];
       const totalBonus = myRefs.reduce((s, r) => s + r.bonusEtb, 0);
 
@@ -2039,7 +2052,7 @@ export class AdeyBingoTelegramBotEngine {
       paymentMethod: method,
       requestedAmountEtb: amountEtb,
       status: 'Pending',
-      reviewNotes: 'Submitted via @AdeyBingoBot (Demo Sandbox)',
+      reviewNotes: 'Submitted via @AdeyBingoGameBot (Demo Sandbox)',
       createdAt: nowIso,
       demoSandboxOnly: true,
     };
@@ -2153,8 +2166,9 @@ export class AdeyBingoTelegramBotEngine {
 
     let referralNoticeAm = '';
     let referralNoticeEn = '';
-    if (referralCode && referralCode.startsWith('ADEY-')) {
-      const inviterId = Number(referralCode.slice(5));
+    const normalizedReferralCode = referralCode?.trim().toUpperCase();
+    if (normalizedReferralCode && normalizedReferralCode.startsWith('ADEY-')) {
+      const inviterId = Number(normalizedReferralCode.slice(5));
       if (Number.isInteger(inviterId) && inviterId > 0) {
         if (inviterId === senderTelegramId) {
           referralNoticeAm = '\n\n⚠️ _የራስዎን የግብዣ ሊንክ መጠቀም አይችሉም።_';
@@ -2163,7 +2177,7 @@ export class AdeyBingoTelegramBotEngine {
           const inviterPlayer = this.playersByTelegramId.get(inviterId);
           if (inviterPlayer) {
             this.referredInviteeIds.add(senderTelegramId);
-            player.referredByCode = referralCode;
+            player.referredByCode = normalizedReferralCode;
             player.referredByUid = `tg_${inviterId}`;
             const inviterRefs = this.referralsByInviter.get(inviterId) || [];
             inviterRefs.push({

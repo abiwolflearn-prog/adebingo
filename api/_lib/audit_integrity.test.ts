@@ -779,7 +779,7 @@ test('Audit 4: 5-Player Invite Flow (ADEY-7863181590 -> +100 ETB), Manual Receip
     assert.equal(store.get('users/tg_7863181590')?.demoBalanceEtb, 15);
     const inviterToken = String(inviterAuth.json.sessionToken);
 
-    // 2) Five new players open https://t.me/AdeyBingoBot?start=ADEY-7863181590
+    // 2) Five new players open https://t.me/AdeyBingoGameBot?start=ADEY-7863181590
     //    Each new player starts with 15 ETB (never deducted, never double-credited); inviter earns 5 * 20 = 100 ETB (total 115 ETB)
     let firstInviteeToken = '';
     for (let i = 1; i <= 5; i++) {

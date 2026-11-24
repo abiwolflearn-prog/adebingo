@@ -6,7 +6,10 @@ import {
   type BotAdminConfig,
   type BotNotificationMessage,
   buildBotMainMenuMarkup,
+  buildTelegramInviteLink,
+  buildTelegramReferralCode,
   DEFAULT_DEPLOYED_MINI_APP_URL,
+  extractStartCommandReferralCode,
   formatTelegramNotification,
   isDisallowedMiniAppPreviewUrl,
   type NotificationEventType,
@@ -798,7 +801,7 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
           paymentMethod: method,
           destinationMasked: maskedDest,
           status: 'Pending',
-          reviewNotes: 'Submitted via @AdeyBingoBot (Demo Sandbox)',
+          reviewNotes: 'Submitted via @AdeyBingoGameBot (Demo Sandbox)',
           demoSandboxOnly: true,
           fundsHeldAtSubmission: true,
           auditTrail: [
@@ -821,7 +824,7 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
             paymentMethod: method,
             status: 'Pending' as const,
             requestDate: nowIso,
-            reviewNotes: 'Submitted via @AdeyBingoBot (Demo Sandbox)',
+            reviewNotes: 'Submitted via @AdeyBingoGameBot (Demo Sandbox)',
           },
         };
       });
@@ -1701,8 +1704,9 @@ export class PersistentTelegramBotService {
     }
 
     // 4. /start command (requires private 1-on-1 Telegram DM; supports /start <refCode>) & cb:main_menu
-    if (trimmed.startsWith('/start') || cleanCallback === 'cb:main_menu') {
-      if (trimmed.startsWith('/start') && !isPrivateChat) {
+    const isStartCommand = /^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(trimmed);
+    if (isStartCommand || cleanCallback === 'cb:main_menu') {
+      if (isStartCommand && !isPrivateChat) {
         return {
           ok: false,
           chatId: chatId ?? senderTelegramId,
@@ -1756,8 +1760,7 @@ export class PersistentTelegramBotService {
 
       let referralNoticeAm = '';
       let referralNoticeEn = '';
-      const startMatch = /^\/start(?:\s+([A-Za-z0-9_-]{3,48}))?/.exec(trimmed);
-      const referralCodeParam = startMatch?.[1];
+      const referralCodeParam = extractStartCommandReferralCode(trimmed);
       if (referralCodeParam && this.store.processReferralDeepLink) {
         const refRes = await this.store.processReferralDeepLink({
           inviteeTelegramId: senderTelegramId,
@@ -2529,8 +2532,8 @@ export class PersistentTelegramBotService {
       trimmed === '👥 Invite Friends' ||
       trimmed === '👥 ጓደኞችን ይጋብዙ'
     ) {
-      const refCode = existingPlayer?.referralCode || `ADEY-${senderTelegramId}`;
-      const refLink = `https://t.me/AdeyBingoBot?start=${refCode}`;
+      const refCode = existingPlayer?.referralCode || buildTelegramReferralCode(senderTelegramId);
+      const refLink = buildTelegramInviteLink(refCode);
 
       if (cleanCallback === 'cb:referral_copy') {
         return {

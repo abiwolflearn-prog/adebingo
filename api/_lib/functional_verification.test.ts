@@ -9,6 +9,10 @@ import {
   createBotCommandHandler,
   createTelegramAuthHandler,
 } from './telegramHandler.ts';
+import {
+  createFirestoreTelegramStore,
+  PersistentTelegramBotService,
+} from './telegramPersistence.ts';
 import { createRoomsHandler } from '../rooms/index.ts';
 import { createReserveCardHandler } from '../cards/reserve.ts';
 import {
@@ -1264,3 +1268,106 @@ test('Countdown 00:00 never stalls: server-side due-deadline progression trigger
   );
 });
 
+test('Official @AdeyBingoGameBot referral link generation, /start deep-link attribution, and duplicate protection in persistent bot service', async () => {
+  const { db, store } = createInMemoryFirestore();
+  const tgStore = createFirestoreTelegramStore(db);
+  const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db));
+  const botService = new PersistentTelegramBotService(
+    tgStore,
+    replayGuard,
+    'https://adebingo-3nta.vercel.app/'
+  );
+
+  // 1. Inviter registers via /start
+  const inviterStart = await botService.handleIncomingUpdate({
+    updateId: 99001,
+    senderTelegramId: 5152447113,
+    chatId: 5152447113,
+    chatType: 'private',
+    firstName: 'Yonas',
+    username: 'yonas_adey',
+    text: '/start',
+  });
+  assert.equal(inviterStart.ok, true);
+
+  // 2. Inviter requests /invite and cb:referral_copy -> exact https://t.me/AdeyBingoGameBot?start=ADEY-5152447113
+  const expectedInviteUrl = 'https://t.me/AdeyBingoGameBot?start=ADEY-5152447113';
+  const inviteReply = await botService.handleIncomingUpdate({
+    updateId: 99002,
+    senderTelegramId: 5152447113,
+    chatId: 5152447113,
+    chatType: 'private',
+    text: '/invite',
+  });
+  assert.equal(inviteReply.ok, true);
+  assert.ok(inviteReply.text.includes(expectedInviteUrl));
+  assert.ok(!inviteReply.text.includes('AdeyBingoBot?'));
+
+  const shareButton = (inviteReply.replyMarkup.inline_keyboard || [])
+    .flat()
+    .find((btn) => Boolean(btn.url));
+  assert.ok(shareButton?.url);
+  assert.ok(shareButton.url.includes(encodeURIComponent(expectedInviteUrl)));
+
+  const copyReply = await botService.handleIncomingUpdate({
+    updateId: 99003,
+    callbackQueryId: 'cbq_ref_copy_5152447113',
+    senderTelegramId: 5152447113,
+    chatId: 5152447113,
+    chatType: 'private',
+    callbackData: 'cb:referral_copy',
+  });
+  assert.equal(copyReply.ok, true);
+  assert.ok(copyReply.text.includes(expectedInviteUrl));
+
+  // 3. Friend opens https://t.me/AdeyBingoGameBot?start=ADEY-5152447113 -> Telegram delivers `/start ADEY-5152447113`
+  const friendStart = await botService.handleIncomingUpdate({
+    updateId: 99004,
+    senderTelegramId: 5152447999,
+    chatId: 5152447999,
+    chatType: 'private',
+    firstName: 'Bethlehem',
+    username: 'beth_adey',
+    text: '/start ADEY-5152447113',
+  });
+  assert.equal(friendStart.ok, true);
+  assert.equal(store.get('users/tg_5152447999')?.demoBalanceEtb, 15);
+  assert.equal(store.get('users/tg_5152447999')?.referredByCode, 'ADEY-5152447113');
+  assert.equal(store.get('users/tg_5152447113')?.demoBalanceEtb, 35); // 15 initial + 20 referral bonus
+
+  // 4. Second friend uses bot-qualified lowercase `/start@AdeyBingoGameBot adey-5152447113`
+  const friend2Start = await botService.handleIncomingUpdate({
+    updateId: 99005,
+    senderTelegramId: 5152448000,
+    chatId: 5152448000,
+    chatType: 'private',
+    firstName: 'Samuel',
+    username: 'sam_adey',
+    text: '/start@AdeyBingoGameBot adey-5152447113',
+  });
+  assert.equal(friend2Start.ok, true);
+  assert.equal(store.get('users/tg_5152448000')?.referredByCode, 'ADEY-5152447113');
+  assert.equal(store.get('users/tg_5152447113')?.demoBalanceEtb, 55); // 35 + 20
+
+  // 5. Duplicate referral re-submission by existing invitee is safely ignored (no duplicate bonus)
+  const dupStart = await botService.handleIncomingUpdate({
+    updateId: 99006,
+    senderTelegramId: 5152447999,
+    chatId: 5152447999,
+    chatType: 'private',
+    text: '/start ADEY-5152447113',
+  });
+  assert.equal(dupStart.ok, true);
+  assert.equal(store.get('users/tg_5152447113')?.demoBalanceEtb, 55);
+  assert.equal(store.get('users/tg_5152447999')?.demoBalanceEtb, 15);
+
+  // 6. Friend's own /invite link dynamically uses friend's actual Telegram ID
+  const friendInvite = await botService.handleIncomingUpdate({
+    updateId: 99007,
+    senderTelegramId: 5152447999,
+    chatId: 5152447999,
+    chatType: 'private',
+    text: '/invite',
+  });
+  assert.ok(friendInvite.text.includes('https://t.me/AdeyBingoGameBot?start=ADEY-5152447999'));
+});

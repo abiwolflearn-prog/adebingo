@@ -359,3 +359,35 @@ export function triggerHaptic(type: 'light' | 'medium' | 'success' | 'error' = '
     // Ignore outside Telegram
   }
 }
+
+export const OFFICIAL_TELEGRAM_BOT_USERNAME = 'AdeyBingoGameBot';
+
+export function buildTelegramReferralCode(telegramUserId: number): string {
+  if (!Number.isInteger(telegramUserId) || telegramUserId <= 0) {
+    throw new RangeError('telegramUserId must be a positive integer.');
+  }
+  return `ADEY-${telegramUserId}`;
+}
+
+export function buildTelegramInviteLink(referralCodeOrTelegramId: string | number): string {
+  const code =
+    typeof referralCodeOrTelegramId === 'number'
+      ? buildTelegramReferralCode(referralCodeOrTelegramId)
+      : referralCodeOrTelegramId.trim().toUpperCase();
+  return `https://t.me/${OFFICIAL_TELEGRAM_BOT_USERNAME}?start=${encodeURIComponent(code)}`;
+}
+
+/**
+ * Extracts and normalizes a `/start` deep-link payload from Telegram messages such as:
+ * - `/start ADEY-5152447113`
+ * - `/start@AdeyBingoGameBot ADEY-5152447113`
+ * - `/start adey-5152447113`
+ */
+export function extractStartCommandReferralCode(text: string): string | undefined {
+  const trimmed = text.trim();
+  const match = /^\/start(?:@[A-Za-z0-9_]+)?(?:\s+([A-Za-z0-9_-]{3,48}))?/i.exec(trimmed);
+  const raw = match?.[1]?.trim();
+  if (!raw) return undefined;
+  return raw.toUpperCase().startsWith('ADEY-') ? raw.toUpperCase() : raw;
+}
+

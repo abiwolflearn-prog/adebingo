@@ -30,7 +30,12 @@ import {
   SupportTicket,
 } from '../types/bingo';
 import { t } from '../utils/i18n';
-import { requestTelegramContact, TelegramUserProfile } from '../utils/telegram';
+import {
+  buildTelegramInviteLink,
+  buildTelegramReferralCode,
+  requestTelegramContact,
+  TelegramUserProfile,
+} from '../utils/telegram';
 import { TelegramBotConsole } from './TelegramBotConsole';
 
 interface CommunityScreensProps {
@@ -132,8 +137,13 @@ export function CommunityScreens({
   const [ticketError, setTicketError] = useState('');
   const [showAdvancedBot, setShowAdvancedBot] = useState(false);
 
-  const effectiveRefCode = referralCode || `ADEY-${user.id}`;
-  const inviteLink = `https://t.me/AdeyBingoBot?start=${effectiveRefCode}`;
+  const fallbackRefCode =
+    Number.isInteger(user.id) && user.id > 0 ? buildTelegramReferralCode(user.id) : `ADEY-${user.id}`;
+  const effectiveRefCode =
+    serverVerifiedTelegramId && Number.isInteger(serverVerifiedTelegramId) && serverVerifiedTelegramId > 0
+      ? buildTelegramReferralCode(serverVerifiedTelegramId)
+      : referralCode || fallbackRefCode;
+  const inviteLink = buildTelegramInviteLink(effectiveRefCode);
 
   const copyTextSafely = async (value: string) => {
     try {
@@ -201,8 +211,8 @@ export function CommunityScreens({
       } else if (!result.supported) {
         setPhoneError(
           lang === 'am'
-            ? 'በቴሌግራም @AdeyBingoBot ውስጥ /start በመጫን ስልክ ቁጥርዎን ያጋሩ ወይም ከታች ያረጋግጡ።'
-            : 'Open inside @AdeyBingoBot to share native Telegram contact, or verify below.'
+            ? 'በቴሌግራም @AdeyBingoGameBot ውስጥ /start በመጫን ስልክ ቁጥርዎን ያጋሩ ወይም ከታች ያረጋግጡ።'
+            : 'Open inside @AdeyBingoGameBot to share native Telegram contact, or verify below.'
         );
       }
     } finally {

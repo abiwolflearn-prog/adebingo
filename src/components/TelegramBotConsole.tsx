@@ -410,7 +410,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
           <div className="p-2.5 rounded-xl bg-[#FFF9ED] border border-[#159447]/30 text-[#183326] space-y-1.5 font-sans">
             <div className="flex items-center justify-between text-[10.5px] text-[#08743A]">
               <span className="font-mono font-bold">
-                @AdeyBingoBot · Chat #{botReply.chatId} ({botReply.language.toUpperCase()})
+                @AdeyBingoGameBot · Chat #{botReply.chatId} ({botReply.language.toUpperCase()})
               </span>
               {botReply.securityCode && (
                 <span className="px-1.5 py-0.5 rounded bg-[#FEF5DC] border border-[#F5BD42] font-mono text-[9.5px] font-bold text-[#9A6B0B]">
@@ -428,7 +428,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
             )}
           </div>
 
-          {/* Dynamic Inline Keyboard Returned by @AdeyBingoBot */}
+          {/* Dynamic Inline Keyboard Returned by @AdeyBingoGameBot */}
           {dynamicInlineRows.length > 0 && (
             <div data-testid="bot-dynamic-inline-keyboard" className="space-y-1 pl-0.5 pr-0.5">
               {dynamicInlineRows.map((row, rowIdx) => (

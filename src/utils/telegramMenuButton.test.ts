@@ -285,7 +285,7 @@ test('POST /api/telegram/configure-menu-button, /register-webhook, and serverles
     return {
       ok: true,
       status: 200,
-      json: async () => ({ ok: true, result: { id: 123, username: 'AdeyBingoBot' } }),
+      json: async () => ({ ok: true, result: { id: 123, username: 'AdeyBingoGameBot' } }),
     } as unknown as Response;
   };
 
