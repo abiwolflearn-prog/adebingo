@@ -21,9 +21,11 @@ interface TelegramBackButton {
 }
 
 interface TelegramWebAppWindow {
+  TelegramWebviewProxy?: unknown;
   Telegram?: {
     WebApp?: {
       version?: string;
+      platform?: string;
       isVersionAtLeast?: (version: string) => boolean;
       initData?: string;
       initDataUnsafe?: {
@@ -49,6 +51,136 @@ interface TelegramWebAppWindow {
         notificationOccurred?: (type: 'error' | 'success' | 'warning') => void;
       };
     };
+  };
+}
+
+export type TelegramInitDataSource = 'webapp' | 'hash_fragment' | 'telegram_session_cache' | 'none';
+
+export interface TelegramLaunchContext {
+  launchedInTelegram: boolean;
+  isTelegramWebApp: boolean;
+  initData: string;
+  initDataSource: TelegramInitDataSource;
+  platform: string;
+}
+
+/**
+ * Extracts the untouched signed Telegram `initData` query string from a Telegram WebApp
+ * URL fragment (`#tgWebAppData=...`). Never constructs or alters `initData`.
+ */
+export function extractInitDataFromUrlHash(rawHash: string): string {
+  if (!rawHash || typeof rawHash !== 'string') return '';
+  const cleaned = rawHash.replace(/^#/, '').trim();
+  if (!cleaned || !cleaned.includes('tgWebAppData=')) return '';
+  try {
+    const params = new URLSearchParams(cleaned);
+    const extracted = params.get('tgWebAppData');
+    return typeof extracted === 'string' ? extracted.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Extracts cached `tgWebAppData` stored by Telegram's official `telegram-web-app.js` SDK
+ * inside `sessionStorage['__telegram__initParams']` across WebView reloads.
+ */
+function extractInitDataFromTelegramSdkCache(): { initData: string; hasTelegramParams: boolean } {
+  if (typeof window === 'undefined') return { initData: '', hasTelegramParams: false };
+  try {
+    const raw = window.sessionStorage?.getItem('__telegram__initParams');
+    if (!raw) return { initData: '', hasTelegramParams: false };
+    const parsed = JSON.parse(raw) as { tgWebAppData?: unknown; tgWebAppPlatform?: unknown };
+    const data = typeof parsed?.tgWebAppData === 'string' ? parsed.tgWebAppData.trim() : '';
+    const hasPlatform =
+      typeof parsed?.tgWebAppPlatform === 'string' &&
+      parsed.tgWebAppPlatform.trim().length > 0 &&
+      parsed.tgWebAppPlatform !== 'unknown';
+    return { initData: data, hasTelegramParams: Boolean(data || hasPlatform) };
+  } catch {
+    return { initData: '', hasTelegramParams: false };
+  }
+}
+
+/**
+ * Inspects whether the Mini App was launched inside Telegram and returns any authentic
+ * untouched `initData` available from `Telegram.WebApp.initData`, `#tgWebAppData`, or
+ * Telegram's own SDK session cache. Never synthesizes `initData` from `initDataUnsafe`.
+ */
+export function inspectTelegramLaunchContext(): TelegramLaunchContext {
+  if (typeof window === 'undefined') {
+    return {
+      launchedInTelegram: false,
+      isTelegramWebApp: false,
+      initData: '',
+      initDataSource: 'none',
+      platform: 'unknown',
+    };
+  }
+
+  const tgWin = window as unknown as TelegramWebAppWindow;
+  const tg = tgWin.Telegram?.WebApp;
+  if (tg) {
+    try {
+      tg.ready?.();
+      tg.expand?.();
+      applyTelegramBrandTheme(tg);
+    } catch {
+      // Ignore outside Telegram environment
+    }
+  }
+
+  const platform =
+    typeof tg?.platform === 'string' && tg.platform.trim() ? tg.platform.trim() : 'unknown';
+  const webAppInitData = typeof tg?.initData === 'string' ? tg.initData.trim() : '';
+  if (webAppInitData.length > 0) {
+    return {
+      launchedInTelegram: true,
+      isTelegramWebApp: true,
+      initData: webAppInitData,
+      initDataSource: 'webapp',
+      platform,
+    };
+  }
+
+  const hashInitData = extractInitDataFromUrlHash(window.location.hash || '');
+  if (hashInitData.length > 0) {
+    return {
+      launchedInTelegram: true,
+      isTelegramWebApp: true,
+      initData: hashInitData,
+      initDataSource: 'hash_fragment',
+      platform,
+    };
+  }
+
+  const sdkCache = extractInitDataFromTelegramSdkCache();
+  if (sdkCache.initData.length > 0) {
+    return {
+      launchedInTelegram: true,
+      isTelegramWebApp: true,
+      initData: sdkCache.initData,
+      initDataSource: 'telegram_session_cache',
+      platform,
+    };
+  }
+
+  const rawHash = window.location.hash || '';
+  const hasTelegramHashHint =
+    rawHash.includes('tgWebAppPlatform=') ||
+    rawHash.includes('tgWebAppVersion=') ||
+    rawHash.includes('tgWebAppData=');
+  const hasNativeBridge = Boolean(tgWin.TelegramWebviewProxy);
+  const hasKnownTelegramPlatform = platform !== 'unknown';
+  const launchedInTelegram =
+    hasKnownTelegramPlatform || hasTelegramHashHint || hasNativeBridge || sdkCache.hasTelegramParams;
+
+  return {
+    launchedInTelegram,
+    isTelegramWebApp: false,
+    initData: '',
+    initDataSource: 'none',
+    platform,
   };
 }
 
@@ -96,13 +228,18 @@ export function getTelegramStartParam(): string {
     const rawHash = window.location.hash ? window.location.hash.replace(/^#/, '') : '';
     if (rawHash) {
       const hashParams = new URLSearchParams(rawHash);
-      return (
+      const direct =
         hashParams.get('tgWebAppStartParam')?.trim() ||
         hashParams.get('startapp')?.trim() ||
         hashParams.get('start')?.trim() ||
         hashParams.get('ref')?.trim() ||
-        ''
-      );
+        '';
+      if (direct) return direct;
+      const hashInitData = hashParams.get('tgWebAppData');
+      if (hashInitData) {
+        const inner = new URLSearchParams(hashInitData).get('start_param')?.trim() || '';
+        if (inner) return inner;
+      }
     }
     return '';
   } catch {
@@ -114,7 +251,18 @@ export function getLiveTelegramWebAppUserId(): number | null {
   if (typeof window === 'undefined') return null;
   try {
     const id = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp?.initDataUnsafe?.user?.id;
-    return typeof id === 'number' && Number.isInteger(id) && id > 0 ? id : null;
+    if (typeof id === 'number' && Number.isInteger(id) && id > 0) return id;
+    const ctx = inspectTelegramLaunchContext();
+    if (ctx.initData) {
+      const userJson = new URLSearchParams(ctx.initData).get('user');
+      if (userJson) {
+        const parsed = JSON.parse(userJson) as { id?: unknown };
+        if (typeof parsed.id === 'number' && Number.isInteger(parsed.id) && parsed.id > 0) {
+          return parsed.id;
+        }
+      }
+    }
+    return null;
   } catch {
     return null;
   }
@@ -223,34 +371,38 @@ export function initTelegramMiniApp(): TelegramUserProfile {
   enforceUnifiedThemeAndClearStaleCaches();
   const startParam = getTelegramStartParam();
   if (typeof window !== 'undefined') {
+    const ctx = inspectTelegramLaunchContext();
     const tg = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp;
-    if (tg) {
+    let u = ctx.initData.length > 0 ? tg?.initDataUnsafe?.user : undefined;
+    if (!u && ctx.initData.length > 0) {
       try {
-        tg.ready?.();
-        tg.expand?.();
-        applyTelegramBrandTheme(tg);
+        const userJson = new URLSearchParams(ctx.initData).get('user');
+        if (userJson) {
+          u = JSON.parse(userJson) as NonNullable<
+            NonNullable<TelegramWebAppWindow['Telegram']>['WebApp']
+          >['initDataUnsafe'] extends { user?: infer U }
+            ? U
+            : never;
+        }
       } catch {
-        // Ignore outside Telegram environment
+        u = undefined;
       }
-      const hasSignedInitData =
-        typeof tg.initData === 'string' && tg.initData.trim().length > 0;
-      const u = hasSignedInitData ? tg.initDataUnsafe?.user : undefined;
-      if (hasSignedInitData && u && Number.isInteger(u.id) && u.id > 0 && u.first_name) {
-        const first = u.first_name;
-        const last = u.last_name || '';
-        const initials = `${first[0] || 'A'}${last[0] || 'B'}`.toUpperCase();
-        return {
-          // Display preview only; authentication and UID binding occur strictly via server-verified /api/telegram/auth
-          id: u.id,
-          firstName: first,
-          lastName: last,
-          username: u.username ? `@${u.username}` : '',
-          languageCode: u.language_code || 'am',
-          isTelegramWebApp: true,
-          initials,
-          startParam: startParam || undefined,
-        };
-      }
+    }
+    if (ctx.initData.length > 0 && u && Number.isInteger(u.id) && u.id > 0 && u.first_name) {
+      const first = u.first_name;
+      const last = u.last_name || '';
+      const initials = `${first[0] || 'A'}${last[0] || 'B'}`.toUpperCase();
+      return {
+        // Display preview only; authentication and UID binding occur strictly via server-verified /api/telegram/auth
+        id: u.id,
+        firstName: first,
+        lastName: last,
+        username: u.username ? `@${u.username}` : '',
+        languageCode: u.language_code || 'am',
+        isTelegramWebApp: true,
+        initials,
+        startParam: startParam || undefined,
+      };
     }
   }
 
@@ -268,60 +420,57 @@ export function initTelegramMiniApp(): TelegramUserProfile {
 
 /**
  * Waits briefly for Telegram WebApp SDK initialization (`window.Telegram.WebApp.ready()`),
- * then returns the untouched original `window.Telegram.WebApp.initData` query string.
+ * then returns the untouched original `initData` query string along with safe launch diagnostics.
  * Never constructs, modifies, or falls back to `initDataUnsafe` for authentication.
  */
-export async function waitForTelegramWebAppInitData(timeoutMs = 1500): Promise<{
-  isTelegramWebApp: boolean;
-  initData: string;
-}> {
+export async function waitForTelegramWebAppInitData(
+  timeoutMs = 1500
+): Promise<TelegramLaunchContext> {
   if (typeof window === 'undefined') {
-    return { isTelegramWebApp: false, initData: '' };
+    return {
+      launchedInTelegram: false,
+      isTelegramWebApp: false,
+      initData: '',
+      initDataSource: 'none',
+      platform: 'unknown',
+    };
   }
 
-  const readState = () => {
-    const tg = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp;
-    if (tg) {
-      try {
-        tg.ready?.();
-        tg.expand?.();
-        applyTelegramBrandTheme(tg);
-      } catch {
-        // Ignore outside Telegram environment
-      }
-    }
-    const rawInitData = typeof tg?.initData === 'string' ? tg.initData : '';
-    return { tg, rawInitData };
-  };
-
-  const initial = readState();
-  if (initial.rawInitData.length > 0) {
-    return { isTelegramWebApp: true, initData: initial.rawInitData };
+  const initial = inspectTelegramLaunchContext();
+  if (initial.initData.length > 0) {
+    return initial;
   }
 
-  // If the Telegram WebApp script already initialized with empty initData in a regular browser,
-  // return immediately unless the document is still loading.
-  if (initial.tg && typeof document !== 'undefined' && document.readyState === 'complete') {
-    return { isTelegramWebApp: false, initData: '' };
+  // In a standard non-Telegram browser (e.g. Chrome) once the page has finished loading
+  // and no Telegram bridge/hash/platform is detected, return immediately without stalling.
+  const hasTelegramScript = Boolean((window as unknown as TelegramWebAppWindow).Telegram?.WebApp);
+  if (
+    !initial.launchedInTelegram &&
+    hasTelegramScript &&
+    typeof document !== 'undefined' &&
+    document.readyState === 'complete'
+  ) {
+    return initial;
   }
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
-    const next = readState();
-    if (next.rawInitData.length > 0) {
-      return { isTelegramWebApp: true, initData: next.rawInitData };
+    const next = inspectTelegramLaunchContext();
+    if (next.initData.length > 0) {
+      return next;
     }
-    if (next.tg && typeof document !== 'undefined' && document.readyState === 'complete') {
-      break;
+    if (
+      !next.launchedInTelegram &&
+      Boolean((window as unknown as TelegramWebAppWindow).Telegram?.WebApp) &&
+      typeof document !== 'undefined' &&
+      document.readyState === 'complete'
+    ) {
+      return next;
     }
   }
 
-  const final = readState();
-  return {
-    isTelegramWebApp: final.rawInitData.length > 0,
-    initData: final.rawInitData,
-  };
+  return inspectTelegramLaunchContext();
 }
 
 export function triggerHaptic(type: 'light' | 'medium' | 'success' | 'error' = 'light') {

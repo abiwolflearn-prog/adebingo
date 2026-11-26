@@ -261,7 +261,10 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
         const existingPlayer = playerSnap.exists
           ? (playerSnap.data() as RegisteredTelegramPlayer)
           : undefined;
-        const resolvedLang: Language = existingPlayer?.language || language || 'am';
+        const userLangRaw = userSnap.exists ? userSnap.get('language') : undefined;
+        const userLang: Language | undefined =
+          userLangRaw === 'en' || userLangRaw === 'am' ? userLangRaw : undefined;
+        const resolvedLang: Language = existingPlayer?.language || userLang || language || 'am';
 
         const cleanUsername = username.startsWith('@')
           ? username.slice(1)
@@ -275,12 +278,22 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
           lastName: lastName.slice(0, 80),
           username: cleanUsername.slice(0, 64),
           language: resolvedLang,
-          phoneVerified: Boolean(existingPlayer?.phoneVerified),
-          verifiedPhoneMasked: existingPlayer?.verifiedPhoneMasked,
+          phoneVerified: Boolean(
+            existingPlayer?.phoneVerified || (userSnap.exists && userSnap.get('phoneVerified') === true)
+          ),
+          verifiedPhoneMasked:
+            existingPlayer?.verifiedPhoneMasked ||
+            (userSnap.exists && typeof userSnap.get('phoneNumberMasked') === 'string'
+              ? String(userSnap.get('phoneNumberMasked'))
+              : undefined),
           demoBalanceEtb: userSnap.exists
             ? Number(userSnap.get('demoBalanceEtb') ?? 0)
             : existingPlayer?.demoBalanceEtb ?? 15,
-          referralCode: existingPlayer?.referralCode || `ADEY-${telegramUserId}`,
+          referralCode:
+            existingPlayer?.referralCode ||
+            (userSnap.exists && typeof userSnap.get('referralCode') === 'string'
+              ? String(userSnap.get('referralCode'))
+              : `ADEY-${telegramUserId}`),
           registeredAt: existingPlayer?.registeredAt || nowIso,
           updatedAt: nowIso,
         };
@@ -1202,12 +1215,14 @@ export async function verifyTelegramInitDataPersistent(params: {
   maxAgeSeconds?: number;
   nowUnixSeconds?: number;
   expectedTelegramUserId?: number;
+  consumeReplay?: boolean;
 }): Promise<TelegramValidationResult> {
+  const maxAgeSeconds = params.maxAgeSeconds ?? 3600;
   const cryptoResult = validateTelegramWebAppInitData(
     params.rawInitData,
     params.botToken,
     {
-      maxAgeSeconds: params.maxAgeSeconds ?? 3600,
+      maxAgeSeconds,
       nowUnixSeconds: params.nowUnixSeconds,
       expectedTelegramUserId: params.expectedTelegramUserId,
     }
@@ -1217,17 +1232,55 @@ export async function verifyTelegramInitDataPersistent(params: {
     return cryptoResult;
   }
 
+  const buildReplayDiagnostics = () => ({
+    failureCategory: 'replay_detected' as const,
+    botTokenConfigured: true,
+    botTokenFormatValid: true,
+    initDataPresent: true,
+    initDataLength: params.rawInitData.trim().length,
+    looksLikeJsonInsteadOfQueryString: false,
+    looksLikeInitDataUnsafe: false,
+    hasLeadingQuestionMarkOrHashPrefix: false,
+    hasHash: true,
+    hashFormatValid: true,
+    hasAuthDate: Boolean(cryptoResult.authDate),
+    maxAgeSeconds,
+    hasUserField: Boolean(cryptoResult.telegramUser),
+    fieldKeysCount: 0,
+    fieldKeys: [] as string[],
+  });
+
+  if (params.consumeReplay === false) {
+    const alreadyConsumed = await params.replayGuard.isConsumed(
+      'init_data',
+      cryptoResult.dataCheckHash,
+      { nowUnixSeconds: params.nowUnixSeconds }
+    );
+    if (alreadyConsumed) {
+      return {
+        valid: false,
+        reason: 'replay_detected',
+        diagnostics: buildReplayDiagnostics(),
+      };
+    }
+    return cryptoResult;
+  }
+
   const replayRes = await params.replayGuard.consumeOnce(
     'init_data',
     cryptoResult.dataCheckHash,
     {
       nowUnixSeconds: params.nowUnixSeconds,
-      ttlSeconds: Math.max(60, params.maxAgeSeconds ?? 3600),
+      ttlSeconds: Math.max(60, maxAgeSeconds),
     }
   );
 
   if (!replayRes.fresh) {
-    return { valid: false, reason: 'replay_detected' };
+    return {
+      valid: false,
+      reason: 'replay_detected',
+      diagnostics: buildReplayDiagnostics(),
+    };
   }
 
   return cryptoResult;

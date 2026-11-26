@@ -170,6 +170,33 @@ export type TelegramRouterDeps = TelegramAuthHandlerDeps &
     autoConfigureMenuButton?: boolean;
   };
 
+export interface SafeTelegramAuthDiagnostics {
+  initDataPresent: boolean;
+  botTokenConfigured: boolean;
+  telegramHashValid: boolean;
+  telegramUserIdExtracted: boolean;
+  backendAuthSucceeded: boolean;
+  firebaseCustomTokenMinted: boolean;
+  phoneVerificationPending: boolean;
+  errorCode: string | null;
+}
+
+function buildSafeAuthDiagnostics(
+  overrides: Partial<SafeTelegramAuthDiagnostics>
+): SafeTelegramAuthDiagnostics {
+  return {
+    initDataPresent: false,
+    botTokenConfigured: false,
+    telegramHashValid: false,
+    telegramUserIdExtracted: false,
+    backendAuthSucceeded: false,
+    firebaseCustomTokenMinted: false,
+    phoneVerificationPending: false,
+    errorCode: null,
+    ...overrides,
+  };
+}
+
 /**
  * POST /api/telegram/auth
  */
@@ -190,20 +217,36 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
     const body = await parseJsonBody(req, res, { maxBytes: 16 * 1024, required: true });
     if (!body) return;
 
+    const botToken = deps.getBotToken ? deps.getBotToken() : process.env.TELEGRAM_BOT_TOKEN;
+    const botTokenConfigured = isConfiguredBotToken(botToken);
+
     const forbidden = findForbiddenOverrideFields(body, FORBIDDEN_AUTH_OVERRIDE_FIELDS);
     if (forbidden.length > 0) {
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured,
+        initDataPresent: typeof body.initData === 'string' && body.initData.trim().length > 0,
+        errorCode: 'client_identity_override_rejected',
+      });
+      console.warn('[api/telegram/auth] diagnostic', authDiagnostics);
       sendError(
         res,
         400,
         'client_identity_override_rejected',
-        'Caller-supplied identity or privilege fields are not accepted on this endpoint.'
+        'Caller-supplied identity or privilege fields are not accepted on this endpoint.',
+        { authDiagnostics }
       );
       return;
     }
 
     if (body.initData !== undefined && typeof body.initData !== 'string') {
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured,
+        initDataPresent: true,
+        errorCode: 'malformed_init_data',
+      });
       console.warn('[api/telegram/auth] rejected non-string initData payload', {
         receivedType: typeof body.initData,
+        authDiagnostics,
       });
       sendError(
         res,
@@ -213,11 +256,10 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
         {
           diagnostics: {
             failureCategory: 'frontend_request_formatting',
-            botTokenConfigured: isConfiguredBotToken(
-              deps.getBotToken ? deps.getBotToken() : process.env.TELEGRAM_BOT_TOKEN
-            ),
+            botTokenConfigured,
             initDataPresent: true,
           },
+          authDiagnostics,
         }
       );
       return;
@@ -225,28 +267,46 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
 
     const rawInitData = typeof body.initData === 'string' ? body.initData.trim() : '';
     if (!rawInitData) {
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured,
+        initDataPresent: false,
+        errorCode: 'missing_init_data',
+      });
+      console.warn('[api/telegram/auth] diagnostic', authDiagnostics);
       sendError(res, 400, 'missing_init_data', 'Telegram Mini App initData is required.', {
         diagnostics: {
           failureCategory: 'missing_init_data',
           initDataPresent: false,
         },
+        authDiagnostics,
       });
       return;
     }
     if (rawInitData.length > 4096) {
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured,
+        initDataPresent: true,
+        errorCode: 'malformed_init_data',
+      });
+      console.warn('[api/telegram/auth] diagnostic', authDiagnostics);
       sendError(res, 400, 'malformed_init_data', 'Telegram initData exceeds allowed length.', {
         diagnostics: {
           failureCategory: 'malformed_init_data',
           initDataPresent: true,
           initDataLength: rawInitData.length,
         },
+        authDiagnostics,
       });
       return;
     }
 
-    const botToken = deps.getBotToken ? deps.getBotToken() : process.env.TELEGRAM_BOT_TOKEN;
-    if (!isConfiguredBotToken(botToken)) {
-      console.warn('[api/telegram/auth] missing or placeholder TELEGRAM_BOT_TOKEN');
+    if (!botTokenConfigured) {
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured: false,
+        initDataPresent: true,
+        errorCode: 'missing_bot_token',
+      });
+      console.warn('[api/telegram/auth] missing or placeholder TELEGRAM_BOT_TOKEN', authDiagnostics);
       sendError(
         res,
         503,
@@ -257,6 +317,7 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
             failureCategory: 'backend_environment_configuration',
             botTokenConfigured: false,
           },
+          authDiagnostics,
         }
       );
       return;
@@ -264,11 +325,18 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
 
     const adminReady = deps.isAdminReady ? deps.isAdminReady() : isFirebaseAdminConfigured();
     if (!adminReady && !deps.getDb) {
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured: true,
+        initDataPresent: true,
+        errorCode: 'firebase_admin_unavailable',
+      });
+      console.warn('[api/telegram/auth] diagnostic', authDiagnostics);
       sendError(
         res,
         503,
         'firebase_admin_unavailable',
-        'Firebase Admin service is not configured on the server.'
+        'Firebase Admin service is not configured on the server.',
+        { authDiagnostics }
       );
       return;
     }
@@ -277,11 +345,18 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
     try {
       db = deps.getDb ? deps.getDb() : getAdminDb();
     } catch {
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured: true,
+        initDataPresent: true,
+        errorCode: 'firebase_admin_unavailable',
+      });
+      console.warn('[api/telegram/auth] diagnostic', authDiagnostics);
       sendError(
         res,
         503,
         'firebase_admin_unavailable',
-        'Server persistence service is unavailable.'
+        'Server persistence service is unavailable.',
+        { authDiagnostics }
       );
       return;
     }
@@ -289,57 +364,77 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
     const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 3600);
     const nowUnixSeconds = deps.nowUnixSeconds ? deps.nowUnixSeconds() : Math.floor(Date.now() / 1000);
 
+    // Phase 1: Cryptographic HMAC-SHA256 validation + read-only replay peek (do NOT burn replay
+    // guard before profile persistence and custom token minting succeed, so transient 503s never
+    // permanently lock out a valid Telegram initData payload).
     const validation = await verifyTelegramInitDataPersistent({
       rawInitData,
       botToken,
       replayGuard,
       maxAgeSeconds: 3600,
       nowUnixSeconds,
+      consumeReplay: false,
     });
 
-    if (!validation.valid || !validation.telegramUser) {
-      console.warn('[api/telegram/auth] initData validation failed', {
-        reason: validation.reason,
-        diagnostics: validation.diagnostics,
+    if (!validation.valid || !validation.telegramUser || !validation.dataCheckHash) {
+      const reason = validation.reason || 'signature_mismatch';
+      const hashPassedBeforeFailure =
+        reason === 'replay_detected' ||
+        reason === 'expired_auth_date' ||
+        reason === 'future_auth_date' ||
+        reason === 'missing_telegram_user' ||
+        reason === 'telegram_id_mismatch';
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured: true,
+        initDataPresent: true,
+        telegramHashValid: hashPassedBeforeFailure,
+        telegramUserIdExtracted: reason === 'replay_detected',
+        errorCode: reason,
       });
-      if (validation.reason === 'replay_detected') {
+      console.warn('[api/telegram/auth] initData validation failed', {
+        reason,
+        diagnostics: validation.diagnostics,
+        authDiagnostics,
+      });
+      if (reason === 'replay_detected') {
         sendError(
           res,
           409,
           'replay_detected',
           'This Telegram initData payload has already been used.',
-          { diagnostics: validation.diagnostics }
+          { diagnostics: validation.diagnostics, authDiagnostics }
         );
         return;
       }
-      if (validation.reason === 'missing_bot_token') {
+      if (reason === 'missing_bot_token') {
         sendError(
           res,
           503,
           'missing_bot_token',
           'Telegram authentication is not configured on the server.',
-          { diagnostics: validation.diagnostics }
+          { diagnostics: validation.diagnostics, authDiagnostics }
         );
         return;
       }
-      if (validation.reason === 'malformed_init_data' || validation.reason === 'missing_hash') {
+      if (reason === 'malformed_init_data' || reason === 'missing_hash') {
         sendError(
           res,
           400,
-          validation.reason,
-          validation.reason === 'missing_hash'
+          reason,
+          reason === 'missing_hash'
             ? 'Telegram initData is missing its cryptographic hash parameter.'
             : 'Telegram initData query string is malformed.',
-          { diagnostics: validation.diagnostics }
+          { diagnostics: validation.diagnostics, authDiagnostics }
         );
         return;
       }
       const message =
-        validation.reason === 'expired_auth_date' || validation.reason === 'future_auth_date'
+        reason === 'expired_auth_date' || reason === 'future_auth_date'
           ? 'Telegram initData auth_date is expired or invalid.'
           : 'Telegram initData verification failed.';
-      sendError(res, 401, validation.reason || 'signature_mismatch', message, {
+      sendError(res, 401, reason, message, {
         diagnostics: validation.diagnostics,
+        authDiagnostics,
       });
       return;
     }
@@ -347,21 +442,52 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
     const tgUser = validation.telegramUser;
     const canonicalUid = getTelegramFirebaseUid(tgUser.id);
     const store = createFirestoreTelegramStore(db);
-    const persisted = await store.savePlayerAndBinding({
-      telegramUserId: tgUser.id,
-      uid: canonicalUid,
-      firstName: tgUser.first_name || 'Adey Player',
-      lastName: tgUser.last_name || '',
-      username: tgUser.username || canonicalUid,
-      language: 'am',
-    });
+
+    let persisted: Awaited<ReturnType<typeof store.savePlayerAndBinding>>;
+    try {
+      persisted = await store.savePlayerAndBinding({
+        telegramUserId: tgUser.id,
+        uid: canonicalUid,
+        firstName: tgUser.first_name || 'Adey Player',
+        lastName: tgUser.last_name || '',
+        username: tgUser.username || canonicalUid,
+        language: 'am',
+      });
+    } catch {
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured: true,
+        initDataPresent: true,
+        telegramHashValid: true,
+        telegramUserIdExtracted: true,
+        errorCode: 'profile_persistence_failed',
+      });
+      console.warn('[api/telegram/auth] profile persistence failed', authDiagnostics);
+      sendError(
+        res,
+        503,
+        'profile_persistence_failed',
+        'Unable to save verified Telegram player profile right now. Please retry.',
+        { authDiagnostics }
+      );
+      return;
+    }
 
     if (!persisted.ok || !persisted.player) {
+      const errCode = persisted.reason || 'duplicate_telegram_account';
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured: true,
+        initDataPresent: true,
+        telegramHashValid: true,
+        telegramUserIdExtracted: true,
+        errorCode: errCode,
+      });
+      console.warn('[api/telegram/auth] binding conflict', authDiagnostics);
       sendError(
         res,
         409,
-        persisted.reason || 'duplicate_telegram_account',
-        'This Telegram account is already bound to another Firebase identity.'
+        errCode,
+        'This Telegram account is already bound to another Firebase identity.',
+        { authDiagnostics }
       );
       return;
     }
@@ -451,11 +577,44 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
       });
     } catch (mintErr) {
       const classified = classifyCustomTokenError(mintErr);
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured: true,
+        initDataPresent: true,
+        telegramHashValid: true,
+        telegramUserIdExtracted: true,
+        backendAuthSucceeded: false,
+        firebaseCustomTokenMinted: false,
+        phoneVerificationPending: !persisted.player.phoneVerified,
+        errorCode: classified.code,
+      });
+      console.warn('[api/telegram/auth] custom token mint failed', authDiagnostics);
+      sendError(res, 503, classified.code, classified.message, { authDiagnostics });
+      return;
+    }
+
+    // Phase 2: Commit one-time replay guard atomically ONLY after DB persistence & custom token mint succeeded.
+    const replayCommit = await replayGuard.consumeOnce('init_data', validation.dataCheckHash, {
+      nowUnixSeconds,
+      ttlSeconds: 3600,
+    });
+    if (!replayCommit.fresh) {
+      const authDiagnostics = buildSafeAuthDiagnostics({
+        botTokenConfigured: true,
+        initDataPresent: true,
+        telegramHashValid: true,
+        telegramUserIdExtracted: true,
+        backendAuthSucceeded: false,
+        firebaseCustomTokenMinted: false,
+        phoneVerificationPending: !persisted.player.phoneVerified,
+        errorCode: 'replay_detected',
+      });
+      console.warn('[api/telegram/auth] concurrent replay blocked', authDiagnostics);
       sendError(
         res,
-        503,
-        classified.code,
-        classified.message
+        409,
+        'replay_detected',
+        'This Telegram initData payload has already been used.',
+        { authDiagnostics }
       );
       return;
     }
@@ -480,6 +639,19 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
     const sessionToken = mintedSession?.token;
     const verifiedRole = mintedSession?.actor.role ?? 'player';
     const isAdmin = verifiedRole === 'admin';
+    const phoneVerificationPending = !persisted.player.phoneVerified && !isAdmin;
+
+    const authDiagnostics = buildSafeAuthDiagnostics({
+      botTokenConfigured: true,
+      initDataPresent: true,
+      telegramHashValid: true,
+      telegramUserIdExtracted: true,
+      backendAuthSucceeded: true,
+      firebaseCustomTokenMinted: Boolean(minted.customToken),
+      phoneVerificationPending,
+      errorCode: null,
+    });
+    console.info('[api/telegram/auth] authenticated', authDiagnostics);
 
     sendJson(res, 200, {
       ok: true,
@@ -490,6 +662,7 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
       customToken: minted.customToken,
       ...(sessionToken ? { sessionToken } : {}),
       ...(referralApplied ? { referralApplied } : {}),
+      authDiagnostics,
       profile: {
         uid: minted.uid,
         telegramUserId: tgUser.id,
@@ -1793,12 +1966,14 @@ export function createTelegramRouterHandler(deps: TelegramRouterDeps = {}) {
     ) {
       const botToken = deps.getBotToken ? deps.getBotToken() : process.env.TELEGRAM_BOT_TOKEN;
       if (isConfiguredBotToken(botToken)) {
-        await menuConfigurator.ensureConfiguredOnce({
-          botToken,
-          miniAppUrl: getPublicMiniAppUrl(),
-          fetchImpl: deps.fetchImpl,
-          timeoutMs: 3500,
-        });
+        await menuConfigurator
+          .ensureConfiguredOnce({
+            botToken,
+            miniAppUrl: getPublicMiniAppUrl(),
+            fetchImpl: deps.fetchImpl,
+            timeoutMs: 1500,
+          })
+          .catch(() => undefined);
       }
     }
 

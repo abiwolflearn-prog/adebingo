@@ -36,6 +36,7 @@ import { soundFX } from './utils/sound';
 import {
   getLiveTelegramWebAppUserId,
   initTelegramMiniApp,
+  requestTelegramContact,
   syncTelegramBackButton,
   triggerHaptic,
   waitForTelegramWebAppInitData,
@@ -107,56 +108,154 @@ function buildEmptyInitialRooms(): RoomConfig[] {
 }
 
 const ALL_CARD_NUMBERS = Array.from({ length: DEFAULT_GAME_RULES.maxCardsPerRoom }, (_, i) => i + 1);
-const TG_SESSION_STORAGE_KEY = 'adeybingo_verified_session_v1';
+const TG_SESSION_STORAGE_KEY = 'adeybingo_verified_session_v2';
 
 interface PersistedTelegramSession {
   sessionToken: string;
   verifiedTelegramId: number;
-  initDataHash: string;
+  authDate: number;
+  expiresAtMs: number;
 }
 
-function extractInitDataHash(rawInitData: string): string {
+interface TelegramClientAuthDiagnostics {
+  launchedInTelegram: boolean;
+  initDataPresent: boolean;
+  telegramHashValid: boolean | null;
+  telegramUserIdExtracted: boolean;
+  backendAuthSucceeded: boolean;
+  firebaseAuthSucceeded: boolean;
+  phoneVerificationPending: boolean;
+  errorCode: string | null;
+}
+
+function extractInitDataAuthDate(rawInitData: string): number {
   try {
-    return new URLSearchParams(rawInitData).get('hash') || '';
+    const val = Number(new URLSearchParams(rawInitData).get('auth_date') || 0);
+    return Number.isInteger(val) && val > 0 ? val : 0;
   } catch {
-    return '';
+    return 0;
   }
 }
 
 function loadPersistedTelegramSession(): PersistedTelegramSession | null {
   if (typeof window === 'undefined') return null;
+  const stores: Array<Storage | undefined> = [];
   try {
-    const raw = window.sessionStorage.getItem(TG_SESSION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<PersistedTelegramSession>;
-    if (
-      typeof parsed.sessionToken === 'string' &&
-      parsed.sessionToken.trim() &&
-      typeof parsed.verifiedTelegramId === 'number' &&
-      parsed.verifiedTelegramId > 0
-    ) {
-      return {
-        sessionToken: parsed.sessionToken.trim(),
-        verifiedTelegramId: parsed.verifiedTelegramId,
-        initDataHash: typeof parsed.initDataHash === 'string' ? parsed.initDataHash : '',
-      };
-    }
+    stores.push(window.sessionStorage);
   } catch {
-    // Ignore storage read errors
+    // Ignore restricted sessionStorage
+  }
+  try {
+    stores.push(window.localStorage);
+  } catch {
+    // Ignore restricted localStorage
+  }
+  const nowMs = Date.now();
+  for (const store of stores) {
+    if (!store) continue;
+    try {
+      const raw = store.getItem(TG_SESSION_STORAGE_KEY);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as Partial<PersistedTelegramSession>;
+      const expiresAtMs =
+        typeof parsed.expiresAtMs === 'number' && Number.isFinite(parsed.expiresAtMs)
+          ? parsed.expiresAtMs
+          : nowMs + 60_000;
+      if (
+        typeof parsed.sessionToken === 'string' &&
+        parsed.sessionToken.trim() &&
+        typeof parsed.verifiedTelegramId === 'number' &&
+        parsed.verifiedTelegramId > 0 &&
+        expiresAtMs > nowMs
+      ) {
+        return {
+          sessionToken: parsed.sessionToken.trim(),
+          verifiedTelegramId: parsed.verifiedTelegramId,
+          authDate: typeof parsed.authDate === 'number' ? parsed.authDate : 0,
+          expiresAtMs,
+        };
+      }
+    } catch {
+      // Ignore storage read errors
+    }
   }
   return null;
 }
 
 function savePersistedTelegramSession(session: PersistedTelegramSession | null): void {
   if (typeof window === 'undefined') return;
-  try {
-    if (!session) {
-      window.sessionStorage.removeItem(TG_SESSION_STORAGE_KEY);
-    } else {
-      window.sessionStorage.setItem(TG_SESSION_STORAGE_KEY, JSON.stringify(session));
+  for (const getter of [() => window.sessionStorage, () => window.localStorage]) {
+    try {
+      const store = getter();
+      if (!store) continue;
+      if (!session) {
+        store.removeItem(TG_SESSION_STORAGE_KEY);
+      } else {
+        store.setItem(TG_SESSION_STORAGE_KEY, JSON.stringify(session));
+      }
+    } catch {
+      // Ignore storage quota or WebView sandbox errors
     }
-  } catch {
-    // Ignore storage quota errors
+  }
+}
+
+function formatTelegramAuthErrorMessage(
+  errorCode: string,
+  lang: Language,
+  fallbackServerMessage?: string
+): string {
+  switch (errorCode) {
+    case 'not_in_telegram':
+      return lang === 'am'
+        ? 'ADEYBINGO ን በቴሌግራም (@AdeyBingoGameBot) ውስጥ ይክፈቱ (ኮድ: not_in_telegram)።'
+        : 'Open ADEYBINGO inside Telegram via @AdeyBingoGameBot to authenticate (code: not_in_telegram).';
+    case 'missing_init_data':
+      return lang === 'am'
+        ? 'የቴሌግራም initData አልተገኘም። እባክዎ ከ@AdeyBingoGameBot Menu ወይም Play ቁልፍ እንደገና ይክፈቱ (missing_init_data)።'
+        : 'Telegram launch data is missing. Reopen from @AdeyBingoGameBot Menu or Play button (missing_init_data).';
+    case 'signature_mismatch':
+      return lang === 'am'
+        ? 'የቴሌግራም ማረጋገጫ ፊርማ አልተዛመደም (signature_mismatch)። እባክዎ ከ@AdeyBingoGameBot እንደገና ይክፈቱ።'
+        : 'Telegram signature verification failed (signature_mismatch). Reopen from @AdeyBingoGameBot.';
+    case 'expired_auth_date':
+    case 'future_auth_date':
+      return lang === 'am'
+        ? `የቴሌግራም ክፍለ ጊዜ ጊዜው አልፏል (${errorCode})። Mini App ን ዘግተው ከ@AdeyBingoGameBot እንደገና ይክፈቱ።`
+        : `Telegram launch data expired (${errorCode}). Close and reopen the Mini App from @AdeyBingoGameBot.`;
+    case 'replay_detected':
+      return lang === 'am'
+        ? 'ይህ የቴሌግራም መግቢያ ቀደም ብሎ ተጠቅሟል (replay_detected)። አዲስ ክፍለ ጊዜ ለማግኘት ከ@AdeyBingoGameBot እንደገና ይክፈቱ።'
+        : 'This Telegram launch session was already used (replay_detected). Reopen from @AdeyBingoGameBot for a fresh session.';
+    case 'missing_bot_token':
+      return lang === 'am'
+        ? 'የሰርቨር ቴሌግራም ቦት ቶከን አልተዋቀረም (missing_bot_token)።'
+        : 'Server Telegram bot token is not configured (missing_bot_token).';
+    case 'iam_sign_blob_permission_denied':
+    case 'invalid_private_key':
+    case 'firebase_admin_unconfigured':
+    case 'token_mint_failed':
+    case 'firebase_admin_unavailable':
+      return lang === 'am'
+        ? `የFirebase ማረጋገጫ አገልግሎት ችግር (${errorCode})። እባክዎ ከጥቂት ጊዜ በኋላ እንደገና ይሞክሩ።`
+        : `Firebase authentication service error (${errorCode}). Please try again shortly.`;
+    case 'firebase_auth_failed':
+      return lang === 'am'
+        ? 'የFirebase ክፍለ ጊዜ ማስገባት አልተሳካም (firebase_auth_failed)።'
+        : 'Firebase custom token sign-in failed (firebase_auth_failed).';
+    case 'profile_persistence_failed':
+      return lang === 'am'
+        ? 'የተጫዋች መለያ ማስቀመጥ አልተሳካም (profile_persistence_failed)። እንደገና ይሞክሩ።'
+        : 'Failed to save player profile (profile_persistence_failed). Please retry.';
+    case 'backend_network_error':
+      return lang === 'am'
+        ? 'ከሰርቨር ጋር መገናኘት አልተቻለም (backend_network_error)። ኢንተርኔትዎን ያረጋግጡ።'
+        : 'Could not reach authentication server (backend_network_error). Check your connection.';
+    default:
+      return fallbackServerMessage
+        ? `${fallbackServerMessage} (${errorCode})`
+        : lang === 'am'
+          ? `የቴሌግራም ማረጋገጫ አልተሳካም (${errorCode})።`
+          : `Telegram authentication error (${errorCode}).`;
   }
 }
 
@@ -198,8 +297,32 @@ export default function App() {
   const [serverVerifiedTelegramId, setServerVerifiedTelegramId] = useState<number | null>(null);
   const [isVerifiedAdmin, setIsVerifiedAdmin] = useState<boolean>(false);
   const [activeSessionToken, setActiveSessionToken] = useState<string>('');
+  const activeSessionTokenRef = useRef<string>('');
+  activeSessionTokenRef.current = activeSessionToken;
   const [telegramBackendStatus, setTelegramBackendStatus] = useState<string>(
     'Ready to validate Telegram WebApp initData on /api/telegram/auth'
+  );
+  const [authDiagnostics, setAuthDiagnostics] = useState<TelegramClientAuthDiagnostics>({
+    launchedInTelegram: false,
+    initDataPresent: false,
+    telegramHashValid: null,
+    telegramUserIdExtracted: false,
+    backendAuthSucceeded: false,
+    firebaseAuthSucceeded: false,
+    phoneVerificationPending: false,
+    errorCode: null,
+  });
+  const [onboardingContactBusy, setOnboardingContactBusy] = useState<boolean>(false);
+
+  const recordAuthDiagnostics = useCallback(
+    (patch: Partial<TelegramClientAuthDiagnostics>) => {
+      setAuthDiagnostics((prev) => {
+        const next: TelegramClientAuthDiagnostics = { ...prev, ...patch };
+        console.info('[adeybingo/telegram-auth]', next);
+        return next;
+      });
+    },
+    []
   );
 
   // Rooms & Lobby state (hydrated from backend — zero fabricated players/countdown)
@@ -698,28 +821,40 @@ export default function App() {
           const claimTgId = Number(
             tokenRes?.claims?.telegram_id ?? tokenRes?.claims?.telegramUserId
           );
+          let resolvedTgId: number | null = null;
           if (Number.isInteger(claimTgId) && claimTgId > 0) {
+            resolvedTgId = claimTgId;
             setServerVerifiedTelegramId(claimTgId);
           } else {
             const uidMatch = /^tg_([1-9]\d*)$/.exec(currentUser.uid);
             if (uidMatch) {
-              setServerVerifiedTelegramId(Number(uidMatch[1]));
+              resolvedTgId = Number(uidMatch[1]);
+              setServerVerifiedTelegramId(resolvedTgId);
             }
           }
 
-          const profile = await ensureUserProfileInFirestore(currentUser, user, lang);
-          setPhoneVerified(profile.phoneVerified);
-          if (profile.language === 'am' || profile.language === 'en') {
-            setLang(profile.language);
+          const profile = await ensureUserProfileInFirestore(currentUser, user, lang).catch(
+            () => null
+          );
+          if (profile) {
+            setPhoneVerified(profile.phoneVerified);
+            if (profile.language === 'am' || profile.language === 'en') {
+              setLang(profile.language);
+            }
+            if (typeof profile.demoBalanceEtb === 'number') {
+              setDemoBalance(profile.demoBalanceEtb);
+            }
           }
-          if (typeof profile.demoBalanceEtb === 'number') {
-            setDemoBalance(profile.demoBalanceEtb);
-          }
-          const privContact = await getPrivatePhoneContact(currentUser.uid);
+          const privContact = await getPrivatePhoneContact(currentUser.uid).catch(() => null);
           if (privContact) {
             setPhoneNumber(privContact.phoneNumber);
             setPhoneVerified(privContact.phoneVerified);
           }
+          recordAuthDiagnostics({
+            telegramUserIdExtracted: Boolean(resolvedTgId),
+            firebaseAuthSucceeded: true,
+            phoneVerificationPending: !(privContact?.phoneVerified ?? profile?.phoneVerified ?? false),
+          });
           // Server-side verification for admin visibility (ordinary players always remain false)
           const idToken = await currentUser.getIdToken().catch(() => '');
           if (idToken) {
@@ -740,7 +875,8 @@ export default function App() {
         } catch (err) {
           console.error('Error syncing authenticated user profile:', err);
         }
-      } else {
+      } else if (!activeSessionTokenRef.current) {
+        // Only clear verified Telegram ID when there is no active verified server session token
         setServerVerifiedTelegramId(null);
         setIsVerifiedAdmin(false);
       }
@@ -749,33 +885,43 @@ export default function App() {
     // Attempt automatic Telegram Mini App initData authentication when launched inside Telegram
     let cancelled = false;
     void (async () => {
-      const { initData: rawInitData } = await waitForTelegramWebAppInitData(1500);
+      const launchCtx = await waitForTelegramWebAppInitData(1500);
       if (cancelled) return;
 
-      // 1) Reuse existing verified session across Mini App page refreshes to avoid initData replay 409
+      const rawInitData = launchCtx.initData;
+      const incomingAuthDate = rawInitData ? extractInitDataAuthDate(rawInitData) : 0;
+
+      // 1) Reuse existing verified session across Mini App reloads / WebView resumes to avoid initData replay 409
       const savedSession = loadPersistedTelegramSession();
-      const incomingHash = rawInitData ? extractInitDataHash(rawInitData) : '';
       const liveTgUserId = getLiveTelegramWebAppUserId();
       const sessionMatchesLiveUser =
         !liveTgUserId || !savedSession || savedSession.verifiedTelegramId === liveTgUserId;
+      const isNewerTelegramLaunch =
+        Boolean(savedSession && incomingAuthDate > 0 && savedSession.authDate > 0 && incomingAuthDate > savedSession.authDate);
       if (savedSession && !sessionMatchesLiveUser) {
         setSessionBearerToken('');
+        setActiveSessionToken('');
         savePersistedTelegramSession(null);
       }
-      if (
-        savedSession &&
-        sessionMatchesLiveUser &&
-        (!incomingHash || !savedSession.initDataHash || savedSession.initDataHash === incomingHash)
-      ) {
+      if (savedSession && sessionMatchesLiveUser && !isNewerTelegramLaunch) {
         setSessionBearerToken(savedSession.sessionToken);
+        setActiveSessionToken(savedSession.sessionToken);
         const restored = await hydratePlayerState();
         if (cancelled) return;
         if (restored) {
-          setActiveSessionToken(savedSession.sessionToken);
           setServerVerifiedTelegramId(savedSession.verifiedTelegramId);
           setTelegramBackendStatus(
             `✓ Authenticated on Server: TG User #${savedSession.verifiedTelegramId}`
           );
+          recordAuthDiagnostics({
+            launchedInTelegram: launchCtx.launchedInTelegram,
+            initDataPresent: rawInitData.length > 0,
+            telegramHashValid: true,
+            telegramUserIdExtracted: true,
+            backendAuthSucceeded: true,
+            firebaseAuthSucceeded: Boolean(auth.currentUser),
+            errorCode: null,
+          });
           fetch('/api/admin/session', {
             method: 'GET',
             headers: { Authorization: `Bearer ${savedSession.sessionToken}` },
@@ -794,12 +940,26 @@ export default function App() {
         }
         // Stored session expired or invalid -> clear and re-authenticate
         setSessionBearerToken('');
+        setActiveSessionToken('');
         savePersistedTelegramSession(null);
       }
 
       if (!rawInitData) {
+        const missingCode = launchCtx.launchedInTelegram ? 'missing_init_data' : 'not_in_telegram';
+        recordAuthDiagnostics({
+          launchedInTelegram: launchCtx.launchedInTelegram,
+          initDataPresent: false,
+          telegramHashValid: false,
+          telegramUserIdExtracted: false,
+          backendAuthSucceeded: false,
+          firebaseAuthSucceeded: Boolean(auth.currentUser),
+          phoneVerificationPending: false,
+          errorCode: missingCode,
+        });
         setTelegramBackendStatus(
-          'No window.Telegram.WebApp.initData detected (open inside @AdeyBingoGameBot Mini App to authenticate).'
+          launchCtx.launchedInTelegram
+            ? `Missing Telegram initData (${missingCode}) — reopen via @AdeyBingoGameBot Menu or Play button.`
+            : `Opened outside Telegram (${missingCode}) — open inside @AdeyBingoGameBot Mini App to authenticate.`
         );
         return;
       }
@@ -831,7 +991,8 @@ export default function App() {
             language: d.profile?.language === 'en' ? 'en' : d.profile?.language === 'am' ? 'am' : undefined,
             referralCode: d.profile?.referralCode,
           });
-          setIsVerifiedAdmin(Boolean(d.isAdmin === true || d.role === 'admin'));
+          const verifiedAdminFlag = Boolean(d.isAdmin === true || d.role === 'admin');
+          setIsVerifiedAdmin(verifiedAdminFlag);
           if (d.sessionToken) {
             setSessionBearerToken(d.sessionToken);
             setActiveSessionToken(d.sessionToken);
@@ -839,14 +1000,15 @@ export default function App() {
               savePersistedTelegramSession({
                 sessionToken: d.sessionToken,
                 verifiedTelegramId: verifiedId,
-                initDataHash: incomingHash,
+                authDate: incomingAuthDate,
+                expiresAtMs: Date.now() + 55 * 60 * 1000,
               });
             }
           }
           const profileBalance = d.profile?.demoBalanceEtb ?? d.demoBalanceEtb;
           if (typeof profileBalance === 'number') setDemoBalance(profileBalance);
-          const profilePhoneVerified = d.profile?.phoneVerified ?? d.phoneVerified;
-          if (typeof profilePhoneVerified === 'boolean') setPhoneVerified(profilePhoneVerified);
+          const profilePhoneVerified = Boolean(d.profile?.phoneVerified ?? d.phoneVerified ?? false);
+          setPhoneVerified(profilePhoneVerified);
           const profileLang = d.profile?.language;
           if (profileLang === 'am' || profileLang === 'en') {
             setLang(profileLang);
@@ -859,36 +1021,94 @@ export default function App() {
                 : 'Joined via friend invite! Your 15.00 ETB initial balance is ready.'
             );
           }
+          let fbAuthOk = Boolean(auth.currentUser);
           let fbAuthNote = '';
           if (d.customToken) {
             try {
               await signInWithCustomToken(auth, d.customToken);
+              fbAuthOk = true;
             } catch (fbErr) {
+              fbAuthOk = false;
               const errCode =
                 fbErr && typeof fbErr === 'object' && 'code' in fbErr
-                  ? String((fbErr as { code?: unknown }).code || 'custom_token_failed')
-                  : 'custom_token_failed';
-              console.warn('Firebase signInWithCustomToken fallback to API polling:', errCode);
-              fbAuthNote = ` (Polling sync: ${errCode})`;
+                  ? String((fbErr as { code?: unknown }).code || 'firebase_auth_failed')
+                  : 'firebase_auth_failed';
+              console.warn('[adeybingo/telegram-auth] Firebase custom token sign-in fallback:', errCode);
+              fbAuthNote = ` (Session fallback: ${errCode})`;
             }
           }
+          const phonePending = !profilePhoneVerified && !verifiedAdminFlag;
+          recordAuthDiagnostics({
+            launchedInTelegram: true,
+            initDataPresent: true,
+            telegramHashValid: true,
+            telegramUserIdExtracted: Number.isInteger(verifiedId) && verifiedId > 0,
+            backendAuthSucceeded: true,
+            firebaseAuthSucceeded: fbAuthOk,
+            phoneVerificationPending: phonePending,
+            errorCode: phonePending ? 'phone_verification_required' : null,
+          });
           setTelegramBackendStatus(
             `✓ Authenticated on Server: TG User #${verifiedId || d.telegramUser?.id || ''}${fbAuthNote}`
           );
           await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoomId)]);
         } else {
+          const errCode = String(d.reason || d.error || (r.status >= 500 ? 'backend_http_error' : 'auth_rejected'));
+          // If replay_detected occurred while Firebase Auth is already signed in for this Telegram user, recover cleanly
+          if (errCode === 'replay_detected' && auth.currentUser && liveTgUserId) {
+            const recovered = await hydratePlayerState();
+            if (recovered && !cancelled) {
+              setServerVerifiedTelegramId(liveTgUserId);
+              recordAuthDiagnostics({
+                launchedInTelegram: true,
+                initDataPresent: true,
+                telegramHashValid: true,
+                telegramUserIdExtracted: true,
+                backendAuthSucceeded: true,
+                firebaseAuthSucceeded: true,
+                errorCode: null,
+              });
+              setTelegramBackendStatus(
+                `✓ Authenticated on Server: TG User #${liveTgUserId} (active session)`
+              );
+              await hydrateRoomState(activeRoomId);
+              return;
+            }
+          }
+          const serverDiag = d.authDiagnostics as Partial<TelegramClientAuthDiagnostics> | undefined;
+          recordAuthDiagnostics({
+            launchedInTelegram: launchCtx.launchedInTelegram,
+            initDataPresent: true,
+            telegramHashValid: serverDiag?.telegramHashValid ?? (errCode === 'replay_detected'),
+            telegramUserIdExtracted: serverDiag?.telegramUserIdExtracted ?? false,
+            backendAuthSucceeded: false,
+            firebaseAuthSucceeded: false,
+            phoneVerificationPending: serverDiag?.phoneVerificationPending ?? false,
+            errorCode: errCode,
+          });
           const category = d.diagnostics?.failureCategory
             ? ` [${d.diagnostics.failureCategory}]`
             : '';
-          const errSummary = `Auth failed (${r.status}): ${d.reason || d.error || 'error'}${category} — ${d.message || 'Verification failed'}`;
+          const errSummary = `Auth failed (${r.status}): ${errCode}${category} — ${d.message || 'Verification failed'}`;
           setTelegramBackendStatus(errSummary);
-          setToast(d.message || 'Telegram authentication failed');
+          setToast(formatTelegramAuthErrorMessage(errCode, langRef.current, d.message));
         }
       } catch (err) {
         if (!cancelled) {
+          recordAuthDiagnostics({
+            launchedInTelegram: launchCtx.launchedInTelegram,
+            initDataPresent: true,
+            telegramHashValid: null,
+            telegramUserIdExtracted: false,
+            backendAuthSucceeded: false,
+            firebaseAuthSucceeded: false,
+            phoneVerificationPending: false,
+            errorCode: 'backend_network_error',
+          });
           setTelegramBackendStatus(
-            `Auth network error: ${err instanceof Error ? err.message : 'Network failure'}`
+            `Auth network error (backend_network_error): ${err instanceof Error ? err.message : 'Network failure'}`
           );
+          setToast(formatTelegramAuthErrorMessage('backend_network_error', langRef.current));
         }
       }
     })();
@@ -1266,8 +1486,45 @@ export default function App() {
 
   // Handler: Authenticate via Telegram Mini App initData (/api/telegram/auth)
   async function handleSignInGoogle() {
-    const { initData: rawInitData } = await waitForTelegramWebAppInitData(500);
-    const incomingHash = rawInitData ? extractInitDataHash(rawInitData) : '';
+    const launchCtx = await waitForTelegramWebAppInitData(500);
+    const rawInitData = launchCtx.initData;
+    const incomingAuthDate = rawInitData ? extractInitDataAuthDate(rawInitData) : 0;
+
+    // Avoid self-inflicted 409 replay_detected if an active verified session already exists
+    if (activeSessionTokenRef.current && serverVerifiedTelegramId) {
+      const refreshed = await hydratePlayerState();
+      if (refreshed) {
+        setTelegramBackendStatus(
+          `✓ Authenticated on Server: TG User #${serverVerifiedTelegramId}`
+        );
+        setToast(
+          lang === 'am'
+            ? `የቴሌግራም መለያዎ (#${serverVerifiedTelegramId}) ቀድሞውኑ ተገናኝቷል`
+            : `Already authenticated with Telegram (#${serverVerifiedTelegramId})`
+        );
+        return;
+      }
+    }
+
+    if (!rawInitData) {
+      const errCode = launchCtx.launchedInTelegram ? 'missing_init_data' : 'not_in_telegram';
+      recordAuthDiagnostics({
+        launchedInTelegram: launchCtx.launchedInTelegram,
+        initDataPresent: false,
+        telegramHashValid: false,
+        telegramUserIdExtracted: false,
+        backendAuthSucceeded: false,
+        firebaseAuthSucceeded: Boolean(auth.currentUser),
+        errorCode: errCode,
+      });
+      setTelegramBackendStatus(
+        launchCtx.launchedInTelegram
+          ? `Auth failed (400): ${errCode} — Reopen via @AdeyBingoGameBot Menu or Play button.`
+          : `Opened outside Telegram (${errCode}) — Launch inside @AdeyBingoGameBot Mini App.`
+      );
+      setToast(formatTelegramAuthErrorMessage(errCode, lang));
+      return;
+    }
 
     try {
       const resp = await fetch('/api/telegram/auth', {
@@ -1299,6 +1556,8 @@ export default function App() {
                 ? 'am'
                 : undefined,
         });
+        const verifiedAdminFlag = Boolean(data.isAdmin === true || data.role === 'admin');
+        setIsVerifiedAdmin(verifiedAdminFlag);
         if (data.sessionToken) {
           setSessionBearerToken(data.sessionToken);
           setActiveSessionToken(data.sessionToken);
@@ -1306,7 +1565,8 @@ export default function App() {
             savePersistedTelegramSession({
               sessionToken: data.sessionToken,
               verifiedTelegramId: verifiedId,
-              initDataHash: incomingHash,
+              authDate: incomingAuthDate,
+              expiresAtMs: Date.now() + 55 * 60 * 1000,
             });
           }
         }
@@ -1314,6 +1574,8 @@ export default function App() {
         if (typeof profileBalance === 'number') {
           setDemoBalance(profileBalance);
         }
+        const profilePhoneVerified = Boolean(data.profile?.phoneVerified ?? data.phoneVerified ?? false);
+        setPhoneVerified(profilePhoneVerified);
         const profileLang = data.profile?.language;
         if (profileLang === 'am' || profileLang === 'en') {
           setLang(profileLang);
@@ -1321,13 +1583,27 @@ export default function App() {
         if (data.referralApplied?.applied) {
           autoAppliedStartRef.current = true;
         }
+        let fbAuthOk = Boolean(auth.currentUser);
         if (data.customToken) {
           try {
             await signInWithCustomToken(auth, data.customToken);
+            fbAuthOk = true;
           } catch (fbErr) {
-            console.warn('Firebase signInWithCustomToken fallback to API polling:', fbErr);
+            fbAuthOk = false;
+            console.warn('[adeybingo/telegram-auth] Firebase custom token sign-in fallback:', fbErr);
           }
         }
+        const phonePending = !profilePhoneVerified && !verifiedAdminFlag;
+        recordAuthDiagnostics({
+          launchedInTelegram: true,
+          initDataPresent: true,
+          telegramHashValid: true,
+          telegramUserIdExtracted: Number.isInteger(verifiedId) && verifiedId > 0,
+          backendAuthSucceeded: true,
+          firebaseAuthSucceeded: fbAuthOk,
+          phoneVerificationPending: phonePending,
+          errorCode: phonePending ? 'phone_verification_required' : null,
+        });
         await Promise.all([hydratePlayerState(), hydrateRoomState(activeRoomId)]);
         const displayName =
           data.displayName ||
@@ -1344,23 +1620,41 @@ export default function App() {
         );
       } else {
         const statusCode = data.statusCode || resp.status;
+        const errCode = String(
+          data.reason || data.error || (resp.status >= 500 ? 'backend_http_error' : 'auth_rejected')
+        );
+        const serverDiag = data.authDiagnostics as Partial<TelegramClientAuthDiagnostics> | undefined;
+        recordAuthDiagnostics({
+          launchedInTelegram: launchCtx.launchedInTelegram,
+          initDataPresent: true,
+          telegramHashValid: serverDiag?.telegramHashValid ?? (errCode === 'replay_detected'),
+          telegramUserIdExtracted: serverDiag?.telegramUserIdExtracted ?? false,
+          backendAuthSucceeded: false,
+          firebaseAuthSucceeded: false,
+          phoneVerificationPending: serverDiag?.phoneVerificationPending ?? false,
+          errorCode: errCode,
+        });
         const category = data.diagnostics?.failureCategory
           ? ` [${data.diagnostics.failureCategory}]`
           : '';
         setTelegramBackendStatus(
-          `Server response (${statusCode}): ${data.reason || data.error || 'error'}${category} — ${data.message || 'Verification failed'}`
+          `Server response (${statusCode}): ${errCode}${category} — ${data.message || 'Verification failed'}`
         );
-        setToast(
-          lang === 'am'
-            ? data.message || 'በቴሌግራም Mini App ውስጥ ይክፈቱ (initData ያስፈልጋል)'
-            : data.message || 'Launch inside Telegram Mini App to verify signed initData'
-        );
+        setToast(formatTelegramAuthErrorMessage(errCode, lang, data.message));
       }
     } catch (err) {
+      recordAuthDiagnostics({
+        launchedInTelegram: launchCtx.launchedInTelegram,
+        initDataPresent: true,
+        backendAuthSucceeded: false,
+        errorCode: 'backend_network_error',
+      });
       setToast(
-        lang === 'am'
-          ? 'የቴሌግራም ማረጋገጫ ስህተት ተፈጥሯል'
-          : `Telegram Auth check failed (${err instanceof Error ? err.message : 'error'})`
+        formatTelegramAuthErrorMessage(
+          'backend_network_error',
+          lang,
+          err instanceof Error ? err.message : undefined
+        )
       );
     }
   }
@@ -2109,6 +2403,12 @@ export default function App() {
             </button>
           </div>
 
+          <div className="rounded-xl bg-[#E6F6EB] border border-[#159447]/30 px-3 py-2 text-[11px] font-bold text-[#08743A]">
+            {lang === 'am'
+              ? `✓ የቴሌግራም መለያ ተረጋግጧል (${user.firstName}${serverVerifiedTelegramId ? ` · #${serverVerifiedTelegramId}` : ''})`
+              : `✓ Telegram Authenticated (${user.firstName}${serverVerifiedTelegramId ? ` · #${serverVerifiedTelegramId}` : ''})`}
+          </div>
+
           <div className="space-y-2">
             <h1 className="font-['Outfit'] text-xl font-extrabold text-[#183326]">
               {lang === 'am'
@@ -2117,33 +2417,80 @@ export default function App() {
             </h1>
             <p className="text-xs text-[#4B5E52] leading-relaxed">
               {lang === 'am'
-                ? 'ከመጫወትዎ በፊት መለያዎን ለማረጋገጥ የቴሌግራም ስልክ ቁጥርዎን በ @AdeyBingoGameBot በኩል ያጋሩ።'
-                : 'Please share your Telegram phone number via @AdeyBingoGameBot to verify your account before playing.'}
+                ? 'ከመጫወትዎ በፊት መለያዎን ለማረጋገጥ የቴሌግራም ስልክ ቁጥርዎን ያጋሩ።'
+                : 'Please share your Telegram phone number to verify your account before playing.'}
             </p>
             <p className="text-[11px] text-[#68776D] leading-relaxed">
               {lang === 'am'
-                ? 'Please share your Telegram phone number via @AdeyBingoGameBot to verify your account before playing.'
-                : 'ከመጫወትዎ በፊት መለያዎን ለማረጋገጥ የቴሌግራም ስልክ ቁጥርዎን በ @AdeyBingoGameBot በኩል ያጋሩ።'}
+                ? 'Please share your Telegram phone number to verify your account before playing.'
+                : 'ከመጫወትዎ በፊት መለያዎን ለማረጋገጥ የቴሌግራም ስልክ ቁጥርዎን ያጋሩ።'}
             </p>
           </div>
 
           <div className="space-y-2 pt-1">
+            {authDiagnostics.launchedInTelegram && (
+              <button
+                type="button"
+                disabled={onboardingContactBusy}
+                onClick={async () => {
+                  setOnboardingContactBusy(true);
+                  try {
+                    const res = await requestTelegramContact();
+                    if (res.supported && res.sent) {
+                      setToast(
+                        lang === 'am'
+                          ? 'ስልክ ቁጥርዎ ተልኳል — ማረጋገጫዎን በማዘመን ላይ...'
+                          : 'Contact shared — refreshing verification status...'
+                      );
+                      window.setTimeout(() => void hydratePlayerState(), 1200);
+                    } else if (!res.supported) {
+                      setToast(
+                        lang === 'am'
+                          ? 'እባክዎ ከታች ባለው ቁልፍ በ@AdeyBingoGameBot ስልክ ቁጥርዎን ያጋሩ።'
+                          : 'Please tap the @AdeyBingoGameBot button below to share your phone contact.'
+                      );
+                    }
+                  } finally {
+                    setOnboardingContactBusy(false);
+                  }
+                }}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-sm font-extrabold shadow-sm disabled:opacity-60"
+              >
+                📱 {onboardingContactBusy ? '...' : 'ስልክ ቁጥር አጋራ | Share Contact'}
+              </button>
+            )}
             <a
               href="https://t.me/AdeyBingoGameBot?start=verify"
               target="_blank"
               rel="noopener noreferrer"
-              className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-sm font-extrabold shadow-sm"
+              className={`w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-extrabold shadow-sm ${
+                authDiagnostics.launchedInTelegram
+                  ? 'bg-[#E6F6EB] border border-[#159447]/40 text-[#08743A]'
+                  : 'bg-gradient-to-r from-[#159447] to-[#08743A] text-white'
+              }`}
             >
-              📱 {lang === 'am' ? 'በ @AdeyBingoGameBot ያረጋግጡ' : 'Verify on @AdeyBingoGameBot'}
+              🤖 {lang === 'am' ? 'በ @AdeyBingoGameBot ያረጋግጡ' : 'Verify on @AdeyBingoGameBot'}
             </a>
             <button
               type="button"
-              onClick={() => void hydratePlayerState()}
+              onClick={async () => {
+                const ok = await hydratePlayerState();
+                if (!ok) {
+                  setToast(
+                    lang === 'am'
+                      ? 'የማረጋገጫ ሁኔታ መፈተሽ አልተቻለም። እንደገና ይሞክሩ።'
+                      : 'Could not refresh verification status. Please try again.'
+                  );
+                }
+              }}
               className="w-full px-4 py-2.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[#183326] text-xs font-extrabold hover:border-[#159447]/40"
             >
               🔄 {lang === 'am' ? 'ማረጋገጫዬን ፈትሽ' : 'Check Verification Status'}
             </button>
           </div>
+          <p className="text-[10px] font-mono text-[#68776D]">
+            status: phone_verification_required
+          </p>
         </div>
       </div>
     );

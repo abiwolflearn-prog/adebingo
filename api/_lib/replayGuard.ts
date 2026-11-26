@@ -16,6 +16,10 @@ export interface ReplayConsumeResult {
  * real Firebase Admin Firestore and deterministic transactional test harnesses.
  */
 export interface ReplayFirestoreAdapter {
+  isConsumedInStore?(params: {
+    keyHash: string;
+    nowMs: number;
+  }): Promise<boolean>;
   consumeInTransaction(params: {
     keyHash: string;
     scope: string;
@@ -36,6 +40,13 @@ export function createFirestoreReplayAdapter(db: Firestore): ReplayFirestoreAdap
   const col = db.collection(REPLAY_GUARDS_COLLECTION);
 
   return {
+    async isConsumedInStore({ keyHash, nowMs }): Promise<boolean> {
+      const snap = await col.doc(keyHash).get();
+      if (!snap.exists) return false;
+      const existingExpiresAtMs = Number(snap.get('expiresAtMs') ?? 0);
+      return existingExpiresAtMs >= nowMs;
+    },
+
     async consumeInTransaction({ keyHash, scope, nowMs, ttlMs }): Promise<boolean> {
       const docRef = col.doc(keyHash);
       return await db.runTransaction(async (tx) => {
@@ -90,6 +101,24 @@ export class PersistentReplayGuard {
   constructor(adapter: ReplayFirestoreAdapter, defaultTtlSeconds = 3600) {
     this.adapter = adapter;
     this.defaultTtlSeconds = defaultTtlSeconds;
+  }
+
+  public async isConsumed(
+    scope: 'init_data' | 'tg_update' | 'tg_cb' | 'game_draw' | 'card_tx' | 'bot_action_dedup' | 'custom',
+    rawKey: string,
+    options: {
+      nowUnixSeconds?: number;
+    } = {}
+  ): Promise<boolean> {
+    if (!rawKey || rawKey.trim() === '' || typeof this.adapter.isConsumedInStore !== 'function') {
+      return false;
+    }
+    const nowMs =
+      typeof options.nowUnixSeconds === 'number'
+        ? options.nowUnixSeconds * 1000
+        : Date.now();
+    const keyHash = hashReplayKey(scope, rawKey.trim());
+    return await this.adapter.isConsumedInStore({ keyHash, nowMs });
   }
 
   public async consumeOnce(

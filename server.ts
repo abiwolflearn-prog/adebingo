@@ -324,9 +324,26 @@ async function startServer() {
     });
 
     if (!result.valid || !result.telegramUser) {
+      const hashPassedBeforeFailure =
+        result.reason === 'replay_detected' ||
+        result.reason === 'expired_auth_date' ||
+        result.reason === 'future_auth_date' ||
+        result.reason === 'missing_telegram_user' ||
+        result.reason === 'telegram_id_mismatch';
+      const authDiagnostics = {
+        initDataPresent: true,
+        botTokenConfigured: true,
+        telegramHashValid: hashPassedBeforeFailure,
+        telegramUserIdExtracted: result.reason === 'replay_detected',
+        backendAuthSucceeded: false,
+        firebaseCustomTokenMinted: false,
+        phoneVerificationPending: false,
+        errorCode: result.reason || 'signature_mismatch',
+      };
       console.warn('[server/telegram-auth] initData verification failed', {
         reason: result.reason,
         diagnostics: result.diagnostics,
+        authDiagnostics,
       });
       const code =
         result.reason === 'missing_bot_token'
@@ -359,6 +376,7 @@ async function startServer() {
                       ? 'Telegram initData auth_date is expired or invalid. Please relaunch from the Telegram bot.'
                       : 'Telegram initData cryptographic HMAC-SHA256 signature validation failed.',
         diagnostics: result.diagnostics,
+        authDiagnostics,
       });
       return;
     }
@@ -438,6 +456,18 @@ async function startServer() {
     persistLocalStateSnapshot();
 
     const verifiedRole = mintedSession.actor.role;
+    const isAdmin = verifiedRole === 'admin';
+    const authDiagnostics = {
+      initDataPresent: true,
+      botTokenConfigured: true,
+      telegramHashValid: true,
+      telegramUserIdExtracted: true,
+      backendAuthSucceeded: true,
+      firebaseCustomTokenMinted: Boolean(customToken),
+      phoneVerificationPending: !Boolean(playerProfile?.phoneVerified) && !isAdmin,
+      errorCode: null,
+    };
+    console.info('[server/telegram-auth] authenticated', authDiagnostics);
 
     res.json({
       ok: true,
@@ -447,11 +477,12 @@ async function startServer() {
       uid,
       verifiedTelegramId: tgUser.id,
       role: verifiedRole,
-      isAdmin: verifiedRole === 'admin',
+      isAdmin,
       customToken,
       customTokenStatus,
       sessionToken: mintedSession.token,
       ...(referralApplied ? { referralApplied } : {}),
+      authDiagnostics,
       telegramUser: tgUser,
       profile: playerProfile
         ? {
