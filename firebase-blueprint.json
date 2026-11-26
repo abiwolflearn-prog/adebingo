@@ -179,7 +179,7 @@
         },
         "totalCollectedEtb": {
           "type": "number",
-          "description": "Total collected ETB (verifiedPaidEntriesCount * 10 ETB)."
+          "description": "Total collected ETB (totalCardsSold * cardPrice)."
         },
         "adeyShareEtb": {
           "type": "number",
@@ -503,7 +503,7 @@
         },
         "inviteeBonusEtb": {
           "type": "number",
-          "description": "Demo bonus for invitee (15 ETB)."
+          "description": "Extra invitee referral bonus (0 ETB; new accounts receive standard 15 ETB initial balance)."
         },
         "status": {
           "type": "string",

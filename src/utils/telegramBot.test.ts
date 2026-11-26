@@ -17,9 +17,10 @@ import {
 } from './telegramBot';
 import { generateDeterministicCard } from '../game/rules';
 
-test('Part B & C: /start command defaults to Amharic, explains ADEYBINGO & privacy, and requests phone contact', () => {
+test('Part B & C: /start command runs Step 1 bilingual welcome with Start / ጀምር, Step 2 request_contact, and Step 3 8-button verified menu', () => {
   const bot = new AdeyBingoTelegramBotEngine('https://adeybingo.example.app');
 
+  // Step 1: /start shows exact bilingual welcome + inline Start / ጀምር button (NO Play button yet)
   const res = bot.handleIncomingUpdate({
     updateId: 1001,
     senderTelegramId: 8842109,
@@ -32,29 +33,58 @@ test('Part B & C: /start command defaults to Amharic, explains ADEYBINGO & priva
   assert.equal(res.ok, true);
   assert.equal(res.language, 'am');
   assert.equal(res.registrationStatus, 'pending_contact');
-  assert.match(res.text, /🎱 እንኳን ወደ ADEYBINGO በደህና መጡ!/);
-  assert.match(res.text, /ለመጀመር ከታች ካሉት አማራጮች አንዱን ይምረጡ/);
+  assert.equal(res.securityCode, 'onboarding_welcome');
+  assert.match(res.text, /Welcome to AdeyBingo! 🎉/);
+  assert.match(res.text, /ወደ አዴይ ቢንጎ እንኳን በደህና መጡ! 🎉/);
+  const step1Inline = (res.replyMarkup.inline_keyboard || []).flat();
+  assert.ok(step1Inline.some((b) => b.callback_data === 'cb:onboarding_start' && b.text === 'Start / ጀምር'));
+  assert.ok(!step1Inline.some((b) => Boolean(b.web_app)), 'Unverified Step 1 must NOT expose Mini App Play button');
+  assert.equal(res.replyMarkup.keyboard, undefined, 'Step 1 should not send main menu keyboard yet');
 
-  // Verify contact request button is present before verification
-  const allButtons = (res.replyMarkup.keyboard || []).flat();
-  const contactBtn = allButtons.find((b) => b.request_contact === true);
-  assert.ok(contactBtn, 'Unverified player keyboard should include contact share button');
+  // Step 2: Pressing Start / ጀምር requests native Telegram phone contact
+  const step2 = bot.handleIncomingUpdate({
+    updateId: 1002,
+    callbackQueryId: 'cbq-start-1',
+    senderTelegramId: 8842109,
+    firstName: 'Abebe',
+    callbackData: 'cb:onboarding_start',
+  });
+  assert.equal(step2.ok, true);
+  assert.equal(step2.securityCode, 'onboarding_request_contact');
+  assert.match(step2.text, /Please share your Telegram phone number to verify your account before playing\./);
+  assert.match(step2.text, /ከመጫወትዎ በፊት መለያዎን ለማረጋገጥ የቴሌግራም ስልክ ቁጥርዎን ያጋሩ።/);
+  const contactButtons = (step2.replyMarkup.keyboard || []).flat();
+  const contactBtn = contactButtons.find((b) => b.request_contact === true);
+  assert.ok(contactBtn, 'Step 2 keyboard must include request_contact: true button');
+  assert.equal(contactBtn?.text, '📱 ስልክ ቁጥር አጋራ | Share Contact');
 
-  // Verify all 10 required Amharic-first Main Menu buttons exist in keyboard
+  // Step 3: Sharing authentic contact verifies user, removes contact keyboard, and reveals 8-button bilingual main menu
+  const step3 = bot.handleIncomingUpdate({
+    updateId: 1003,
+    senderTelegramId: 8842109,
+    firstName: 'Abebe',
+    contact: {
+      phone_number: '+251911223344',
+      first_name: 'Abebe',
+      user_id: 8842109,
+    },
+  });
+  assert.equal(step3.ok, true);
+  assert.equal(step3.registrationStatus, 'verified');
+  assert.equal(step3.removeContactKeyboard, true);
+
+  const allButtons = (step3.replyMarkup.keyboard || []).flat();
   const allButtonLabels = allButtons.map((b) => b.text);
-  assert.ok(allButtonLabels.includes('🎱 ቢንጎ ይጫወቱ'));
-  assert.ok(allButtonLabels.includes('💰 የእኔ ቦርሳ'));
-  assert.ok(allButtonLabels.includes('➕ ገንዘብ ያስገቡ'));
-  assert.ok(allButtonLabels.includes('💸 ገንዘብ ያውጡ'));
-  assert.ok(allButtonLabels.includes('🎁 ጓደኞችን ይጋብዙ'));
-  assert.ok(allButtonLabels.includes('🏆 የደረጃ ሰንጠረዥ'));
-  assert.ok(allButtonLabels.includes('📜 የጨዋታ ታሪክ'));
-  assert.ok(allButtonLabels.includes('👤 የእኔ መገለጫ'));
-  assert.ok(allButtonLabels.includes('🆘 እገዛ'));
-  assert.ok(allButtonLabels.includes('🌐 ቋንቋ'));
+  assert.ok(allButtonLabels.includes('🎮 ጨዋታ ጀምር | Play'));
+  assert.ok(allButtonLabels.includes('💰 ገንዘብ አስገባ | Deposit'));
+  assert.ok(allButtonLabels.includes('💸 ገንዘብ አውጣ | Withdraw'));
+  assert.ok(allButtonLabels.includes('🆘 እገዛ | Support'));
+  assert.ok(allButtonLabels.includes('🎁 ጓደኛ ጋብዝ | Invite Friends'));
+  assert.ok(allButtonLabels.includes('👤 መለያዬ | My Account'));
+  assert.ok(allButtonLabels.includes('🌐 ቋንቋ ቀይር | Change Language'));
+  assert.ok(allButtonLabels.includes('🏠 ዋና ምናሌ | Main Menu'));
 
-  // Verify Play Bingo launches the deployed Mini App URL
-  const startPlayingBtn = allButtons.find((b) => b.text === '🎱 ቢንጎ ይጫወቱ');
+  const startPlayingBtn = allButtons.find((b) => b.text === '🎮 ጨዋታ ጀምር | Play');
   assert.equal(startPlayingBtn?.web_app?.url, 'https://adeybingo.example.app');
 });
 
@@ -149,6 +179,13 @@ test('Part B & E: Bot commands (/help, /language, /support, /terms) and all 7 Am
   assert.ok(langOptions.includes('lang:am'));
   assert.ok(langOptions.includes('lang:en'));
 
+  // Verify user first so persistent main menu is shown on language switch
+  bot.handleIncomingUpdate({
+    senderTelegramId: 8842109,
+    firstName: 'Abebe',
+    contact: { phone_number: '+251911223344', first_name: 'Abebe', user_id: 8842109 },
+  });
+
   // Switch from default Amharic to English via lang:en callback
   const langSwitchEn = bot.handleIncomingUpdate({
     senderTelegramId: 8842109,
@@ -157,9 +194,9 @@ test('Part B & E: Bot commands (/help, /language, /support, /terms) and all 7 Am
   assert.equal(langSwitchEn.language, 'en');
   assert.match(langSwitchEn.text, /switched to English/);
   const enMenuLabels = (langSwitchEn.replyMarkup.keyboard || []).flat().map((b) => b.text);
-  assert.ok(enMenuLabels.includes('🎱 Play Bingo'));
-  assert.ok(enMenuLabels.includes('💰 My Wallet'));
-  assert.ok(enMenuLabels.includes('🌐 Language'));
+  assert.ok(enMenuLabels.includes('🎮 ጨዋታ ጀምር | Play'));
+  assert.ok(enMenuLabels.includes('💰 ገንዘብ አስገባ | Deposit'));
+  assert.ok(enMenuLabels.includes('🌐 ቋንቋ ቀይር | Change Language'));
 
   const helpEn = bot.handleIncomingUpdate({
     senderTelegramId: 8842109,
@@ -210,11 +247,13 @@ test('Part B & E: Bot commands (/help, /language, /support, /terms) and all 7 Am
   }
 
   const menuMarkup = buildBotMainMenuMarkup('am', 'https://adeybingo.example.app', true);
-  assert.equal(menuMarkup.keyboard?.length, 5);
+  assert.equal(menuMarkup.keyboard?.length, 4);
 });
 
 test('Part A: ServerGameAuthority enforces host-only ball drawing, max 4 cards, card ownership, and server-authoritative winner verification', () => {
   const authority = new ServerGameAuthority();
+  // Assign room host explicitly (no hardcoded default host ID)
+  authority.ensureRoomSession('adey-main', 8842109);
 
   // 1. Unauthorized player (not host) cannot draw a ball
   const unauthDraw = authority.drawNextBallAuthoritative({
@@ -284,9 +323,29 @@ test('Webhook secret normalization and constant-time header verification', () =>
 test('Milestone 4 & 5: Contextual inline callbacks, duplicate callbackQueryId protection, and player-bot admin isolation', () => {
   const bot = new AdeyBingoTelegramBotEngine('https://adebingo-3nta.vercel.app/');
 
-  // 1. /start initializes user and includes contextual welcome inline_keyboard
-  const startRes = bot.handleIncomingUpdate({
+  // 1. /start for unverified user shows Step 1 onboarding (no Play button yet); after contact verification, welcome shows contextual inline_keyboard
+  const unverifiedStart = bot.handleIncomingUpdate({
     updateId: 4001,
+    senderTelegramId: 7777777,
+    firstName: 'Dawit',
+    username: 'dawit_m',
+    text: '/start',
+  });
+  assert.equal(unverifiedStart.ok, true);
+  assert.equal(unverifiedStart.securityCode, 'onboarding_welcome');
+  assert.ok(!(unverifiedStart.replyMarkup.inline_keyboard || []).flat().some((b) => Boolean(b.web_app)));
+
+  // Complete phone verification
+  bot.handleIncomingUpdate({
+    updateId: 4002,
+    senderTelegramId: 7777777,
+    firstName: 'Dawit',
+    username: 'dawit_m',
+    contact: { phone_number: '+251911777777', first_name: 'Dawit', user_id: 7777777 },
+  });
+
+  const startRes = bot.handleIncomingUpdate({
+    updateId: 4003,
     senderTelegramId: 7777777,
     firstName: 'Dawit',
     username: 'dawit_m',
@@ -296,12 +355,15 @@ test('Milestone 4 & 5: Contextual inline callbacks, duplicate callbackQueryId pr
   const inlineFlat = (startRes.replyMarkup.inline_keyboard || []).flat();
   const inlineCallbacks = inlineFlat.map((b) => b.callback_data).filter(Boolean);
   assert.ok(inlineFlat.some((b) => b.web_app?.url === 'https://adebingo-3nta.vercel.app/'));
-  assert.ok(inlineCallbacks.includes('cb:my_wallet'));
+  assert.ok(inlineCallbacks.includes('cb:deposit'));
+  assert.ok(inlineCallbacks.includes('cb:withdraw'));
   assert.ok(inlineCallbacks.includes('cb:invite_friends'));
-  assert.ok(inlineCallbacks.includes('cb:leaderboard'));
+  assert.ok(inlineCallbacks.includes('cb:my_profile'));
+  assert.ok(inlineCallbacks.includes('cb:support'));
   assert.ok(inlineCallbacks.includes('cb:language'));
+  assert.ok(inlineCallbacks.includes('cb:main_menu'));
 
-  // 2. Test interactive callbacks
+  // 2. Test interactive callbacks (verified user)
   const playCb = bot.handleIncomingUpdate({
     callbackQueryId: 'cbq-1',
     senderTelegramId: 7777777,
@@ -429,11 +491,19 @@ test('Milestone 5: Deposit, Withdraw, Referral deep-link, Leaderboard, and persi
   });
   assert.equal(selfRefStart.profile?.demoBalanceEtb, 15);
 
+  // Verify invitee phone contact before deposit/withdraw flows
+  bot.handleIncomingUpdate({
+    updateId: 50045,
+    senderTelegramId: 999111,
+    firstName: 'Meron',
+    contact: { phone_number: '+251911999111', first_name: 'Meron', user_id: 999111 },
+  });
+
   // 3. Deposit flow: select method & quick amount -> request status
   bot.handleIncomingUpdate({
     updateId: 5005,
     senderTelegramId: 999111,
-    text: '➕ ገንዘብ ያስገቡ',
+    text: '💰 ገንዘብ አስገባ | Deposit',
   });
   bot.handleIncomingUpdate({
     updateId: 5006,
@@ -513,7 +583,7 @@ test('Milestone 5: Deposit, Withdraw, Referral deep-link, Leaderboard, and persi
     text: '/start',
   });
   assert.equal(restartEn.language, 'en');
-  assert.match(restartEn.text, /Welcome to ADEYBINGO/);
+  assert.match(restartEn.text, /Welcome back to AdeyBingo/i);
 });
 
 test('Security Fix: Google AI Studio preview URLs (ais-pre-*, ais-dev-*, *.run.app) are rejected and replaced with https://adebingo-3nta.vercel.app/', () => {
@@ -530,8 +600,21 @@ test('Security Fix: Google AI Studio preview URLs (ais-pre-*, ais-dev-*, *.run.a
 
   const botWithLeakedUrl = new AdeyBingoTelegramBotEngine(leakedPreviewUrl);
 
-  const startRes = botWithLeakedUrl.handleIncomingUpdate({
+  // Verify user so main menu with WebApp Play button is returned
+  botWithLeakedUrl.handleIncomingUpdate({
     updateId: 6001,
+    senderTelegramId: 444555,
+    firstName: 'Selam',
+    text: '/start',
+  });
+  botWithLeakedUrl.handleIncomingUpdate({
+    updateId: 6002,
+    senderTelegramId: 444555,
+    firstName: 'Selam',
+    contact: { phone_number: '+251911444555', first_name: 'Selam', user_id: 444555 },
+  });
+  const startRes = botWithLeakedUrl.handleIncomingUpdate({
+    updateId: 6003,
     senderTelegramId: 444555,
     firstName: 'Selam',
     text: '/start',
@@ -581,13 +664,19 @@ test('Referral links use official @AdeyBingoGameBot username dynamically per pla
   );
   assert.ok(!fallbackShareBtn.url.includes('AdeyBingoBot'));
 
-  // Bot engine dynamically generates each player's personal @AdeyBingoGameBot invite link
+  // Bot engine dynamically generates each player's personal @AdeyBingoGameBot invite link (after verification)
   const bot = new AdeyBingoTelegramBotEngine(DEFAULT_DEPLOYED_MINI_APP_URL);
   bot.handleIncomingUpdate({
     updateId: 7001,
     senderTelegramId: 5152447113,
     firstName: 'Dawit',
     text: '/start',
+  });
+  bot.handleIncomingUpdate({
+    updateId: 70015,
+    senderTelegramId: 5152447113,
+    firstName: 'Dawit',
+    contact: { phone_number: '+251911515244', first_name: 'Dawit', user_id: 5152447113 },
   });
 
   const inviteRes = bot.handleIncomingUpdate({
@@ -617,6 +706,12 @@ test('Referral links use official @AdeyBingoGameBot username dynamically per pla
     senderTelegramId: 6162447222,
     firstName: 'Hana',
     text: '/start@AdeyBingoGameBot adey-5152447113',
+  });
+  bot.handleIncomingUpdate({
+    updateId: 70045,
+    senderTelegramId: 6162447222,
+    firstName: 'Hana',
+    contact: { phone_number: '+251911616244', first_name: 'Hana', user_id: 6162447222 },
   });
   assert.equal(bot.getPlayerByTelegramId(6162447222)?.referredByCode, 'ADEY-5152447113');
   assert.equal(bot.getPlayerByTelegramId(6162447222)?.demoBalanceEtb, 15);

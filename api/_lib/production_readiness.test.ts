@@ -630,14 +630,38 @@ test('Phase 1: Room integrity validation and non-destructive reconciliation repa
   assert.equal(auditBefore.body.valid, false);
   assert.ok(Number(auditBefore.body.invalidCount) >= 2);
 
-  // Admin reconcile fixes drift non-destructively while preserving real card 21 and player tg_201
-  const reconcileRes = await invokeHandler(reconcileHandler, {
+  // Default Admin reconcile runs in dryRun preview mode (zero production mutations without approval)
+  const previewRes = await invokeHandler(reconcileHandler, {
     method: 'POST',
     headers: { authorization: 'Bearer admin-tok' },
     body: {},
   });
+  assert.equal(previewRes.statusCode, 200);
+  assert.equal(previewRes.body.dryRun, true);
+  assert.equal(previewRes.body.reconciledCount, 0);
+  assert.equal(store.get('rooms/meskel-gold')?.activePlayersCount, 99, 'Dry-run preview must NOT mutate rooms');
+
+  // Applying without explicit owner approval (confirmApply: true) is rejected with 400 approval_required
+  const unapprovedRes = await invokeHandler(reconcileHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin-tok' },
+    body: { dryRun: false },
+  });
+  assert.equal(unapprovedRes.statusCode, 400);
+  assert.equal(unapprovedRes.body.reason, 'approval_required');
+
+  // Admin reconcile with explicit approval creates backup snapshots and fixes drift non-destructively
+  const reconcileRes = await invokeHandler(reconcileHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer admin-tok' },
+    body: { dryRun: false, confirmApply: true },
+  });
   assert.equal(reconcileRes.statusCode, 200);
+  assert.equal(reconcileRes.body.dryRun, false);
   assert.ok(Number(reconcileRes.body.reconciledCount) >= 2);
+  const backupIds = (reconcileRes.body.backupIds as string[]) || [];
+  assert.ok(backupIds.length >= 2, 'Must record backup snapshots before applying reconciliation');
+  assert.equal(store.has(`roomReconciliationBackups/${backupIds[0]}`), true);
 
   // Real card and player subcollection records are untouched
   assert.equal(store.get('rooms/meskel-gold/cards/21')?.ownerId, 'tg_201');
@@ -797,6 +821,12 @@ test('Phase 2: Autonomous scheduler runs full lifecycle (countdown -> auto-start
 
   let nowMs = 1_800_000_000_000;
 
+  // Simulate legacy room with registrationDeadlineMs: 0 so ensureSharedRegistrationDeadline initializes it at synthetic nowMs + 60,000ms
+  store.set(`rooms/${roomId}`, {
+    ...(store.get(`rooms/${roomId}`) ?? {}),
+    registrationDeadlineMs: 0,
+  });
+
   // Step 1: Ensure shared registration deadline (60s countdown)
   const deadlineMs = await gameService.ensureSharedRegistrationDeadline(roomId, nowMs);
   assert.equal(deadlineMs, nowMs + 60_000);
@@ -954,9 +984,14 @@ test('Phase 3: Two players (inviter + invitee) with different local clocks sync 
   assert.equal(authRes.statusCode, 200);
   assert.equal(authRes.body.ok, true);
 
-  // Credit invitee so they can reserve a 20 ETB card in meskel-gold
+  // Mark both players phone-verified and credit invitee so they can reserve a 20 ETB card in meskel-gold
+  store.set('users/tg_5001', {
+    ...(store.get('users/tg_5001') ?? {}),
+    phoneVerified: true,
+  });
   store.set('users/tg_5002', {
     ...(store.get('users/tg_5002') ?? {}),
+    phoneVerified: true,
     demoBalanceEtb: 100,
   });
 

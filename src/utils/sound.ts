@@ -131,7 +131,8 @@ class SoundEngine {
         const resp = await fetch(
           `/api/tts/bingo-call?number=${encodeURIComponent(String(ballNumber))}&lang=${encodeURIComponent(lang)}`
         );
-        if (resp.ok) {
+        const contentType = resp.headers?.get('content-type') || '';
+        if (resp.ok && contentType.includes('application/json')) {
           const data = (await resp.json().catch(() => null)) as {
             ok?: boolean;
             audioBase64?: string | null;
@@ -144,9 +145,14 @@ class SoundEngine {
             this.audioCache.set(cacheKey, dataUri);
             const played = await this.playAudioDataUri(dataUri);
             if (played) return;
-          } else if (data?.reason === 'gemini_api_key_not_configured') {
+          } else if (
+            data?.reason === 'gemini_api_key_not_configured' ||
+            data?.ok === false
+          ) {
             this.serverTtsUnavailable = true;
           }
+        } else if (resp.status === 404 || resp.status === 503 || !contentType.includes('application/json')) {
+          this.serverTtsUnavailable = true;
         }
       } catch {
         // Fall back seamlessly to Web Speech synthesis

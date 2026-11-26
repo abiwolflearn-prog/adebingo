@@ -471,11 +471,18 @@ test('Audit 2: Financial Atomicity, Concurrent Withdrawal Double-Spend Protectio
   assert.equal(store.get('users/tg_600001')?.demoBalanceEtb, 15);
   const playerToken = String(playerAuth.json.sessionToken);
 
-  // Mint verified Owner Admin token (Telegram ID 8842109)
+  // Mark player phone-verified via Telegram contact verification before wallet deposits/withdrawals
+  store.set('users/tg_600001', { ...(store.get('users/tg_600001') || {}), phoneVerified: true });
+
+  // Mint verified Owner Admin token (Telegram ID 8842109 via ADEY_ADMIN_TELEGRAM_IDS)
+  const prevAdminEnv = process.env.ADEY_ADMIN_TELEGRAM_IDS;
+  process.env.ADEY_ADMIN_TELEGRAM_IDS = '8842109';
   const adminSession = mintServerSessionToken(
     { telegramUserId: 8842109, displayName: 'Owner', username: 'owner', email: 'abiwolfcode@gmail.com' },
     SESSION_SECRET
   );
+  if (prevAdminEnv === undefined) delete process.env.ADEY_ADMIN_TELEGRAM_IDS;
+  else process.env.ADEY_ADMIN_TELEGRAM_IDS = prevAdminEnv;
 
   // First fund player via admin-approved manual deposit (+235 ETB -> 250 ETB) to test 200 ETB withdrawal race
   const initialDepReq = await invokeHandler(playerWalletHandler, {
@@ -815,6 +822,9 @@ test('Audit 4: 5-Player Invite Flow (ADEY-7863181590 -> +100 ETB), Manual Receip
     assert.equal(inviterState.status, 200);
     assert.equal((inviterState.json.wallet as { availableBalanceEtb: number }).availableBalanceEtb, 115);
     assert.equal((inviterState.json.referrals as unknown[]).length, 5);
+
+    // Mark first invitee phone-verified before manual deposit receipt submission
+    store.set('users/tg_900101', { ...(store.get('users/tg_900101') || {}), phoneVerified: true });
 
     // 3) Manual deposit receipt submission -> duplicate receipt blocked (409), self-approval blocked (403),
     //    admin approval credits once + blocks duplicate approval (409), admin rejection does not credit + notifies player

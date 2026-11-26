@@ -94,46 +94,6 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    function isValidTelegramAccountBinding(data, telegramUserId) {
-      return data.keys().hasAll([
-          'telegramUserId',
-          'uid',
-          'boundAt'
-        ]) &&
-        data.keys().hasOnly([
-          'telegramUserId',
-          'uid',
-          'boundAt'
-        ]) &&
-        data.telegramUserId is string && data.telegramUserId.size() >= 1 && data.telegramUserId.size() <= 64 &&
-        data.telegramUserId == telegramUserId && data.telegramUserId.matches('^[a-zA-Z0-9_\\-]+$') &&
-        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == request.auth.uid &&
-        data.boundAt is timestamp;
-    }
-
-    function isValidUserPrivateContact(data, userId) {
-      return data.keys().hasAll([
-          'uid',
-          'phoneNumber',
-          'phoneVerified',
-          'verificationMethod',
-          'updatedAt'
-        ]) &&
-        data.keys().hasOnly([
-          'uid',
-          'phoneNumber',
-          'phoneVerified',
-          'verificationMethod',
-          'updatedAt'
-        ]) &&
-        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == userId && data.uid == request.auth.uid &&
-        data.phoneNumber is string && data.phoneNumber.size() >= 9 && data.phoneNumber.size() <= 16 && data.phoneNumber.matches('^\\+?[0-9]{9,15}$') &&
-        data.phoneVerified is bool &&
-        data.verificationMethod is string && data.verificationMethod.size() <= 32 &&
-        (data.verificationMethod == 'telegram_contact' || data.verificationMethod == 'sms_otp_demo') &&
-        data.updatedAt is timestamp;
-    }
-
     function isValidGameRoom(data, roomId) {
       return data.keys().hasAll([
           'roomId',
@@ -189,176 +149,14 @@ service cloud.firestore {
         (!('verifiedPaidEntriesCount' in data) || (data.verifiedPaidEntriesCount is int && data.verifiedPaidEntriesCount >= 0 && data.verifiedPaidEntriesCount <= 600)) &&
         (!('availableSpaces' in data) || (data.availableSpaces is int && data.availableSpaces >= 0 && data.availableSpaces <= 600)) &&
         (!('totalCardsSold' in data) || (data.totalCardsSold is int && data.totalCardsSold >= 0 && data.totalCardsSold <= 600)) &&
-        (!('totalCollectedEtb' in data) || (data.totalCollectedEtb is number && data.totalCollectedEtb >= 0 && data.totalCollectedEtb <= 6000)) &&
-        (!('adeyShareEtb' in data) || (data.adeyShareEtb is number && data.adeyShareEtb >= 0 && data.adeyShareEtb <= 1200)) &&
-        (!('winnersPrizePoolEtb' in data) || (data.winnersPrizePoolEtb is number && data.winnersPrizePoolEtb >= 0 && data.winnersPrizePoolEtb <= 4800)) &&
+        (!('totalCollectedEtb' in data) || (data.totalCollectedEtb is number && data.totalCollectedEtb >= 0 && data.totalCollectedEtb <= 60000 && data.totalCollectedEtb <= data.cardPrice * 600)) &&
+        (!('adeyShareEtb' in data) || (data.adeyShareEtb is number && data.adeyShareEtb >= 0 && data.adeyShareEtb <= 12000)) &&
+        (!('winnersPrizePoolEtb' in data) || (data.winnersPrizePoolEtb is number && data.winnersPrizePoolEtb >= 0 && data.winnersPrizePoolEtb <= 48000)) &&
         (!('lifecycleStage' in data) || (data.lifecycleStage is string && data.lifecycleStage.size() <= 24 && (data.lifecycleStage == 'WAITING' || data.lifecycleStage == 'REGISTRATION' || data.lifecycleStage == 'READY' || data.lifecycleStage == 'IN_PROGRESS' || data.lifecycleStage == 'COMPLETED'))) &&
         data.status is string && data.status.size() <= 16 &&
         (data.status == 'waiting' || data.status == 'countdown' || data.status == 'live' || data.status == 'completed') &&
         data.currentGameId is string && data.currentGameId.size() >= 1 && data.currentGameId.size() <= 64 &&
         data.updatedAt is timestamp;
-    }
-
-    function isValidRoomPlayerState(data, roomId, playerId) {
-      return data.keys().hasAll([
-          'playerId',
-          'roomId',
-          'displayName',
-          'telegramUserId',
-          'cardIds',
-          'updatedAt'
-        ]) &&
-        data.keys().hasOnly([
-          'playerId',
-          'roomId',
-          'displayName',
-          'telegramUserId',
-          'cardIds',
-          'updatedAt'
-        ]) &&
-        data.playerId is string && data.playerId.size() >= 1 && data.playerId.size() <= 128 &&
-        data.playerId == playerId && data.playerId == request.auth.uid &&
-        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 64 && data.roomId == roomId &&
-        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
-        data.telegramUserId is string && data.telegramUserId.size() >= 1 && data.telegramUserId.size() <= 64 &&
-        data.cardIds is list && data.cardIds.size() >= 1 && data.cardIds.size() <= 4 &&
-        data.cardIds[0] is int && data.cardIds[0] >= 1 && data.cardIds[0] <= 600 &&
-        data.updatedAt is timestamp;
-    }
-
-    function isValidRoomCardReservation(data, roomId) {
-      return data.keys().hasAll([
-          'cardId',
-          'roomId',
-          'ownerId',
-          'ownerName',
-          'serial',
-          'reservedAt'
-        ]) &&
-        data.keys().hasOnly([
-          'cardId',
-          'roomId',
-          'ownerId',
-          'ownerName',
-          'serial',
-          'reservedAt'
-        ]) &&
-        data.cardId is int && data.cardId >= 1 && data.cardId <= 600 &&
-        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 64 && data.roomId == roomId &&
-        data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId == request.auth.uid &&
-        data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 80 &&
-        data.serial is string && data.serial.size() == 7 && data.serial.matches('^ADB-[0-9]{3}$') &&
-        data.reservedAt is timestamp;
-    }
-
-    function isValidBingoGameSession(data, gameId) {
-      return data.keys().hasAll([
-          'gameId',
-          'roomId',
-          'hostUid',
-          'status',
-          'calledNumbers',
-          'latestBall',
-          'winnerUid',
-          'winnerName',
-          'winningCardId',
-          'winningPattern',
-          'createdAt',
-          'updatedAt'
-        ]) &&
-        data.keys().hasOnly([
-          'gameId',
-          'roomId',
-          'hostUid',
-          'status',
-          'calledNumbers',
-          'latestBall',
-          'winnerUid',
-          'winnerName',
-          'winningCardId',
-          'winningPattern',
-          'createdAt',
-          'updatedAt'
-        ]) &&
-        data.gameId is string && data.gameId.size() >= 1 && data.gameId.size() <= 64 && data.gameId == gameId &&
-        data.roomId is string && data.roomId.size() >= 1 && data.roomId.size() <= 64 &&
-        data.hostUid is string && data.hostUid.size() >= 1 && data.hostUid.size() <= 128 &&
-        data.status is string && data.status.size() <= 16 &&
-        (data.status == 'countdown' || data.status == 'live' || data.status == 'completed') &&
-        data.calledNumbers is list && data.calledNumbers.size() >= 1 && data.calledNumbers.size() <= 75 &&
-        data.calledNumbers[0] is int && data.calledNumbers[0] >= 1 && data.calledNumbers[0] <= 75 &&
-        data.latestBall is int && data.latestBall >= 1 && data.latestBall <= 75 &&
-        data.winnerUid is string && data.winnerUid.size() <= 128 &&
-        data.winnerName is string && data.winnerName.size() <= 80 &&
-        data.winningCardId is int && data.winningCardId >= 0 && data.winningCardId <= 600 &&
-        data.winningPattern is string && data.winningPattern.size() <= 64 &&
-        data.createdAt is timestamp &&
-        data.updatedAt is timestamp;
-    }
-
-    function isValidDemoTransaction(data, transactionId) {
-      return data.keys().hasAll([
-          'transactionId',
-          'userId',
-          'type',
-          'amountEtb',
-          'status',
-          'description',
-          'reference',
-          'createdAt'
-        ]) &&
-        data.keys().hasOnly([
-          'transactionId',
-          'userId',
-          'type',
-          'amountEtb',
-          'status',
-          'description',
-          'reference',
-          'createdAt'
-        ]) &&
-        data.transactionId is string && data.transactionId.size() >= 1 && data.transactionId.size() <= 64 && data.transactionId == transactionId &&
-        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId == request.auth.uid &&
-        data.type is string && data.type.size() <= 24 &&
-        (data.type == 'deposit_demo' || data.type == 'withdraw_demo' || data.type == 'card_entry' || data.type == 'bingo_win' || data.type == 'referral_bonus') &&
-        data.amountEtb is number && data.amountEtb >= -5000 && data.amountEtb <= 5000 &&
-        data.status is string && data.status.size() <= 24 &&
-        (data.status == 'demo_completed' || data.status == 'demo_pending') &&
-        data.description is string && data.description.size() >= 1 && data.description.size() <= 160 &&
-        data.reference is string && data.reference.size() >= 3 && data.reference.size() <= 64 &&
-        data.createdAt is timestamp;
-    }
-
-    function isValidReferralRecord(data, referralId) {
-      return data.keys().hasAll([
-          'referralId',
-          'inviterUid',
-          'friendName',
-          'friendHandle',
-          'inviterBonusEtb',
-          'inviteeBonusEtb',
-          'status',
-          'createdAt'
-        ]) &&
-        data.keys().hasOnly([
-          'referralId',
-          'inviterUid',
-          'friendName',
-          'friendHandle',
-          'inviterBonusEtb',
-          'inviteeBonusEtb',
-          'status',
-          'createdAt'
-        ]) &&
-        data.referralId is string && data.referralId.size() >= 1 && data.referralId.size() <= 64 && data.referralId == referralId &&
-        data.inviterUid is string && data.inviterUid.size() >= 1 && data.inviterUid.size() <= 128 && data.inviterUid == request.auth.uid &&
-        data.friendName is string && data.friendName.size() >= 1 && data.friendName.size() <= 80 &&
-        data.friendHandle is string && data.friendHandle.size() >= 2 && data.friendHandle.size() <= 64 &&
-        data.inviterBonusEtb is int && data.inviterBonusEtb == 20 &&
-        data.inviteeBonusEtb is int && (data.inviteeBonusEtb == 0 || data.inviteeBonusEtb == 15) &&
-        data.status is string && data.status.size() <= 16 &&
-        (data.status == 'qualified' || data.status == 'pending') &&
-        data.createdAt is timestamp;
     }
 
     // =========================================================================
@@ -371,67 +169,62 @@ service cloud.firestore {
       // Server-Verified Telegram Binding Invariant:
       // Only Telegram custom-token users can bind tg_<id> profiles, and only after
       // the Admin SDK has created /telegramBindings/{telegramUserId} for this UID.
+      // Clients can NEVER self-verify phoneVerified on creation.
       allow create: if isVerifiedTelegramUser() &&
         isOwner(userId) &&
         isValidId(userId) &&
         isValidUserPublicProfile(incoming(), userId) &&
         incoming().telegramUserId == request.auth.uid &&
+        incoming().phoneVerified == false &&
         incoming().demoBalanceEtb == 15 &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         exists(/databases/$(database)/documents/telegramBindings/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/telegramBindings/$(request.auth.uid)).data.uid == userId;
 
-      // Users can NEVER modify demoBalanceEtb, uid, telegramUserId, or createdAt
+      // Users can NEVER modify demoBalanceEtb, phoneVerified, uid, telegramUserId, or createdAt.
+      // Supports language-only updates on server-created user documents (which carry server metadata fields)
+      // as well as strict client-profile field updates.
       allow update: if isOwner(userId) &&
         isValidId(userId) &&
-        isValidUserPublicProfile(incoming(), userId) &&
         incoming().uid == existing().uid &&
-        incoming().telegramUserId == existing().telegramUserId &&
         incoming().demoBalanceEtb == existing().demoBalanceEtb &&
-        incoming().createdAt == existing().createdAt &&
+        incoming().phoneVerified == existing().phoneVerified &&
         incoming().updatedAt == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'displayName',
-          'username',
-          'language',
-          'phoneVerified',
-          'updatedAt'
-        ]);
+        (
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'language',
+              'updatedAt'
+            ]) &&
+            incoming().language is string &&
+            incoming().language.size() == 2 &&
+            (incoming().language == 'am' || incoming().language == 'en')
+          ) ||
+          (
+            isValidUserPublicProfile(incoming(), userId) &&
+            incoming().telegramUserId == existing().telegramUserId &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'displayName',
+              'username',
+              'language',
+              'updatedAt'
+            ])
+          )
+        );
 
       allow delete: if false;
 
       // =======================================================================
       // 2. USERS PRIVATE PII SUBCOLLECTION (/users/{userId}/private/{docId})
+      // Server-Only Writes via Telegram Webhook / Admin SDK (never client-written)
       // =======================================================================
       match /private/{docId} {
         allow get: if isOwner(userId) && isValidId(userId) && isValidId(docId);
         allow list: if false;
 
-        allow create: if isOwner(userId) &&
-          isValidId(userId) &&
-          docId == 'contact' &&
-          isValidUserPrivateContact(incoming(), userId) &&
-          incoming().phoneVerified == true &&
-          incoming().updatedAt == request.time &&
-          exists(/databases/$(database)/documents/users/$(userId));
-
-        allow update: if isOwner(userId) &&
-          isValidId(userId) &&
-          docId == 'contact' &&
-          isValidUserPrivateContact(incoming(), userId) &&
-          incoming().uid == existing().uid &&
-          incoming().phoneVerified == true &&
-          incoming().updatedAt == request.time &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'phoneNumber',
-            'phoneVerified',
-            'verificationMethod',
-            'updatedAt'
-          ]) &&
-          exists(/databases/$(database)/documents/users/$(userId));
-
-        allow delete: if false;
+        allow create, update, delete: if false;
       }
     }
 
@@ -526,41 +319,25 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // 7. DEMO WALLET TRANSACTIONS (/transactions/{transactionId})
+    // 7. DEMO WALLET TRANSACTIONS (/transactions/{transactionId}) - Server-Only Writes
     // =========================================================================
     match /transactions/{transactionId} {
       allow get: if isVerifiedUser() && isValidId(transactionId) && existing().userId == request.auth.uid;
       allow list: if isVerifiedUser() && resource.data.userId == request.auth.uid;
 
-      // Clients cannot forge server-verified winnings ('bingo_win') or referral rewards ('referral_bonus')
-      allow create: if isVerifiedUser() &&
-        isValidId(transactionId) &&
-        isValidDemoTransaction(incoming(), transactionId) &&
-        incoming().type != 'bingo_win' &&
-        incoming().type != 'referral_bonus' &&
-        incoming().createdAt == request.time &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid));
-
-      allow update, delete: if false;
+      // All ledger entries are created exclusively by trusted server Admin SDK transactions.
+      allow create, update, delete: if false;
     }
 
     // =========================================================================
-    // 8. REFERRALS (/referrals/{referralId})
+    // 8. REFERRALS (/referrals/{referralId}) - Server-Only Writes
     // =========================================================================
     match /referrals/{referralId} {
       allow get: if isVerifiedUser() && isValidId(referralId) && existing().inviterUid == request.auth.uid;
       allow list: if isVerifiedUser() && resource.data.inviterUid == request.auth.uid;
 
-      // Prevents self-referral and forbids clients from self-qualifying referral payouts
-      allow create: if isVerifiedUser() &&
-        isValidId(referralId) &&
-        isValidReferralRecord(incoming(), referralId) &&
-        incoming().status == 'pending' &&
-        incoming().createdAt == request.time &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        incoming().friendHandle != get(/databases/$(database)/documents/users/$(request.auth.uid)).data.username;
-
-      allow update, delete: if false;
+      // All referral records are created exclusively by trusted server Admin SDK transactions.
+      allow create, update, delete: if false;
     }
 
     // =========================================================================
@@ -587,6 +364,54 @@ service cloud.firestore {
     }
 
     match /schedulerAuditLogs/{logId} {
+      allow read, write: if false;
+    }
+
+    match /depositRequests/{depositId} {
+      allow read, write: if false;
+    }
+
+    match /depositReceiptLocks/{receiptKey} {
+      allow read, write: if false;
+    }
+
+    match /payoutRequests/{requestId} {
+      allow read, write: if false;
+    }
+
+    match /supportTickets/{ticketId} {
+      allow read, write: if false;
+    }
+
+    match /promoCodes/{code} {
+      allow read, write: if false;
+    }
+
+    match /promoClaims/{claimId} {
+      allow read, write: if false;
+    }
+
+    match /phoneLocks/{phoneHash} {
+      allow read, write: if false;
+    }
+
+    match /botConfig/{configId} {
+      allow read, write: if false;
+    }
+
+    match /botAnnouncements/{announcementId} {
+      allow read, write: if false;
+    }
+
+    match /adminAuditLogs/{logId} {
+      allow read, write: if false;
+    }
+
+    match /adminAuditMeta/{metaId} {
+      allow read, write: if false;
+    }
+
+    match /roomReconciliationBackups/{backupId} {
       allow read, write: if false;
     }
   }

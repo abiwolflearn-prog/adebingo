@@ -33,16 +33,21 @@ test('Phase 0 Dirty Dozen & Eight Pillars Audit on Firestore Security Rules', ()
     'Must prevent users from modifying their own demoBalanceEtb on update'
   );
 
-  // 4. PII Split Collection Isolation (/users/{userId}/private/{docId})
+  // 4. PII Split Collection Isolation (/users/{userId}/private/{docId}) - server-only writes
   assert.match(
     rulesContent,
-    /match \/private\/\{docId\}/,
-    'Must isolate phone numbers in /users/{userId}/private/{docId}'
+    /match \/private\/\{docId\}[\s\S]*?allow create, update, delete: if false;/,
+    'Must isolate phone numbers in /users/{userId}/private/{docId} and lock writes strictly to server Admin SDK'
   );
   assert.match(
     rulesContent,
-    /incoming\(\)\.phoneVerified == true/,
-    'Must forbid storing unverified phone numbers as verified in /users/{userId}/private/contact'
+    /incoming\(\)\.phoneVerified == false/,
+    'Must lock phoneVerified to false on client profile creation'
+  );
+  assert.match(
+    rulesContent,
+    /incoming\(\)\.phoneVerified == existing\(\)\.phoneVerified/,
+    'Must forbid clients from self-verifying phoneVerified on /users/{userId} updates'
   );
 
   // 5. Server-Only Telegram Bindings & Anti-Pre-Hijacking (/telegramBindings/{telegramUserId} & /users/{userId})
@@ -69,7 +74,7 @@ test('Phase 0 Dirty Dozen & Eight Pillars Audit on Firestore Security Rules', ()
     'Must forbid direct client writes to /rooms/{roomId}/cards/{cardId}'
   );
 
-  // 7. Server-Only Game Sessions (/games/{gameId}) & Self-Referral Prevention
+  // 7. Server-Only Game Sessions (/games/{gameId}) & Server-Only Referrals (/referrals/{referralId})
   assert.match(
     rulesContent,
     /match \/games\/\{gameId\}[\s\S]*?allow create, update, delete: if false;/,
@@ -77,8 +82,8 @@ test('Phase 0 Dirty Dozen & Eight Pillars Audit on Firestore Security Rules', ()
   );
   assert.match(
     rulesContent,
-    /incoming\(\)\.friendHandle != get\(\/databases\/\$\(database\)\/documents\/users\/\$\(request\.auth\.uid\)\)\.data\.username/,
-    'Must block self-referral abuse on /referrals/{referralId}'
+    /match \/referrals\/\{referralId\}[\s\S]*?allow create, update, delete: if false;/,
+    'Must lock /referrals writes strictly to server Admin SDK to prevent self-referral and forged payouts'
   );
 
   // 8. Telegram Verified Custom Claims (Integer ID Match) & Email-Only Admin Gate
@@ -93,7 +98,7 @@ test('Phase 0 Dirty Dozen & Eight Pillars Audit on Firestore Security Rules', ()
     'Must restrict admin access strictly to email-verified admins, never Telegram custom claims'
   );
 
-  // 9. Lock Client Mutation of Room Creation/Pricing, Winnings, and Referral Payouts
+  // 9. Lock Client Mutation of Room Creation/Pricing, Transactions, and Referral Payouts
   assert.match(
     rulesContent,
     /match \/rooms\/\{roomId\}[\s\S]*?allow create: if isAdmin\(\)[\s\S]*?allow update: if isAdmin\(\)/,
@@ -101,17 +106,17 @@ test('Phase 0 Dirty Dozen & Eight Pillars Audit on Firestore Security Rules', ()
   );
   assert.match(
     rulesContent,
-    /incoming\(\)\.type != 'bingo_win' &&\s*incoming\(\)\.type != 'referral_bonus'/,
-    'Must forbid clients from creating forged bingo_win or referral_bonus transactions'
+    /totalCollectedEtb <= 60000/,
+    'Must allow 20 ETB to 100 ETB rooms up to 600 cards (60,000 ETB max pot)'
   );
   assert.match(
     rulesContent,
-    /match \/referrals\/\{referralId\}[\s\S]*?incoming\(\)\.status == 'pending'/,
-    'Must forbid clients from self-qualifying referral payouts'
+    /match \/transactions\/\{transactionId\}[\s\S]*?allow create, update, delete: if false;/,
+    'Must lock /transactions writes strictly to server Admin SDK'
   );
 
   // 10. Server-Only Collections Explicitly Locked
-  for (const col of ['admins', 'replayGuards', 'botPlayers', 'botOutbox']) {
+  for (const col of ['admins', 'replayGuards', 'botPlayers', 'botOutbox', 'roomReconciliationBackups']) {
     assert.match(
       rulesContent,
       new RegExp(`match \\/${col}\\/\\{[^}]+\\} \\{\\s*allow read, write: if false;\\s*\\}`),

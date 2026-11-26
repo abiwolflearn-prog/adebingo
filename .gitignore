@@ -7,4 +7,10 @@ coverage/
 .env*
 !.env.example
 .adeybingo-local-state.json
-
+.vercel/
+*.pem
+*firebase-adminsdk*.json
+service-account*.json
+firebase-debug.log
+firestore-debug.log
+bun.lock

@@ -1023,8 +1023,15 @@ test('PersistentGameAuthorityService enforces concurrent 4-card cap, balance/led
     markedNumbers: topRowNums,
   });
   assert.equal(legitWin.verified, true);
-  // Strict 80% prize pool: 2 confirmed players (player2 + ghost) * 10 ETB = 20 -> 80% = 16 ETB
-  assert.equal(legitWin.demoPrizeEtb, 16);
+  // Strict 80% prize pool = 16 ETB, fairly split across ALL 5 simultaneous winning cards
+  // (3 cards owned by player2Uid -> 9.60 ETB, 1 by hostUid -> 3.20 ETB, 1 by ghostUid -> 3.20 ETB)
+  assert.equal(legitWin.winnersPrizePoolEtb, 16);
+  assert.equal(legitWin.demoPrizeEtb, 9.6);
+  assert.equal(legitWin.winners?.length, 5);
+  const totalDistributed = Number(
+    (legitWin.winners || []).reduce((acc, w) => acc + w.prizeEtb, 0).toFixed(2)
+  );
+  assert.equal(totalDistributed, 16);
 
   const completedGame = store.get(`games/${gameId}`);
   assert.equal(completedGame?.status, 'completed');
@@ -1033,9 +1040,9 @@ test('PersistentGameAuthorityService enforces concurrent 4-card cap, balance/led
   assert.equal(store.get(`rooms/${roomId}`)?.status, 'completed');
 
   const updatedBalance = Number(store.get(`users/${player2Uid}`)?.demoBalanceEtb);
-  assert.equal(updatedBalance, 220 + (legitWin.demoPrizeEtb ?? 0));
+  assert.equal(updatedBalance, Number((220 + (legitWin.demoPrizeEtb ?? 0)).toFixed(2)));
 
-  const deterministicTxId = `tx_win_${gameId}_r1`;
+  const deterministicTxId = `tx_win_${gameId}_r1_${player2Uid}`;
   assert.equal(store.has(`transactions/${deterministicTxId}`), true);
   assert.equal(store.get(`transactions/${deterministicTxId}`)?.type, 'bingo_win');
   assert.equal(store.get(`transactions/${deterministicTxId}`)?.userId, player2Uid);
@@ -1072,7 +1079,7 @@ test('Milestone 4.2: PersistentTelegramBotService handles all 7 inline callbacks
   );
   const nowUnix = Math.floor(Date.now() / 1000);
 
-  // Seed user & completed game + transaction for real game history / wallet
+  // Seed user, complete phone verification, & seed completed game + transaction for real game history / wallet
   await bot.handleIncomingUpdate({
     updateId: 7000,
     senderTelegramId: 778899,
@@ -1083,6 +1090,17 @@ test('Milestone 4.2: PersistentTelegramBotService handles all 7 inline callbacks
     username: 'selam_addis',
     text: '/start',
     nowUnixSeconds: nowUnix,
+  });
+  await bot.handleIncomingUpdate({
+    updateId: 70005,
+    senderTelegramId: 778899,
+    chatId: 778899,
+    chatType: 'private',
+    firstName: 'Selam',
+    lastName: 'Tadesse',
+    username: 'selam_addis',
+    contact: { phone_number: '+251911778899', first_name: 'Selam', user_id: 778899 },
+    nowUnixSeconds: nowUnix + 1,
   });
 
   store.set('games/game_adey-main_live', {
@@ -1258,6 +1276,18 @@ test('Milestone 5: PersistentTelegramBotService persists demo depositRequests, p
     nowUnixSeconds: nowUnix + 3,
   });
   assert.equal(store.get('users/tg_778800')?.demoBalanceEtb, 15);
+
+  // Verify invitee phone contact before deposit/withdraw flows
+  await bot.handleIncomingUpdate({
+    updateId: 81035,
+    senderTelegramId: 445566,
+    chatId: 445566,
+    chatType: 'private',
+    firstName: 'Yonas',
+    username: 'yonas_et',
+    contact: { phone_number: '+251911445566', first_name: 'Yonas', user_id: 445566 },
+    nowUnixSeconds: nowUnix + 3,
+  });
 
   // 3. Demo deposit request via bot persists in depositRequests & appears in cb:deposit_status
   await bot.handleIncomingUpdate({
@@ -1592,6 +1622,11 @@ test('24/7 Continuous Automatic Game Operation: verifies 3, 5, 50, and 600 paid 
   const workerB = makeSchedulerWorker('worker_b');
 
   await createFirestoreGameStore(db).ensureDefaultRooms();
+  // Simulate a legacy/uninitialized room with registrationDeadlineMs: 0 so scheduler initializes it at synthetic nowMs + 60,000ms
+  store.set(`rooms/${roomId}`, {
+    ...(store.get(`rooms/${roomId}`) || {}),
+    registrationDeadlineMs: 0,
+  });
 
   // Initialize room deadline at nowMs + 60,000ms
   const initTick = await workerA.tickRoomScheduler({

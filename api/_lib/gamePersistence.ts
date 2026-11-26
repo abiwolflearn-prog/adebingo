@@ -217,6 +217,7 @@ export interface PersistentVerifyWinnerResult {
   cardId: number;
   winResult?: WinResult;
   demoPrizeEtb?: number;
+  winners?: RoundWinnerShare[];
   winnersPrizePoolEtb?: number;
   adeyShareEtb?: number;
   totalCollectedEtb?: number;
@@ -286,7 +287,11 @@ export interface GamePersistenceStore {
   }): Promise<SchedulerTickResult>;
   ensureSharedRegistrationDeadline(roomId: string, nowMs?: number): Promise<number>;
   validateRoomIntegrity(roomId: string): Promise<RoomIntegrityReport>;
-  reconcileRoomStateAtomic(roomId: string, nowMs?: number): Promise<RoomReconcileResult>;
+  reconcileRoomStateAtomic(
+    roomId: string,
+    nowMs?: number,
+    options?: ReconcileRoomOptions
+  ): Promise<RoomReconcileResult>;
   listSchedulerAuditLogs(roomId?: string, limitCount?: number): Promise<SchedulerAuditLogEntry[]>;
 }
 
@@ -330,18 +335,29 @@ export interface RoomIntegrityReport {
   };
 }
 
+export interface ReconcileRoomOptions {
+  dryRun?: boolean;
+  confirmApply?: boolean;
+  requestedByUid?: string;
+  requestedByName?: string;
+}
+
 export interface RoomReconcileResult {
   ok: boolean;
   roomId: string;
+  dryRun?: boolean;
   reconciled: boolean;
   changes: string[];
+  backupId?: string;
+  beforeSnapshot?: Record<string, unknown>;
+  proposedPatch?: Record<string, unknown>;
   report?: RoomIntegrityReport;
-  reason?: 'room_not_found';
+  reason?: 'room_not_found' | 'approval_required';
 }
 
 /**
- * Pure server-side predicate: returns true ONLY when a room's authoritative Firestore
- * deadline has expired and requires a server scheduler transition.
+ * Pure server-side predicate: returns true when a room's authoritative Firestore
+ * deadline is missing/uninitialized (<= 0) or has expired and requires a server scheduler transition.
  */
 export function isRoomDueForSchedulerTick(
   room: Pick<
@@ -352,7 +368,7 @@ export function isRoomDueForSchedulerTick(
 ): boolean {
   if (room.status === 'countdown' || room.status === 'waiting') {
     const deadlineMs = Number(room.registrationDeadlineMs ?? 0);
-    return deadlineMs > 0 && nowMs >= deadlineMs;
+    return deadlineMs <= 0 || nowMs >= deadlineMs;
   }
   if (room.status === 'live') {
     const nextDrawMs = Number(room.nextBallDrawAtMs ?? 0);
@@ -455,6 +471,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
 
   return {
     async ensureDefaultRooms(): Promise<void> {
+      const nowMs = Date.now();
       for (const rm of AUTHORITATIVE_PRODUCTION_ROOMS) {
         const roomRef = roomsCol.doc(rm.id);
         await db.runTransaction(async (tx) => {
@@ -479,8 +496,8 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
               countdownSeconds: rm.countdownSeconds,
               lobbyCountdownSeconds: rm.countdownSeconds,
               roundNumber: 1,
-              roundStartedAtMs: 0,
-              registrationDeadlineMs: 0,
+              roundStartedAtMs: nowMs,
+              registrationDeadlineMs: nowMs + rm.countdownSeconds * 1000,
               nextBallDrawAtMs: 0,
               intermissionEndsAtMs: 0,
               activePlayersCount: 0,
@@ -1157,16 +1174,15 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
       const playerRef = roomRef.collection('players').doc(claimantUid);
       const userRef = usersCol.doc(claimantUid);
       const tgId = extractTelegramIdFromUid(claimantUid);
-      const botPlayerRef = tgId > 0 ? botPlayersCol.doc(String(tgId)) : null;
 
       return await db.runTransaction(async (tx) => {
-        const [roomSnap, gameSnap, cardSnap, playerSnap, userSnap, botPlayerSnap] = await Promise.all([
+        const [roomSnap, gameSnap, cardSnap, playerSnap, userSnap, cardsSnap] = await Promise.all([
           tx.get(roomRef),
           tx.get(gameRef),
           tx.get(cardRef),
           tx.get(playerRef),
           tx.get(userRef),
-          botPlayerRef ? tx.get(botPlayerRef) : Promise.resolve(null),
+          roomRef.collection('cards').get(),
         ]);
 
         if (!roomSnap.exists) {
@@ -1253,13 +1269,108 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           reservedCardsCount,
           cardPrice
         );
-        const demoPrizeEtb = financials.winnersPrizePoolEtb;
         const patternLabel = (winResult.patternLabelEn || 'Bingo Line').slice(0, 64);
         const roundNumber = Number(gameData.roundNumber ?? 1);
-        const currentBal = Number(userSnap.get('demoBalanceEtb') ?? 0);
-        const txId = `tx_win_${gameId}_r${roundNumber}`;
-        const existingWinTxSnap = await tx.get(transactionsCol.doc(txId));
-        if (existingWinTxSnap.exists) {
+
+        // Evaluate ALL reserved cards in the room so simultaneous co-winners split the 80% prize pool fairly
+        const cardEntries: RoomCardOwnerEntry[] = cardsSnap.docs
+          .map((cDoc) => {
+            const cid = Number(cDoc.get('cardId') ?? cDoc.id);
+            const ownerId = String(cDoc.get('ownerId') || '').trim();
+            const ownerName = String(
+              cDoc.get('ownerName') || (ownerId === claimantUid ? playerName : ownerId)
+            ).slice(0, 80);
+            return {
+              cardId: cid,
+              uid: ownerId,
+              telegramUserId: extractTelegramIdFromUid(ownerId),
+              displayName: ownerName,
+            };
+          })
+          .filter(
+            (e) => Number.isInteger(e.cardId) && e.cardId >= 1 && e.cardId <= 600 && e.uid.length > 0
+          );
+
+        if (!cardEntries.some((e) => e.cardId === cardId && e.uid === claimantUid)) {
+          cardEntries.push({
+            cardId,
+            uid: claimantUid,
+            telegramUserId: tgId,
+            displayName: playerName.slice(0, 80),
+          });
+        }
+
+        const settlement = evaluateRoundWinners({
+          entries: cardEntries,
+          calledNumbers: authoritativeCalls,
+          cardPrice,
+          totalCardsInRoom: financials.totalCardsSold,
+          confirmedPlayersCount: financials.confirmedPlayersCount,
+          useAuthoritative8020Split: true,
+        });
+
+        const payoutsByPlayer =
+          settlement.payoutsByPlayer.length > 0
+            ? settlement.payoutsByPlayer
+            : [
+                {
+                  uid: claimantUid,
+                  telegramUserId: tgId,
+                  displayName: playerName.slice(0, 80),
+                  cardIds: [cardId],
+                  totalPrizeEtb: financials.winnersPrizePoolEtb,
+                },
+              ];
+
+        const winnerShares: RoundWinnerShare[] =
+          settlement.winners.length > 0
+            ? settlement.winners
+            : [
+                {
+                  uid: claimantUid,
+                  telegramUserId: tgId,
+                  displayName: playerName.slice(0, 80),
+                  cardId,
+                  patternType: winResult.patternType || 'row',
+                  patternLabelAm: winResult.patternLabelAm || 'አሸናፊ መስመር',
+                  patternLabelEn: patternLabel,
+                  winningCells: winResult.winningCells || [],
+                  prizeEtb: financials.winnersPrizePoolEtb,
+                },
+              ];
+
+        // Deterministic idempotent transaction IDs (single-winner keeps legacy txId for compatibility)
+        const payoutTxIds = payoutsByPlayer.map((p, i) =>
+          i === 0 && payoutsByPlayer.length === 1
+            ? `tx_win_${gameId}_r${roundNumber}`
+            : `tx_win_${gameId}_r${roundNumber}_${p.uid}`
+        );
+        const legacySingleTxId = `tx_win_${gameId}_r${roundNumber}`;
+
+        // Firestore read-before-write rule: fetch all winner profiles, botPlayers, and tx docs first
+        const [winnerUserSnaps, winnerBotSnaps, existingWinTxSnaps, legacyTxSnap] = await Promise.all([
+          Promise.all(
+            payoutsByPlayer.map((p) =>
+              p.uid === claimantUid ? Promise.resolve(userSnap) : tx.get(usersCol.doc(p.uid))
+            )
+          ),
+          Promise.all(
+            payoutsByPlayer.map((p) =>
+              p.telegramUserId > 0
+                ? tx.get(botPlayersCol.doc(String(p.telegramUserId)))
+                : Promise.resolve(null)
+            )
+          ),
+          Promise.all(payoutTxIds.map((id) => tx.get(transactionsCol.doc(id)))),
+          payoutTxIds.includes(legacySingleTxId)
+            ? Promise.resolve(null)
+            : tx.get(transactionsCol.doc(legacySingleTxId)),
+        ]);
+
+        if (
+          legacyTxSnap?.exists ||
+          existingWinTxSnaps.some((snap) => snap.exists)
+        ) {
           return {
             verified: false,
             reason: 'game_already_completed',
@@ -1268,18 +1379,12 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           };
         }
 
+        const claimantPayout = payoutsByPlayer.find((p) => p.uid === claimantUid);
+        const claimantPrizeEtb = claimantPayout
+          ? claimantPayout.totalPrizeEtb
+          : financials.winnersPrizePoolEtb;
         const intermissionEndsAtMs = Date.now() + DEFAULT_INTERMISSION_MS;
-        const winnerShare: RoundWinnerShare = {
-          uid: claimantUid,
-          telegramUserId: tgId,
-          displayName: playerName.slice(0, 80),
-          cardId,
-          patternType: winResult.patternType || 'row',
-          patternLabelAm: winResult.patternLabelAm || 'አሸናፊ መስመር',
-          patternLabelEn: patternLabel,
-          winningCells: winResult.winningCells || [],
-          prizeEtb: demoPrizeEtb,
-        };
+        const primaryWinner = winnerShares.find((w) => w.uid === claimantUid && w.cardId === cardId) || winnerShares[0];
         const completedPayload = {
           status: 'completed' as const,
           lifecycleStage: 'COMPLETED' as const,
@@ -1287,12 +1392,12 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           roomNameEn: String(roomSnap.get('nameEn') || roomId),
           cardPrice,
           entryFeeDemo: cardPrice,
-          demoPrizeEtb,
-          winnerUid: claimantUid,
-          winnerName: playerName.slice(0, 80),
-          winningCardId: cardId,
-          winningPattern: patternLabel,
-          winners: [winnerShare],
+          demoPrizeEtb: financials.winnersPrizePoolEtb,
+          winnerUid: primaryWinner.uid,
+          winnerName: primaryWinner.displayName.slice(0, 80),
+          winningCardId: primaryWinner.cardId,
+          winningPattern: primaryWinner.patternLabelEn || patternLabel,
+          winners: winnerShares,
           confirmedPlayersCount: financials.confirmedPlayersCount,
           availableSpaces: financials.availableSpaces,
           totalCardsSold: financials.totalCardsSold,
@@ -1332,41 +1437,63 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           updatedAt: FieldValue.serverTimestamp(),
         });
 
-        const nextBal = Math.min(1_000_000, Number((currentBal + demoPrizeEtb).toFixed(2)));
-        tx.update(userRef, {
-          demoBalanceEtb: nextBal,
-          updatedAt: FieldValue.serverTimestamp(),
-        });
-        if (botPlayerRef && botPlayerSnap?.exists) {
-          tx.update(botPlayerRef, {
-            demoBalanceEtb: nextBal,
-            updatedAt: nowIso,
+        for (let i = 0; i < payoutsByPlayer.length; i++) {
+          const payout = payoutsByPlayer[i];
+          const uSnap = winnerUserSnaps[i];
+          const bSnap = winnerBotSnaps[i];
+          const wUserRef = usersCol.doc(payout.uid);
+          const currentBal = uSnap.exists ? Number(uSnap.get('demoBalanceEtb') ?? 0) : 0;
+          const nextBal = Math.min(1_000_000, Number((currentBal + payout.totalPrizeEtb).toFixed(2)));
+          if (uSnap.exists) {
+            tx.update(wUserRef, {
+              demoBalanceEtb: nextBal,
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+          } else {
+            tx.set(wUserRef, {
+              uid: payout.uid,
+              telegramUserId: payout.telegramUserId > 0 ? `tg_${payout.telegramUserId}` : payout.uid,
+              displayName: payout.displayName.slice(0, 80),
+              username: payout.uid,
+              language: 'am',
+              phoneVerified: false,
+              demoBalanceEtb: nextBal,
+              createdAt: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+          }
+          if (payout.telegramUserId > 0 && bSnap?.exists) {
+            tx.update(botPlayersCol.doc(String(payout.telegramUserId)), {
+              demoBalanceEtb: nextBal,
+              updatedAt: nowIso,
+            });
+          }
+
+          const txId = payoutTxIds[i];
+          tx.set(transactionsCol.doc(txId), {
+            transactionId: txId,
+            userId: payout.uid,
+            type: 'bingo_win',
+            amountEtb: payout.totalPrizeEtb,
+            balanceBeforeEtb: currentBal,
+            balanceAfterEtb: nextBal,
+            status: 'demo_completed',
+            description: `Server-verified Bingo Win (Card #${payout.cardIds.join(', #')} · ${
+              payoutsByPlayer.length > 1 ? `Split x${winnerShares.length}` : patternLabel
+            })`.slice(0, 160),
+            reference: `ADB-WIN-${gameId}-R${roundNumber}`.slice(0, 64),
+            relatedId: gameId,
+            idempotencyKey: txId,
+            createdAt: FieldValue.serverTimestamp(),
           });
         }
-
-        tx.set(transactionsCol.doc(txId), {
-          transactionId: txId,
-          userId: claimantUid,
-          type: 'bingo_win',
-          amountEtb: demoPrizeEtb,
-          balanceBeforeEtb: currentBal,
-          balanceAfterEtb: nextBal,
-          status: 'demo_completed',
-          description: `Server-verified Bingo Win (Card #${cardId} · ${patternLabel})`.slice(
-            0,
-            160
-          ),
-          reference: `ADB-WIN-${gameId}-R${roundNumber}`.slice(0, 64),
-          relatedId: gameId,
-          idempotencyKey: txId,
-          createdAt: FieldValue.serverTimestamp(),
-        });
 
         return {
           verified: true,
           cardId,
           winResult,
-          demoPrizeEtb,
+          demoPrizeEtb: claimantPrizeEtb,
+          winners: winnerShares,
           winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
           adeyShareEtb: financials.adeyShareEtb,
           totalCollectedEtb: financials.totalCollectedEtb,
@@ -2680,9 +2807,23 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
 
     async reconcileRoomStateAtomic(
       roomId: string,
-      nowMs: number = Date.now()
+      nowMs: number = Date.now(),
+      options?: ReconcileRoomOptions
     ): Promise<RoomReconcileResult> {
+      const dryRun = options?.dryRun === true;
+      if (options && options.dryRun === false && options.confirmApply !== true) {
+        return {
+          ok: false,
+          roomId,
+          dryRun: false,
+          reconciled: false,
+          changes: [],
+          reason: 'approval_required',
+        };
+      }
+
       const roomRef = roomsCol.doc(roomId);
+      const backupsCol = db.collection('roomReconciliationBackups');
       const changes: string[] = [];
 
       const txResult = await db.runTransaction(async (tx) => {
@@ -2693,7 +2834,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         ]);
 
         if (!roomSnap.exists) {
-          return { ok: false, reason: 'room_not_found' as const };
+          return { ok: false as const, reason: 'room_not_found' as const };
         }
 
         const data = (roomSnap.data() || {}) as Record<string, unknown>;
@@ -2754,14 +2895,20 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           minPlayers,
         });
 
-        if (Number(data.confirmedPlayersCount ?? data.activePlayersCount ?? 0) !== financials.confirmedPlayersCount) {
+        if (
+          Number(data.confirmedPlayersCount ?? data.activePlayersCount ?? 0) !== financials.confirmedPlayersCount ||
+          Number(data.activePlayersCount ?? 0) !== financials.confirmedPlayersCount
+        ) {
           changes.push(
-            `Reconciled confirmedPlayersCount ${Number(data.confirmedPlayersCount ?? data.activePlayersCount ?? 0)} -> ${financials.confirmedPlayersCount}`
+            `Reconciled player counts (confirmed=${Number(data.confirmedPlayersCount ?? 0)}, active=${Number(data.activePlayersCount ?? 0)}) -> ${financials.confirmedPlayersCount}`
           );
         }
-        if (Number(data.totalCardsSold ?? data.reservedCardsCount ?? 0) !== financials.totalCardsSold) {
+        if (
+          Number(data.totalCardsSold ?? data.reservedCardsCount ?? 0) !== financials.totalCardsSold ||
+          Number(data.reservedCardsCount ?? 0) !== financials.totalCardsSold
+        ) {
           changes.push(
-            `Reconciled totalCardsSold ${Number(data.totalCardsSold ?? data.reservedCardsCount ?? 0)} -> ${financials.totalCardsSold}`
+            `Reconciled card counts (sold=${Number(data.totalCardsSold ?? 0)}, reserved=${Number(data.reservedCardsCount ?? 0)}) -> ${financials.totalCardsSold}`
           );
         }
         if (
@@ -2775,34 +2922,70 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           );
         }
 
-        if (changes.length > 0) {
+        const beforeSnapshot: Record<string, unknown> = {
+          status: String(data.status || 'countdown'),
+          lifecycleStage: String(data.lifecycleStage || ''),
+          cardPrice: Number(data.cardPrice ?? 0),
+          cardPriceEtb: Number(data.cardPriceEtb ?? 0),
+          countdownSeconds: Number(data.countdownSeconds ?? 0),
+          registrationDeadlineMs: Number(data.registrationDeadlineMs ?? 0),
+          activePlayersCount: Number(data.activePlayersCount ?? 0),
+          confirmedPlayersCount: Number(data.confirmedPlayersCount ?? 0),
+          reservedCardsCount: Number(data.reservedCardsCount ?? 0),
+          totalCardsSold: Number(data.totalCardsSold ?? 0),
+          totalCollectedEtb: Number(data.totalCollectedEtb ?? 0),
+          adeyShareEtb: Number(data.adeyShareEtb ?? 0),
+          winnersPrizePoolEtb: Number(data.winnersPrizePoolEtb ?? 0),
+        };
+
+        const proposedPatch: Record<string, unknown> = {
+          status: nextStatus,
+          lifecycleStage: nextLifecycle,
+          cardPrice,
+          cardPriceEtb: cardPrice,
+          countdownSeconds: remainingSeconds,
+          registrationDeadlineMs: nextDeadlineMs,
+          activePlayersCount: financials.confirmedPlayersCount,
+          confirmedPlayersCount: financials.confirmedPlayersCount,
+          verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
+          availableSpaces: financials.availableSpaces,
+          reservedCardsCount: financials.totalCardsSold,
+          totalCardsSold: financials.totalCardsSold,
+          totalCollectedEtb: financials.totalCollectedEtb,
+          adeyShareEtb: financials.adeyShareEtb,
+          winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+        };
+
+        let backupId: string | undefined;
+        if (!dryRun && changes.length > 0) {
+          backupId = `bkp_${roomId}_${nowMs}_${crypto.randomUUID().slice(0, 8)}`;
+          tx.set(backupsCol.doc(backupId), {
+            backupId,
+            roomId,
+            createdAtMs: nowMs,
+            createdAt: new Date(nowMs).toISOString(),
+            requestedByUid: options?.requestedByUid || 'system',
+            requestedByName: options?.requestedByName || 'System Reconciliation',
+            changes,
+            beforeSnapshot,
+            proposedPatch,
+            cardDocsCount: cardsSnap.size,
+            playerDocsCount: playersSnap.size,
+          });
           tx.update(roomRef, {
-            status: nextStatus,
-            lifecycleStage: nextLifecycle,
-            cardPrice,
-            cardPriceEtb: cardPrice,
-            countdownSeconds: remainingSeconds,
-            registrationDeadlineMs: nextDeadlineMs,
-            activePlayersCount: financials.confirmedPlayersCount,
-            confirmedPlayersCount: financials.confirmedPlayersCount,
-            verifiedPaidEntriesCount: financials.verifiedPaidEntriesCount,
-            availableSpaces: financials.availableSpaces,
-            reservedCardsCount: financials.totalCardsSold,
-            totalCardsSold: financials.totalCardsSold,
-            totalCollectedEtb: financials.totalCollectedEtb,
-            adeyShareEtb: financials.adeyShareEtb,
-            winnersPrizePoolEtb: financials.winnersPrizePoolEtb,
+            ...proposedPatch,
             updatedAt: FieldValue.serverTimestamp(),
           });
         }
 
-        return { ok: true as const };
+        return { ok: true as const, backupId, beforeSnapshot, proposedPatch };
       });
 
       if (!txResult.ok) {
         return {
           ok: false,
           roomId,
+          dryRun,
           reconciled: false,
           changes: [],
           reason: txResult.reason,
@@ -2813,8 +2996,12 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
       return {
         ok: true,
         roomId,
-        reconciled: changes.length > 0,
+        dryRun,
+        reconciled: !dryRun && changes.length > 0,
         changes,
+        backupId: txResult.backupId,
+        beforeSnapshot: txResult.beforeSnapshot,
+        proposedPatch: txResult.proposedPatch,
         report,
       };
     },
@@ -3077,17 +3264,23 @@ export class PersistentGameAuthorityService {
 
   public async reconcileRoomState(
     roomId: string,
-    nowMs: number = Date.now()
+    nowMs: number = Date.now(),
+    options?: ReconcileRoomOptions
   ): Promise<RoomReconcileResult> {
-    return await this.store.reconcileRoomStateAtomic(roomId, nowMs);
+    return await this.store.reconcileRoomStateAtomic(roomId, nowMs, options);
   }
 
-  public async reconcileAllRooms(nowMs: number = Date.now()): Promise<RoomReconcileResult[]> {
-    await this.store.ensureDefaultRooms();
+  public async reconcileAllRooms(
+    nowMs: number = Date.now(),
+    options?: ReconcileRoomOptions
+  ): Promise<RoomReconcileResult[]> {
+    if (!options?.dryRun) {
+      await this.store.ensureDefaultRooms();
+    }
     const rooms = await this.store.listRooms();
     const results: RoomReconcileResult[] = [];
     for (const room of rooms) {
-      results.push(await this.store.reconcileRoomStateAtomic(room.roomId, nowMs));
+      results.push(await this.store.reconcileRoomStateAtomic(room.roomId, nowMs, options));
     }
     return results;
   }

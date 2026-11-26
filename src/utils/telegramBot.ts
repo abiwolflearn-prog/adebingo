@@ -66,6 +66,7 @@ export interface TelegramBotReplyMarkup {
   keyboard?: TelegramKeyboardButton[][];
   resize_keyboard?: boolean;
   one_time_keyboard?: boolean;
+  remove_keyboard?: boolean;
   inline_keyboard?: TelegramInlineButton[][];
 }
 
@@ -79,6 +80,8 @@ export interface TelegramBotResponse {
   registrationStatus: 'unregistered' | 'pending_contact' | 'verified' | 'duplicate_blocked';
   securityCode?: string;
   callbackAnswerText?: string;
+  removeContactKeyboard?: boolean;
+  followUpMainMenuText?: string;
   profile?: RegisteredTelegramPlayer;
   notificationQueued?: BotNotificationMessage;
   inviterNotification?: BotNotificationMessage;
@@ -216,28 +219,152 @@ export function sanitizeProductionMiniAppUrl(candidate?: string | null): string 
   return trimmed;
 }
 
+export const ONBOARDING_START_BUTTON_TEXT = 'Start / ጀምር';
+export const ONBOARDING_START_CALLBACK_DATA = 'cb:onboarding_start';
+export const SHARE_CONTACT_BUTTON_TEXT = '📱 ስልክ ቁጥር አጋራ | Share Contact';
+
+export const MAIN_MENU_BUTTONS = Object.freeze({
+  play: '🎮 ጨዋታ ጀምር | Play',
+  deposit: '💰 ገንዘብ አስገባ | Deposit',
+  withdraw: '💸 ገንዘብ አውጣ | Withdraw',
+  support: '🆘 እገዛ | Support',
+  inviteFriends: '🎁 ጓደኛ ጋብዝ | Invite Friends',
+  myAccount: '👤 መለያዬ | My Account',
+  changeLanguage: '🌐 ቋንቋ ቀይር | Change Language',
+  mainMenu: '🏠 ዋና ምናሌ | Main Menu',
+});
+
 export const DEFAULT_BOT_BUTTON_LABELS: BotButtonLabelsConfig = {
-  playBingoAm: '🎱 ቢንጎ ይጫወቱ',
-  playBingoEn: '🎱 Play Bingo',
-  myWalletAm: '💰 የእኔ ቦርሳ',
-  myWalletEn: '💰 My Wallet',
-  depositAm: '➕ ገንዘብ ያስገቡ',
-  depositEn: '➕ Deposit',
-  withdrawAm: '💸 ገንዘብ ያውጡ',
-  withdrawEn: '💸 Withdraw',
-  inviteFriendsAm: '🎁 ጓደኞችን ይጋብዙ',
-  inviteFriendsEn: '🎁 Invite Friends',
-  leaderboardAm: '🏆 የደረጃ ሰንጠረዥ',
-  leaderboardEn: '🏆 Leaderboard',
-  myProfileAm: '👤 የእኔ መገለጫ',
-  myProfileEn: '👤 My Profile',
-  gameHistoryAm: '📜 የጨዋታ ታሪክ',
-  gameHistoryEn: '📜 Game History',
-  supportAm: '🆘 እገዛ',
-  supportEn: '🆘 Support',
-  languageAm: '🌐 ቋንቋ',
-  languageEn: '🌐 Language',
+  playBingoAm: MAIN_MENU_BUTTONS.play,
+  playBingoEn: MAIN_MENU_BUTTONS.play,
+  myWalletAm: '💰 የእኔ ቦርሳ | Wallet',
+  myWalletEn: '💰 የእኔ ቦርሳ | Wallet',
+  depositAm: MAIN_MENU_BUTTONS.deposit,
+  depositEn: MAIN_MENU_BUTTONS.deposit,
+  withdrawAm: MAIN_MENU_BUTTONS.withdraw,
+  withdrawEn: MAIN_MENU_BUTTONS.withdraw,
+  inviteFriendsAm: MAIN_MENU_BUTTONS.inviteFriends,
+  inviteFriendsEn: MAIN_MENU_BUTTONS.inviteFriends,
+  leaderboardAm: '🏆 የደረጃ ሰንጠረዥ | Leaderboard',
+  leaderboardEn: '🏆 የደረጃ ሰንጠረዥ | Leaderboard',
+  myProfileAm: MAIN_MENU_BUTTONS.myAccount,
+  myProfileEn: MAIN_MENU_BUTTONS.myAccount,
+  gameHistoryAm: '📜 የጨዋታ ታሪክ | History',
+  gameHistoryEn: '📜 የጨዋታ ታሪክ | History',
+  supportAm: MAIN_MENU_BUTTONS.support,
+  supportEn: MAIN_MENU_BUTTONS.support,
+  languageAm: MAIN_MENU_BUTTONS.changeLanguage,
+  languageEn: MAIN_MENU_BUTTONS.changeLanguage,
 };
+
+export function buildOnboardingWelcomeText(
+  lang: Language = 'am',
+  options: { customWelcome?: string | null; referralNotice?: string } = {}
+): string {
+  const englishBlock = [
+    'Welcome to AdeyBingo! 🎉',
+    'Play, enjoy the game, and invite your friends.',
+    '',
+    'To get started, press the Start button below.',
+  ].join('\n');
+
+  const amharicBlock = [
+    'ወደ አዴይ ቢንጎ እንኳን በደህና መጡ! 🎉',
+    'ይጫወቱ፣ ይደሰቱ፣ ጓደኞችዎንም ይጋብዙ።',
+    '',
+    'ለመጀመር ከታች ያለውን የጀምር ቁልፍ ይጫኑ።',
+  ].join('\n');
+
+  const base =
+    lang === 'en'
+      ? `${englishBlock}\n\n${amharicBlock}`
+      : `${amharicBlock}\n\n${englishBlock}`;
+
+  const extraCustom =
+    options.customWelcome && options.customWelcome.trim().length > 0
+      ? `\n\n${options.customWelcome.trim()}`
+      : '';
+  const extraRef = options.referralNotice || '';
+  return `${base}${extraCustom}${extraRef}`;
+}
+
+export function buildOnboardingStartMarkup(): TelegramBotReplyMarkup {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: ONBOARDING_START_BUTTON_TEXT,
+          callback_data: ONBOARDING_START_CALLBACK_DATA,
+        },
+      ],
+    ],
+  };
+}
+
+export function buildContactRequestText(lang: Language = 'am'): string {
+  const am = 'ከመጫወትዎ በፊት መለያዎን ለማረጋገጥ የቴሌግራም ስልክ ቁጥርዎን ያጋሩ።';
+  const en = 'Please share your Telegram phone number to verify your account before playing.';
+  return lang === 'en' ? `${en}\n\n${am}` : `${am}\n\n${en}`;
+}
+
+export function buildContactRequestMarkup(): TelegramBotReplyMarkup {
+  return {
+    keyboard: [
+      [
+        {
+          text: SHARE_CONTACT_BUTTON_TEXT,
+          request_contact: true,
+        },
+      ],
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: true,
+  };
+}
+
+export function buildVerificationSuccessText(params: {
+  lang: Language;
+  maskedPhone: string;
+  demoBalanceEtb: number;
+  alreadyVerified?: boolean;
+}): string {
+  const { lang, maskedPhone, demoBalanceEtb, alreadyVerified = false } = params;
+  const amBlock = alreadyVerified
+    ? [
+        '✅ *መለያዎ ቀደም ብሎ ተረጋግጧል!*',
+        `• የተረጋገጠ ስልክ፦ \`${maskedPhone}\``,
+        `• ቀሪ ሂሳብ፦ *${demoBalanceEtb.toFixed(2)} ETB*`,
+        `• ለመጫወት *${MAIN_MENU_BUTTONS.play}* የሚለውን ይጫኑ።`,
+      ].join('\n')
+    : [
+        '✅ *የስልክ ማረጋገጫዎ በተሳካ ሁኔታ ተጠናቋል!*',
+        `• የተረጋገጠ ስልክ፦ \`${maskedPhone}\``,
+        `• ቀሪ ሂሳብ፦ *${demoBalanceEtb.toFixed(2)} ETB*`,
+        `• አሁን *${MAIN_MENU_BUTTONS.play}* የሚለውን በመጫን ጨዋታ መጀመር ይችላሉ!`,
+      ].join('\n');
+
+  const enBlock = alreadyVerified
+    ? [
+        '✅ *Your account is already verified!*',
+        `• Verified Phone: \`${maskedPhone}\``,
+        `• Balance: *${demoBalanceEtb.toFixed(2)} ETB*`,
+        `• Tap *${MAIN_MENU_BUTTONS.play}* below to open the game.`,
+      ].join('\n')
+    : [
+        '✅ *Phone verification successful!*',
+        `• Verified Phone: \`${maskedPhone}\``,
+        `• Balance: *${demoBalanceEtb.toFixed(2)} ETB*`,
+        `• You can now tap *${MAIN_MENU_BUTTONS.play}* to launch AdeyBingo!`,
+      ].join('\n');
+
+  return lang === 'en' ? `${enBlock}\n\n${amBlock}` : `${amBlock}\n\n${enBlock}`;
+}
+
+export function buildVerifiedMainMenuPromptText(lang: Language = 'am'): string {
+  return lang === 'en'
+    ? '🏠 *AdeyBingo Main Menu*\n\nChoose an option from the menu below.\n\n🏠 *የአዴይ ቢንጎ ዋና ምናሌ*\nከታች ካሉት አማራጮች አንዱን ይምረጡ።'
+    : '🏠 *የአዴይ ቢንጎ ዋና ምናሌ*\n\nከታች ካሉት አማራጮች አንዱን ይምረጡ።\n\n🏠 *AdeyBingo Main Menu*\nChoose an option from the menu below.';
+}
 
 export type BotInlineContext =
   | 'welcome'
@@ -259,18 +386,21 @@ export function buildContextualInlineKeyboard(
   options: {
     referralLink?: string;
     labels?: BotButtonLabelsConfig;
+    phoneVerified?: boolean;
   } = {}
 ): TelegramInlineButton[][] {
   const miniAppUrl = sanitizeProductionMiniAppUrl(rawMiniAppUrl);
   const am = lang === 'am';
-  const labels = { ...DEFAULT_BOT_BUTTON_LABELS, ...(options.labels || {}) };
-  const playText = am
-    ? labels.playBingoAm || DEFAULT_BOT_BUTTON_LABELS.playBingoAm
-    : labels.playBingoEn || DEFAULT_BOT_BUTTON_LABELS.playBingoEn;
+  const phoneVerified = options.phoneVerified !== false;
+  const playText = MAIN_MENU_BUTTONS.play;
   const backBtn: TelegramInlineButton = {
-    text: am ? '⬅️ ወደ ዋና ሜኑ' : '⬅️ Back to Menu',
+    text: MAIN_MENU_BUTTONS.mainMenu,
     callback_data: 'cb:main_menu',
   };
+
+  if (!phoneVerified && context !== 'language' && context !== 'support') {
+    return [[{ text: ONBOARDING_START_BUTTON_TEXT, callback_data: ONBOARDING_START_CALLBACK_DATA }]];
+  }
 
   switch (context) {
     case 'language':
@@ -289,8 +419,8 @@ export function buildContextualInlineKeyboard(
           { text: am ? '📋 የግብይት ታሪክ' : '📋 Transaction History', callback_data: 'cb:wallet_history' },
         ],
         [
-          { text: am ? '➕ ገንዘብ ያስገቡ' : '➕ Deposit', callback_data: 'cb:deposit' },
-          { text: am ? '💸 ገንዘብ ያውጡ' : '💸 Withdraw', callback_data: 'cb:withdraw' },
+          { text: MAIN_MENU_BUTTONS.deposit, callback_data: 'cb:deposit' },
+          { text: MAIN_MENU_BUTTONS.withdraw, callback_data: 'cb:withdraw' },
         ],
         [backBtn],
       ];
@@ -335,8 +465,8 @@ export function buildContextualInlineKeyboard(
       const refUrl =
         options.referralLink || `https://t.me/${OFFICIAL_TELEGRAM_BOT_USERNAME}`;
       const shareMessage = am
-        ? '🎱 ADEYBINGO ይቀላቀሉ እና ቢንጎ አብረን እንጫወት! (+15 ETB የሙከራ ቦነስ ያግኙ)'
-        : '🎱 Join ADEYBINGO and play live Bingo with me! (+15 ETB Demo Welcome Bonus)';
+        ? '🎱 ADEYBINGO ይቀላቀሉ እና ቢንጎ አብረን እንጫወት! በመጀመሪያ ምዝገባ 15 ETB መነሻ ሂሳብ ያገኛሉ።'
+        : '🎱 Join ADEYBINGO and play live Bingo with me! New players start with a 15 ETB initial balance.';
       const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(refUrl)}&text=${encodeURIComponent(shareMessage)}`;
       return [
         [
@@ -351,39 +481,49 @@ export function buildContextualInlineKeyboard(
       return [
         [
           { text: am ? '🪪 የቴሌግራም መለያ ቅዳ' : '🪪 Copy Telegram ID', callback_data: 'cb:copy_telegram_id' },
-          { text: am ? '🌐 ቋንቋ ቀይር' : '🌐 Change Language', callback_data: 'cb:language' },
+          { text: MAIN_MENU_BUTTONS.changeLanguage, callback_data: 'cb:language' },
         ],
-        [backBtn],
+        [
+          { text: am ? '📋 የግብይት ታሪክ' : '📋 Transaction History', callback_data: 'cb:wallet_history' },
+          backBtn,
+        ],
       ];
 
     case 'leaderboard':
     case 'history':
     case 'support':
     case 'play':
-      return [[{ text: playText, web_app: { url: miniAppUrl } }, backBtn]];
+      return phoneVerified
+        ? [[{ text: playText, web_app: { url: miniAppUrl } }, backBtn]]
+        : [[{ text: ONBOARDING_START_BUTTON_TEXT, callback_data: ONBOARDING_START_CALLBACK_DATA }]];
 
     case 'welcome':
     default:
       return [
         [
           { text: playText, web_app: { url: miniAppUrl } },
-          { text: labels.myWalletAm && am ? labels.myWalletAm : labels.myWalletEn, callback_data: 'cb:my_wallet' },
+          { text: MAIN_MENU_BUTTONS.deposit, callback_data: 'cb:deposit' },
         ],
         [
-          { text: am ? labels.depositAm! : labels.depositEn!, callback_data: 'cb:deposit' },
-          { text: am ? labels.inviteFriendsAm : labels.inviteFriendsEn, callback_data: 'cb:invite_friends' },
+          { text: MAIN_MENU_BUTTONS.withdraw, callback_data: 'cb:withdraw' },
+          { text: MAIN_MENU_BUTTONS.inviteFriends, callback_data: 'cb:invite_friends' },
         ],
         [
-          { text: am ? labels.leaderboardAm! : labels.leaderboardEn!, callback_data: 'cb:leaderboard' },
-          { text: am ? '🌐 ቋንቋ / Language' : '🌐 Language / ቋንቋ', callback_data: 'cb:language' },
+          { text: MAIN_MENU_BUTTONS.myAccount, callback_data: 'cb:my_profile' },
+          { text: MAIN_MENU_BUTTONS.support, callback_data: 'cb:support' },
+        ],
+        [
+          { text: MAIN_MENU_BUTTONS.changeLanguage, callback_data: 'cb:language' },
+          backBtn,
         ],
       ];
   }
 }
 
 /**
- * Builds the 5-row (10-button) Amharic-First ADEYBINGO Telegram Bot Main Menu Reply Keyboard
- * plus a contextual inline keyboard matching the active interaction.
+ * Builds the verified 8-button bilingual ADEYBINGO Telegram Bot Main Menu Reply Keyboard.
+ * CRITICAL SECURITY INVARIANT: Unverified users NEVER receive the Mini App Play button (`web_app`);
+ * they only receive the native `request_contact: true` verification keyboard.
  */
 export function buildBotMainMenuMarkup(
   lang: Language,
@@ -395,49 +535,48 @@ export function buildBotMainMenuMarkup(
 ): TelegramBotReplyMarkup {
   const miniAppUrl = sanitizeProductionMiniAppUrl(rawMiniAppUrl);
   const merged = { ...DEFAULT_BOT_BUTTON_LABELS, ...labels };
-  const am = lang === 'am';
 
-  const contactRow: TelegramKeyboardButton[] = !phoneVerified
-    ? [
-        {
-          text: am
-            ? '📲 ስልክ ቁጥርዎን ያጋሩ (Share Phone Contact)'
-            : '📲 Share Telegram Phone Contact',
-          request_contact: true,
-        },
-      ]
-    : [];
+  if (!phoneVerified) {
+    const contactMarkup = buildContactRequestMarkup();
+    if (inlineContext === 'language') {
+      return {
+        ...contactMarkup,
+        inline_keyboard: buildContextualInlineKeyboard('language', lang, miniAppUrl, {
+          ...inlineOptions,
+          labels: merged,
+          phoneVerified: false,
+        }),
+      };
+    }
+    return contactMarkup;
+  }
 
   const mainRows: TelegramKeyboardButton[][] = [
     [
       {
-        text: am ? merged.playBingoAm : merged.playBingoEn,
+        text: MAIN_MENU_BUTTONS.play,
         web_app: { url: miniAppUrl },
       },
-      { text: am ? merged.myWalletAm : merged.myWalletEn },
+      { text: MAIN_MENU_BUTTONS.deposit },
     ],
     [
-      { text: am ? merged.depositAm! : merged.depositEn! },
-      { text: am ? merged.withdrawAm! : merged.withdrawEn! },
+      { text: MAIN_MENU_BUTTONS.withdraw },
+      { text: MAIN_MENU_BUTTONS.inviteFriends },
     ],
     [
-      { text: am ? merged.inviteFriendsAm : merged.inviteFriendsEn },
-      { text: am ? merged.leaderboardAm! : merged.leaderboardEn! },
+      { text: MAIN_MENU_BUTTONS.myAccount },
+      { text: MAIN_MENU_BUTTONS.support },
     ],
     [
-      { text: am ? merged.gameHistoryAm : merged.gameHistoryEn },
-      { text: am ? merged.myProfileAm : merged.myProfileEn },
+      { text: MAIN_MENU_BUTTONS.changeLanguage },
+      { text: MAIN_MENU_BUTTONS.mainMenu },
     ],
-    [
-      { text: am ? merged.supportAm : merged.supportEn },
-      { text: am ? merged.languageAm : merged.languageEn },
-    ],
-    ...(contactRow.length > 0 ? [contactRow] : []),
   ];
 
   const inlineRows = buildContextualInlineKeyboard(inlineContext, lang, miniAppUrl, {
     ...inlineOptions,
     labels: merged,
+    phoneVerified: true,
   });
 
   return {
@@ -740,12 +879,12 @@ export class AdeyBingoTelegramBotEngine {
       bodyAm: params.bodyAm.trim(),
       bodyEn: params.bodyEn.trim(),
       targetAudience: audience,
-      recipientCount: Math.max(1, players.length),
+      recipientCount: players.length,
       sentByAdmin: adminActor,
       sentAt: nowIso,
     };
 
-    const targetIds = players.length > 0 ? players.map((p) => p.telegramUserId) : [8842109];
+    const targetIds = players.map((p) => p.telegramUserId);
     for (const tgId of targetIds) {
       const lang = this.getLanguage(tgId);
       const msg: BotNotificationMessage = {
@@ -1086,16 +1225,47 @@ export class AdeyBingoTelegramBotEngine {
         language: currentLang,
         text:
           currentLang === 'am'
-            ? '🔒 *ደህንነት ማሳሰቢያ፦* በጽሁፍ የተጻፈ ስልክ ቁጥር እንደ ተረጋገጠ አይቆጠርም። እባክዎ ከታች ያለውን *📲 ስልክ ቁጥርዎን ያጋሩ (Share Phone Contact)* የሚለውን የቴሌግራም ቁልፍ ብቻ ይጠቀሙ።'
-            : '🔒 *Security Notice:* Typed phone numbers are never treated as verified. Please use the native *📲 Share Telegram Phone Contact* button below so Telegram cryptographically verifies ownership.',
+            ? `🔒 *ደህንነት ማሳሰቢያ፦* በጽሁፍ የተጻፈ ስልክ ቁጥር እንደ ተረጋገጠ አይቆጠርም። እባክዎ ከታች ያለውን *${SHARE_CONTACT_BUTTON_TEXT}* የሚለውን የቴሌግራም ቁልፍ ብቻ ይጠቀሙ።`
+            : `🔒 *Security Notice:* Typed phone numbers are never treated as verified. Please use the native *${SHARE_CONTACT_BUTTON_TEXT}* button below so Telegram verifies ownership.`,
         parseMode: 'Markdown',
-        replyMarkup: this.buildMenuMarkup(
-          currentLang,
-          Boolean(existingPlayer?.phoneVerified)
-        ),
+        replyMarkup: existingPlayer?.phoneVerified
+          ? this.buildMenuMarkup(currentLang, true)
+          : buildContactRequestMarkup(),
         registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
         securityCode: check.reason || 'plain_text_phone_rejected',
         profile: existingPlayer,
+      };
+    }
+
+    // 1B. Step 2 Onboarding: User pressed "Start / ጀምር" inline button -> Request Telegram Contact
+    if (cleanCb === ONBOARDING_START_CALLBACK_DATA) {
+      const player = existingPlayer;
+      if (player?.phoneVerified) {
+        return {
+          ok: true,
+          chatId: senderTelegramId,
+          language: player.language,
+          text: buildVerifiedMainMenuPromptText(player.language),
+          parseMode: 'Markdown',
+          replyMarkup: this.buildMenuMarkup(player.language, true, 'welcome'),
+          registrationStatus: 'verified',
+          securityCode: 'callback_main_menu',
+          callbackAnswerText: player.language === 'am' ? '🏠 ዋና ምናሌ' : '🏠 Main Menu',
+          profile: player,
+        };
+      }
+      return {
+        ok: true,
+        chatId: senderTelegramId,
+        language: currentLang,
+        text: buildContactRequestText(currentLang),
+        parseMode: 'Markdown',
+        replyMarkup: buildContactRequestMarkup(),
+        registrationStatus: 'pending_contact',
+        securityCode: 'onboarding_request_contact',
+        callbackAnswerText:
+          currentLang === 'am' ? '📱 ስልክ ቁጥርዎን ያጋሩ' : '📱 Share your phone contact',
+        profile: player,
       };
     }
 
@@ -1146,6 +1316,7 @@ export class AdeyBingoTelegramBotEngine {
     if (
       cleanCb === 'cb:language' ||
       trimmed === '/language' ||
+      trimmed === MAIN_MENU_BUTTONS.changeLanguage ||
       trimmed === '🌐 ቋንቋ' ||
       trimmed === '🌐 Language' ||
       trimmed === '🌐 Change Language' ||
@@ -1178,8 +1349,13 @@ export class AdeyBingoTelegramBotEngine {
       };
     }
 
-    // 3. Handle /start (with optional referral payload `/start ADEY-12345`) & cb:main_menu
-    if (/^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(trimmed) || cleanCb === 'cb:main_menu') {
+    // 3. Handle /start (with optional referral payload `/start ADEY-12345`), /menu & Main Menu button
+    if (
+      /^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(trimmed) ||
+      trimmed === '/menu' ||
+      trimmed === MAIN_MENU_BUTTONS.mainMenu ||
+      cleanCb === 'cb:main_menu'
+    ) {
       const referralPayload = extractStartCommandReferralCode(trimmed);
       return this.handleStartCommand({
         senderTelegramId,
@@ -1188,6 +1364,7 @@ export class AdeyBingoTelegramBotEngine {
         username,
         firebaseUid,
         referralCode: referralPayload,
+        isMainMenuReturn: cleanCb === 'cb:main_menu' || trimmed === MAIN_MENU_BUTTONS.mainMenu || trimmed === '/menu',
       });
     }
 
@@ -1211,19 +1388,34 @@ export class AdeyBingoTelegramBotEngine {
       !trimmed.startsWith('/') &&
       /^\d+(?:\.\d{1,2})?$/.test(trimmed)
     ) {
+      if (!existingPlayer.phoneVerified) {
+        return {
+          ok: false,
+          chatId: senderTelegramId,
+          language: currentLang,
+          text: buildContactRequestText(currentLang),
+          parseMode: 'Markdown',
+          replyMarkup: buildContactRequestMarkup(),
+          registrationStatus: 'pending_contact',
+          securityCode: 'phone_verification_required',
+          profile: existingPlayer,
+        };
+      }
       const amount = Number(trimmed);
       const method = existingPlayer.pendingMethod || 'Telebirr (Demo)';
       const action = existingPlayer.pendingAction;
       if (action === 'deposit_amount') {
-        return this.processDemoDepositSubmission(existingPlayer, method, amount);
+        return this.processDemoDepositSubmission(existingPlayer, method, amount, nowUnixSeconds);
       }
       if (action === 'withdraw_amount') {
-        return this.processDemoWithdrawSubmission(existingPlayer, method, amount);
+        return this.processDemoWithdrawSubmission(existingPlayer, method, amount, nowUnixSeconds);
       }
     }
 
-    // 5. Handle Play Bingo (🎱 ቢንጎ ይጫወቱ / 🎱 Play Bingo / cb:play_bingo)
+    // 5. Handle Play Bingo (🎮 ጨዋታ ጀምር | Play / /play / legacy labels / cb:play_bingo)
     if (
+      trimmed === MAIN_MENU_BUTTONS.play ||
+      trimmed === '/play' ||
       trimmed === '🎱 ቢንጎ ይጫወቱ' ||
       trimmed === '🎱 Play Bingo' ||
       trimmed === '🎮 Start Playing' ||
@@ -1232,18 +1424,34 @@ export class AdeyBingoTelegramBotEngine {
       cleanCb === 'cb:play_bingo' ||
       cleanCb === 'menu:play_bingo'
     ) {
+      if (!existingPlayer?.phoneVerified) {
+        return {
+          ok: false,
+          chatId: senderTelegramId,
+          language: currentLang,
+          text: buildContactRequestText(currentLang),
+          parseMode: 'Markdown',
+          replyMarkup: buildContactRequestMarkup(),
+          registrationStatus: 'pending_contact',
+          securityCode: 'phone_verification_required',
+          callbackAnswerText:
+            currentLang === 'am' ? '📱 መጀመሪያ ስልክ ቁጥርዎን ያረጋግጡ' : '📱 Verify your phone first',
+          profile: existingPlayer,
+        };
+      }
+
       const playText =
         currentLang === 'am'
           ? [
-              '🎱 *ADEYBINGO ሚኒ አፕ ለመክፈት ዝግጁ ነው!*',
+              '🎮 *ADEYBINGO ሚኒ አፕ ለመክፈት ዝግጁ ነው!*',
               '',
-              'ከታች ያለውን *🎱 ቢንጎ ይጫወቱ* ቁልፍ በመጫን ወደ ቀጥታ የቢንጎ ክፍል ይግቡ።',
+              `ከታች ያለውን *${MAIN_MENU_BUTTONS.play}* ቁልፍ በመጫን ወደ ቀጥታ የቢንጎ ክፍል ይግቡ።`,
               '• ከ1–600 ካርዶች እስከ 4 ካርድ ይምረጡ እና በቀጥታ ይጫወቱ!',
             ].join('\n')
           : [
-              '🎱 *ADEYBINGO Mini App Ready!*',
+              '🎮 *ADEYBINGO Mini App Ready!*',
               '',
-              'Tap the *🎱 Play Bingo* button below to enter the live Bingo hall.',
+              `Tap *${MAIN_MENU_BUTTONS.play}* below to enter the live Bingo hall.`,
               '• Reserve 1–4 cards from the 600-card pool and play live rounds!',
             ].join('\n');
 
@@ -1253,12 +1461,8 @@ export class AdeyBingoTelegramBotEngine {
         language: currentLang,
         text: playText,
         parseMode: 'Markdown',
-        replyMarkup: this.buildMenuMarkup(
-          currentLang,
-          Boolean(existingPlayer?.phoneVerified),
-          'play'
-        ),
-        registrationStatus: existingPlayer?.phoneVerified ? 'verified' : 'pending_contact',
+        replyMarkup: this.buildMenuMarkup(currentLang, true, 'play'),
+        registrationStatus: 'verified',
         securityCode: 'callback_play_bingo',
         profile: existingPlayer,
       };
@@ -1364,8 +1568,9 @@ export class AdeyBingoTelegramBotEngine {
       };
     }
 
-    // 7. Handle Deposit (➕ ገንዘብ ያስገቡ / ➕ Deposit / /deposit / cb:deposit*)
+    // 7. Handle Deposit (💰 ገንዘብ አስገባ | Deposit / /deposit / cb:deposit*)
     if (
+      trimmed === MAIN_MENU_BUTTONS.deposit ||
       trimmed === '➕ ገንዘብ ያስገቡ' ||
       trimmed === '➕ Deposit' ||
       trimmed === '/deposit' ||
@@ -1375,6 +1580,19 @@ export class AdeyBingoTelegramBotEngine {
       cleanCb.startsWith('cb:deposit_amount:')
     ) {
       const player = ensureProfile();
+      if (!player.phoneVerified) {
+        return {
+          ok: false,
+          chatId: senderTelegramId,
+          language: currentLang,
+          text: buildContactRequestText(currentLang),
+          parseMode: 'Markdown',
+          replyMarkup: buildContactRequestMarkup(),
+          registrationStatus: 'pending_contact',
+          securityCode: 'phone_verification_required',
+          profile: player,
+        };
+      }
 
       if (cleanCb === 'cb:deposit_status') {
         const myDeposits = this.getDepositRequests(senderTelegramId).slice(0, 5);
@@ -1419,13 +1637,13 @@ export class AdeyBingoTelegramBotEngine {
           text:
             currentLang === 'am'
               ? [
-                  `➕ *የተመረጠው የክፍያ መንገድ፦ ${method}*`,
+                  `💰 *የተመረጠው የክፍያ መንገድ፦ ${method}*`,
                   '',
                   'ከታች ካሉት መጠኖች አንዱን ይምረጡ ወይም ከ10–10,000 ETB መካከል የሙከራ መጠን በቁጥር ይላኩ።',
                   'ℹ️ _Demo Sandbox፦ ጥያቄዎ በአስተዳዳሪ (Admin) ከታየ በኋላ ይጸድቃል።_',
                 ].join('\n')
               : [
-                  `➕ *Selected Method: ${method}*`,
+                  `💰 *Selected Method: ${method}*`,
                   '',
                   'Choose an amount below or type a Demo amount between 10 and 10,000 ETB.',
                   'ℹ️ _Demo Sandbox: Requests are tracked as Pending for admin review._',
@@ -1442,7 +1660,7 @@ export class AdeyBingoTelegramBotEngine {
       if (cleanCb.startsWith('cb:deposit_amount:')) {
         const amount = Number(cleanCb.slice('cb:deposit_amount:'.length));
         const method = player.pendingMethod || 'Telebirr (Demo)';
-        return this.processDemoDepositSubmission(player, method, amount);
+        return this.processDemoDepositSubmission(player, method, amount, nowUnixSeconds);
       }
 
       return {
@@ -1452,7 +1670,7 @@ export class AdeyBingoTelegramBotEngine {
         text:
           currentLang === 'am'
             ? [
-                '➕ *የሙከራ ገንዘብ ማስገቢያ (Demo Deposit)*',
+                '💰 *የሙከራ ገንዘብ ማስገቢያ (Deposit)*',
                 '',
                 '• የሙከራ የክፍያ መንገዶች፦ `Telebirr (Demo)` · `CBE Birr (Demo)` · `Chapa Sandbox (Demo)`',
                 '• ለመቀጠል ከታች የክፍያ መንገድ ወይም መጠን ይምረጡ።',
@@ -1460,7 +1678,7 @@ export class AdeyBingoTelegramBotEngine {
                 'ℹ️ _ማሳሰቢያ፦ እውነተኛ የገንዘብ ክፍያዎች አልተከፈቱም፤ ሁሉም ጥያቄዎች የሙከራ (Demo Sandbox) ናቸው።_',
               ].join('\n')
             : [
-                '➕ *Demo Deposit Sandbox*',
+                '💰 *Demo Deposit Sandbox*',
                 '',
                 '• Configured Demo Methods: `Telebirr (Demo)` · `CBE Birr (Demo)` · `Chapa Sandbox (Demo)`',
                 '• Select a Demo payment method or preset amount below to submit a tracked request.',
@@ -1475,8 +1693,9 @@ export class AdeyBingoTelegramBotEngine {
       };
     }
 
-    // 8. Handle Withdraw (💸 ገንዘብ ያውጡ / 💸 Withdraw / /withdraw / cb:withdraw*)
+    // 8. Handle Withdraw (💸 ገንዘብ አውጣ | Withdraw / /withdraw / cb:withdraw*)
     if (
+      trimmed === MAIN_MENU_BUTTONS.withdraw ||
       trimmed === '💸 ገንዘብ ያውጡ' ||
       trimmed === '💸 Withdraw' ||
       trimmed === '/withdraw' ||
@@ -1486,6 +1705,19 @@ export class AdeyBingoTelegramBotEngine {
       cleanCb.startsWith('cb:withdraw_amount:')
     ) {
       const player = ensureProfile();
+      if (!player.phoneVerified) {
+        return {
+          ok: false,
+          chatId: senderTelegramId,
+          language: currentLang,
+          text: buildContactRequestText(currentLang),
+          parseMode: 'Markdown',
+          replyMarkup: buildContactRequestMarkup(),
+          registrationStatus: 'pending_contact',
+          securityCode: 'phone_verification_required',
+          profile: player,
+        };
+      }
 
       if (cleanCb === 'cb:withdraw_status') {
         const myWithdraws = this.getWithdrawalRequests(senderTelegramId).slice(0, 5);
@@ -1551,7 +1783,7 @@ export class AdeyBingoTelegramBotEngine {
       if (cleanCb.startsWith('cb:withdraw_amount:')) {
         const amount = Number(cleanCb.slice('cb:withdraw_amount:'.length));
         const method = player.pendingMethod || 'Telebirr (Demo)';
-        return this.processDemoWithdrawSubmission(player, method, amount);
+        return this.processDemoWithdrawSubmission(player, method, amount, nowUnixSeconds);
       }
 
       return {
@@ -1561,7 +1793,7 @@ export class AdeyBingoTelegramBotEngine {
         text:
           currentLang === 'am'
             ? [
-                '💸 *የሙከራ ገንዘብ ማውጫ (Demo Withdraw)*',
+                '💸 *የሙከራ ገንዘብ ማውጫ (Withdraw)*',
                 '',
                 `• የሚገኝ የሙከራ ቀሪ ሂሳብ፦ *${player.demoBalanceEtb.toFixed(2)} ETB (DEMO)*`,
                 '• የወጪ መንገድ እና መጠን ከታች ይምረጡ (ዝቅተኛው 20 ETB)።',
@@ -1584,8 +1816,9 @@ export class AdeyBingoTelegramBotEngine {
       };
     }
 
-    // 9. Handle Invite Friends (🎁 ጓደኞችን ይጋብዙ / 🎁 Invite Friends / /invite / cb:invite_friends / cb:referral_copy)
+    // 9. Handle Invite Friends (🎁 ጓደኛ ጋብዝ | Invite Friends / /invite / cb:invite_friends / cb:referral_copy)
     if (
+      trimmed === MAIN_MENU_BUTTONS.inviteFriends ||
       trimmed === '🎁 ጓደኞችን ይጋብዙ' ||
       trimmed === '🎁 Invite Friends' ||
       trimmed === '👥 Invite Friends' ||
@@ -1625,20 +1858,20 @@ export class AdeyBingoTelegramBotEngine {
       const inviteText =
         currentLang === 'am'
           ? [
-              '🎁 *ጓደኞችን ይጋብዙ እና ቦነስ ያግኙ!*',
+              '🎁 *ጓደኛ ጋብዝ እና ሽልማት አግኝ!*',
               '',
               `• የእርስዎ ልዩ የግብዣ ሊንክ፦ \`${inviteUrl}\``,
               `• የተጋበዙ ጓደኞች፦ *${myRefs.length}*`,
-              `• የተገኘ የሙከራ ቦነስ፦ *${totalBonus.toFixed(2)} ETB (DEMO)*`,
-              '• ሽልማት፦ ለእርስዎ *+20 ETB* · ለጓደኛዎ *+15 ETB* የሙከራ ክሬዲት',
+              `• የተገኘ የግብዣ ሽልማት፦ *${totalBonus.toFixed(2)} ETB*`,
+              '• ሽልማት፦ ለእርስዎ *+20.00 ETB* ለእያንዳንዱ አዲስ ተጫዋች · አዲስ ተጫዋች *15.00 ETB* መነሻ ሂሳብ ያገኛል (ተጨማሪ የግብዣ ቦነስ 0 ETB)።',
             ].join('\n')
           : [
-              '🎁 *Invite Friends to ADEYBINGO!*',
+              '🎁 *Invite Friends to AdeyBingo!*',
               '',
               `• Your Personal Invite Link: \`${inviteUrl}\``,
               `• Qualified Referrals: *${myRefs.length}*`,
-              `• Total Demo Bonus Earned: *${totalBonus.toFixed(2)} ETB (DEMO)*`,
-              '• Rewards: *+20 ETB* for you · *+15 ETB* Demo welcome bonus for your friend',
+              `• Total Referral Rewards Earned: *${totalBonus.toFixed(2)} ETB*`,
+              '• Rewards: *+20.00 ETB* for you per new invited player · New accounts start with *15.00 ETB* initial balance (*0 ETB* extra invitee bonus).',
             ].join('\n');
 
       return {
@@ -1733,12 +1966,16 @@ export class AdeyBingoTelegramBotEngine {
       };
     }
 
-    // 12. Handle My Profile (👤 የእኔ መገለጫ / 👤 My Profile / /profile / cb:my_profile / cb:copy_telegram_id)
+    // 12. Handle My Account / Profile (👤 መለያዬ | My Account / /account / /profile / cb:my_profile / cb:copy_telegram_id)
     if (
+      trimmed === MAIN_MENU_BUTTONS.myAccount ||
       trimmed === '👤 የእኔ መገለጫ' ||
       trimmed === '👤 My Profile' ||
+      trimmed === '👤 My Account' ||
+      trimmed === '👤 መለያዬ' ||
       trimmed === '👤 መገለጫዬ' ||
       trimmed === '/profile' ||
+      trimmed === '/account' ||
       cleanCb === 'cb:my_profile' ||
       cleanCb === 'cb:copy_telegram_id' ||
       cleanCb === 'menu:my_profile'
@@ -1765,7 +2002,7 @@ export class AdeyBingoTelegramBotEngine {
       const profileText =
         currentLang === 'am'
           ? [
-              '👤 *የእኔ መገለጫ (My Profile)*',
+              '👤 *መለያዬ (My Account)*',
               '',
               `• ስም፦ *${player.firstName} ${player.lastName || ''}*`,
               `• የቴሌግራም መለያ፦ \`TG #${player.telegramUserId}\` (@${player.username})`,
@@ -1778,14 +2015,14 @@ export class AdeyBingoTelegramBotEngine {
               `• የሙከራ ቀሪ ሂሳብ፦ *${player.demoBalanceEtb.toFixed(2)} ETB (Demo)*`,
             ].join('\n')
           : [
-              '👤 *Your ADEYBINGO Player Profile*',
+              '👤 *My AdeyBingo Account*',
               '',
               `• Name: *${player.firstName} ${player.lastName || ''}*`,
               `• Telegram ID: \`TG #${player.telegramUserId}\` (@${player.username})`,
               `• Phone Verification: ${
                 player.phoneVerified
                   ? `✅ Verified (${player.verifiedPhoneMasked})`
-                  : '⏳ Pending (Tap Share Phone Contact)'
+                  : '⏳ Pending (Tap Share Contact)'
               }`,
               `• Language: *${player.language === 'am' ? '🇪🇹 Amharic (አማርኛ)' : '🇬🇧 English'}*`,
               `• Demo Balance: *${player.demoBalanceEtb.toFixed(2)} ETB (Demo)*`,
@@ -1804,8 +2041,9 @@ export class AdeyBingoTelegramBotEngine {
       };
     }
 
-    // 13. Handle Support (🆘 እገዛ / 🆘 Support / /support / /help / cb:support)
+    // 13. Handle Support (🆘 እገዛ | Support / /support / /help / cb:support)
     if (
+      trimmed === MAIN_MENU_BUTTONS.support ||
       trimmed === '🆘 እገዛ' ||
       trimmed === '🆘 Support' ||
       trimmed === '/support' ||
@@ -1928,7 +2166,8 @@ export class AdeyBingoTelegramBotEngine {
   private processDemoDepositSubmission(
     player: RegisteredTelegramPlayer,
     method: 'Telebirr (Demo)' | 'CBE Birr (Demo)' | 'Chapa Sandbox (Demo)',
-    amountEtb: number
+    amountEtb: number,
+    nowUnixSeconds: number = Math.floor(Date.now() / 1000)
   ): TelegramBotResponse {
     const lang = player.language;
     if (!Number.isFinite(amountEtb) || amountEtb < 10 || amountEtb > 10000) {
@@ -1948,8 +2187,27 @@ export class AdeyBingoTelegramBotEngine {
       };
     }
 
+    const dedupKey = `bot_dep_tap:${player.telegramUserId}:${method}:${amountEtb}`;
+    if (!this.replayGuard.consumeOnce(dedupKey, nowUnixSeconds, 10)) {
+      return {
+        ok: false,
+        chatId: player.telegramUserId,
+        language: lang,
+        text:
+          lang === 'am'
+            ? '⚠️ ተደጋጋሚ የገንዘብ ማስገቢያ ጥያቄ ታግዷል። እባክዎ ከጥቂት ሰከንዶች በኋላ ይሞክሩ።'
+            : '⚠️ Duplicate deposit tap ignored. Please wait a few seconds before submitting again.',
+        parseMode: 'Markdown',
+        replyMarkup: this.buildMenuMarkup(lang, player.phoneVerified, 'deposit'),
+        registrationStatus: player.phoneVerified ? 'verified' : 'pending_contact',
+        securityCode: 'duplicate_action_tap_blocked',
+        callbackAnswerText: lang === 'am' ? '⚠️ ተደጋጋሚ ጥያቄ ታግዷል' : '⚠️ Duplicate tap blocked',
+        profile: player,
+      };
+    }
+
     const nowIso = new Date().toISOString();
-    const depositId = `DEP-BOT-${Date.now().toString(36).toUpperCase()}`;
+    const depositId = `DEP-BOT-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
     const referenceCode = `REF-${Math.floor(100000 + Math.random() * 899999)}`;
     const rec: BotEngineDepositRecord = {
       depositId,
@@ -2008,7 +2266,8 @@ export class AdeyBingoTelegramBotEngine {
   private processDemoWithdrawSubmission(
     player: RegisteredTelegramPlayer,
     method: 'Telebirr (Demo)' | 'CBE Birr (Demo)' | 'Chapa Sandbox (Demo)',
-    amountEtb: number
+    amountEtb: number,
+    nowUnixSeconds: number = Math.floor(Date.now() / 1000)
   ): TelegramBotResponse {
     const lang = player.language;
     if (!Number.isFinite(amountEtb) || amountEtb < 20) {
@@ -2045,8 +2304,27 @@ export class AdeyBingoTelegramBotEngine {
       };
     }
 
+    const dedupKey = `bot_wdr_tap:${player.telegramUserId}:${method}:${amountEtb}`;
+    if (!this.replayGuard.consumeOnce(dedupKey, nowUnixSeconds, 10)) {
+      return {
+        ok: false,
+        chatId: player.telegramUserId,
+        language: lang,
+        text:
+          lang === 'am'
+            ? '⚠️ ተደጋጋሚ የገንዘብ ማውጫ ጥያቄ ታግዷል። እባክዎ ከጥቂት ሰከንዶች በኋላ ይሞክሩ።'
+            : '⚠️ Duplicate withdrawal tap ignored. Please wait a few seconds before submitting again.',
+        parseMode: 'Markdown',
+        replyMarkup: this.buildMenuMarkup(lang, player.phoneVerified, 'withdraw'),
+        registrationStatus: player.phoneVerified ? 'verified' : 'pending_contact',
+        securityCode: 'duplicate_action_tap_blocked',
+        callbackAnswerText: lang === 'am' ? '⚠️ ተደጋጋሚ ጥያቄ ታግዷል' : '⚠️ Duplicate tap blocked',
+        profile: player,
+      };
+    }
+
     const nowIso = new Date().toISOString();
-    const requestId = `PO-BOT-${Date.now().toString(36).toUpperCase()}`;
+    const requestId = `PO-BOT-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().slice(0, 4).toUpperCase()}`;
     const rec: BotEngineWithdrawalRecord = {
       requestId,
       telegramUserId: player.telegramUserId,
@@ -2102,8 +2380,17 @@ export class AdeyBingoTelegramBotEngine {
     username: string;
     firebaseUid?: string;
     referralCode?: string;
+    isMainMenuReturn?: boolean;
   }): TelegramBotResponse {
-    const { senderTelegramId, firstName, lastName, username, firebaseUid, referralCode } = params;
+    const {
+      senderTelegramId,
+      firstName,
+      lastName,
+      username,
+      firebaseUid,
+      referralCode,
+      isMainMenuReturn = false,
+    } = params;
     const candidateUid = firebaseUid || `tg_uid_${senderTelegramId}`;
 
     const boundTgForUid = this.telegramIdByUid.get(candidateUid);
@@ -2242,55 +2529,52 @@ export class AdeyBingoTelegramBotEngine {
       }
     }
 
-    const coreWelcomeAm = isNewUser
-      ? [
-          '🎱 እንኳን ወደ ADEYBINGO በደህና መጡ!',
-          '',
-          `ሰላም *${player.firstName}*! የመጀመሪያ *15.00 ETB* የሙከራ ሂሳብዎ ተዘጋጅቷል።`,
-          'ለመቀላቀል፦ *🎱 ቢንጎ ይጫወቱ* በመጫን የሚኒ አፕ ክፍል ይምረጡ፣ ሰዓቱ ከማለቁ በፊት 1–4 ካርድ ይያዙ እና በቀጥታ ይጫወቱ!',
-          '',
-          'ለመጀመር ከታች ካሉት አማራጮች አንዱን ይምረጡ።',
-        ].join('\n')
+    // Unverified user -> Step 1: Bilingual welcome screen + inline "Start / ጀምር" button (NO Play button yet)
+    if (!player.phoneVerified) {
+      const customWelcome = lang === 'am' ? this.customWelcomeAm : this.customWelcomeEn;
+      const referralNotice = lang === 'am' ? referralNoticeAm : referralNoticeEn;
+      return {
+        ok: true,
+        chatId: senderTelegramId,
+        language: lang,
+        text: buildOnboardingWelcomeText(lang, {
+          customWelcome,
+          referralNotice,
+        }),
+        parseMode: 'Markdown',
+        replyMarkup: buildOnboardingStartMarkup(),
+        registrationStatus: 'pending_contact',
+        securityCode: 'onboarding_welcome',
+        profile: player,
+        ...(inviterNotification ? { inviterNotification } : {}),
+      };
+    }
+
+    // Verified user -> Returning welcome or Main Menu with persistent 8-button bilingual keyboard
+    const coreWelcomeAm = isMainMenuReturn
+      ? buildVerifiedMainMenuPromptText('am')
       : [
-          '🎱 እንኳን ወደ ADEYBINGO በደህና መጡ!',
+          '🎱 *እንኳን ወደ አዴይ ቢንጎ በደህና ተመለሱ!*',
           '',
-          `እንኳን በደህና ተመለሱ *${player.firstName}*! የእርስዎ ቀሪ ሂሳብ *${player.demoBalanceEtb.toFixed(2)} ETB* ነው።`,
-          'ቢንጎ ይጫወቱ፣ የቦርሳዎን መረጃ ይመልከቱ፣ ጓደኞችዎን ይጋብዙ እና በጨዋታው ይደሰቱ!',
-          '',
-          'ለመጀመር ከታች ካሉት አማራጮች አንዱን ይምረጡ።',
+          `ሰላም *${player.firstName}*! ቀሪ ሂሳብዎ *${player.demoBalanceEtb.toFixed(2)} ETB* ነው።`,
+          `ለመጫወት *${MAIN_MENU_BUTTONS.play}* የሚለውን ይጫኑ ወይም ከታች ካለው ዋና ምናሌ ይምረጡ።`,
         ].join('\n');
 
-    const coreWelcomeEn = isNewUser
-      ? [
-          '🎱 Welcome to ADEYBINGO!',
-          '',
-          `Hello *${player.firstName}*! Your *15.00 ETB* initial balance is ready.`,
-          'How to join: Tap *🎱 Play Bingo* to open the Mini App, choose a room, reserve 1–4 cards before the timer ends, and play live!',
-          '',
-          'Choose an option below to get started.',
-        ].join('\n')
+    const coreWelcomeEn = isMainMenuReturn
+      ? buildVerifiedMainMenuPromptText('en')
       : [
-          '🎱 Welcome to ADEYBINGO!',
+          '🎱 *Welcome back to AdeyBingo!*',
           '',
-          `Welcome back, *${player.firstName}*! Your current balance is *${player.demoBalanceEtb.toFixed(2)} ETB*.`,
-          'Play live Bingo, manage your wallet, invite friends, and enjoy the game!',
-          '',
-          'Choose an option below to get started.',
+          `Hello *${player.firstName}*! Your current balance is *${player.demoBalanceEtb.toFixed(2)} ETB*.`,
+          `Tap *${MAIN_MENU_BUTTONS.play}* below to play or choose an option from the main menu.`,
         ].join('\n');
-
-    const privacyVerificationNoteAm = player.phoneVerified
-      ? ''
-      : '\n\n🔒 _መለያዎን ለማረጋገጥ እና ድጋሚ ምዝገባን ለመከላከል ከታች ያለውን 📲 ስልክ ቁጥርዎን ያጋሩ የሚለውን ይጫኑ (በ `/users/{uid}/private/contact` በደህንነት ይጠበቃል)።_';
-    const privacyVerificationNoteEn = player.phoneVerified
-      ? ''
-      : '\n\n🔒 _Tap 📲 Share Telegram Phone Contact below to verify your account (strictly isolated in `/users/{uid}/private/contact`)._';
 
     const welcomeAm = this.customWelcomeAm
-      ? `${coreWelcomeAm}\n\n${this.customWelcomeAm}${referralNoticeAm}${privacyVerificationNoteAm}`
-      : `${coreWelcomeAm}${referralNoticeAm}${privacyVerificationNoteAm}`;
+      ? `${coreWelcomeAm}\n\n${this.customWelcomeAm}${referralNoticeAm}`
+      : `${coreWelcomeAm}${referralNoticeAm}`;
     const welcomeEn = this.customWelcomeEn
-      ? `${coreWelcomeEn}\n\n${this.customWelcomeEn}${referralNoticeEn}${privacyVerificationNoteEn}`
-      : `${coreWelcomeEn}${referralNoticeEn}${privacyVerificationNoteEn}`;
+      ? `${coreWelcomeEn}\n\n${this.customWelcomeEn}${referralNoticeEn}`
+      : `${coreWelcomeEn}${referralNoticeEn}`;
 
     return {
       ok: true,
@@ -2298,8 +2582,14 @@ export class AdeyBingoTelegramBotEngine {
       language: lang,
       text: lang === 'am' ? welcomeAm : welcomeEn,
       parseMode: 'Markdown',
-      replyMarkup: this.buildMenuMarkup(lang, player.phoneVerified, 'welcome'),
-      registrationStatus: player.phoneVerified ? 'verified' : 'pending_contact',
+      replyMarkup: this.buildMenuMarkup(lang, true, 'welcome'),
+      registrationStatus: 'verified',
+      securityCode: isMainMenuReturn ? 'callback_main_menu' : 'start_welcome_delivered',
+      callbackAnswerText: isMainMenuReturn
+        ? lang === 'am'
+          ? '🏠 ዋና ምናሌ'
+          : '🏠 Main Menu'
+        : undefined,
       profile: player,
       ...(inviterNotification ? { inviterNotification } : {}),
     };
@@ -2329,8 +2619,8 @@ export class AdeyBingoTelegramBotEngine {
     if (!verification.valid || !verification.verifiedPhoneNumber) {
       const errText =
         lang === 'am'
-          ? `🚫 *የስልክ ቁጥር ማረጋገጫ አልተሳካም (${verification.reason})፦*\nየተጋራው ስልክ ቁጥር የእርስዎ የቴሌግራም መለያ መሆኑን ማረጋገጥ አልተቻለም። እባክዎ የሌላ ሰው ስልክ አያስተላልፉ፤ የራስዎን *📲 ስልክ ቁጥርዎን ያጋሩ* ቁልፍ ብቻ ይጠቀሙ።`
-          : `🚫 *Phone Contact Verification Failed (${verification.reason}):*\nThe shared contact does not match your Telegram sender ID (\`TG #${senderTelegramId}\`). Never forward another person's contact—tap the *📲 Share Telegram Phone Contact* button for your own account.`;
+          ? `🚫 *የስልክ ቁጥር ማረጋገጫ አልተሳካም (${verification.reason})፦*\nየተጋራው ስልክ ቁጥር የእርስዎ የቴሌግራም መለያ መሆኑን ማረጋገጥ አልተቻለም። እባክዎ የሌላ ሰው ስልክ አያስተላልፉ፤ የራስዎን *${SHARE_CONTACT_BUTTON_TEXT}* ቁልፍ ብቻ ይጠቀሙ።`
+          : `🚫 *Phone Contact Verification Failed (${verification.reason}):*\nThe shared contact does not match your Telegram sender ID (\`TG #${senderTelegramId}\`). Never forward another person's contact—tap *${SHARE_CONTACT_BUTTON_TEXT}* for your own account.`;
 
       return {
         ok: false,
@@ -2338,7 +2628,7 @@ export class AdeyBingoTelegramBotEngine {
         language: lang,
         text: errText,
         parseMode: 'Markdown',
-        replyMarkup: buildBotMainMenuMarkup(lang, this.miniAppUrl, false, this.buttonLabels),
+        replyMarkup: buildContactRequestMarkup(),
         registrationStatus: 'pending_contact',
         securityCode: verification.reason,
       };
@@ -2356,7 +2646,7 @@ export class AdeyBingoTelegramBotEngine {
             ? '🚫 *ይህ ስልክ ቁጥር ቀደም ብሎ ከሌላ የADEYBINGO መለያ ጋር ተመዝግቧል።*\nድጋሚ ምዝገባ አይፈቀድም።'
             : '🚫 *This phone number is already registered with another ADEYBINGO account.*\nDuplicate phone registrations are blocked.',
         parseMode: 'Markdown',
-        replyMarkup: buildBotMainMenuMarkup(lang, this.miniAppUrl, false, this.buttonLabels),
+        replyMarkup: buildContactRequestMarkup(),
         registrationStatus: 'duplicate_blocked',
         securityCode: 'duplicate_phone_number',
       };
@@ -2379,6 +2669,10 @@ export class AdeyBingoTelegramBotEngine {
       };
     }
 
+    const alreadyVerified = Boolean(
+      existingVerifiedPhone && existingVerifiedPhone === normalizedPhone && this.playersByTelegramId.get(senderTelegramId)?.phoneVerified
+    );
+
     const startRes = this.handleStartCommand({
       senderTelegramId,
       firstName,
@@ -2397,22 +2691,31 @@ export class AdeyBingoTelegramBotEngine {
     player.verifiedPhoneMasked = maskPhoneNumber(normalizedPhone);
     player.updatedAt = new Date().toISOString();
 
-    const ntf = this.queueNotification('registration_success', senderTelegramId, {
-      playerName: player.firstName,
-      maskedPhone: player.verifiedPhoneMasked,
-    });
+    const ntf = alreadyVerified
+      ? undefined
+      : this.queueNotification('registration_success', senderTelegramId, {
+          playerName: player.firstName,
+          maskedPhone: player.verifiedPhoneMasked,
+        });
 
     return {
       ok: true,
       chatId: senderTelegramId,
       language: lang,
-      text: `${ntf.title}\n\n${ntf.body}`,
+      text: buildVerificationSuccessText({
+        lang,
+        maskedPhone: player.verifiedPhoneMasked,
+        demoBalanceEtb: player.demoBalanceEtb,
+        alreadyVerified,
+      }),
       parseMode: 'Markdown',
-      replyMarkup: buildBotMainMenuMarkup(lang, this.miniAppUrl, true, this.buttonLabels),
+      replyMarkup: buildBotMainMenuMarkup(lang, this.miniAppUrl, true, this.buttonLabels, 'welcome'),
+      removeContactKeyboard: true,
+      followUpMainMenuText: buildVerifiedMainMenuPromptText(lang),
       registrationStatus: 'verified',
-      securityCode: 'contact_verified',
+      securityCode: alreadyVerified ? 'contact_already_verified' : 'contact_verified',
       profile: player,
-      notificationQueued: ntf,
+      ...(ntf ? { notificationQueued: ntf } : {}),
     };
   }
 }
@@ -2446,16 +2749,20 @@ export interface AuthoritativeRoomGameSession {
 export class ServerGameAuthority {
   private sessions = new Map<string, AuthoritativeRoomGameSession>();
   private replayGuard = new TelegramReplayGuard();
+  private readonly defaultHostTelegramId: number;
 
-  constructor() {
-    this.ensureRoomSession('adey-main', 8842109, [9, 30, 7, 16, 14]);
-    this.ensureRoomSession('adey-fast', 8842109, [9, 30, 7, 16, 14]);
-    this.ensureRoomSession('adey-vip', 8842109, [9, 30, 7, 16, 14]);
+  constructor(defaultHostTelegramId: number = 0) {
+    this.defaultHostTelegramId = defaultHostTelegramId;
+    if (defaultHostTelegramId > 0) {
+      this.ensureRoomSession('adey-main', defaultHostTelegramId, [9, 30, 7, 16, 14]);
+      this.ensureRoomSession('adey-fast', defaultHostTelegramId, [9, 30, 7, 16, 14]);
+      this.ensureRoomSession('adey-vip', defaultHostTelegramId, [9, 30, 7, 16, 14]);
+    }
   }
 
   public ensureRoomSession(
     roomId: string,
-    hostTelegramId: number = 8842109,
+    hostTelegramId: number = this.defaultHostTelegramId,
     initialCalls: number[] = [9, 30, 7, 16, 14]
   ): AuthoritativeRoomGameSession {
     let sess = this.sessions.get(roomId);

@@ -1,7 +1,14 @@
 import crypto from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
-import { type AuthBackendDeps, authenticateRequest, extractBearerToken } from './auth.ts';
+import { GoogleGenAI, Modality } from '@google/genai';
+import { getBingoVoiceCallScript } from '../../src/utils/amharicNumbers.ts';
+import {
+  type AuthBackendDeps,
+  authenticateRequest,
+  extractBearerToken,
+  requirePhoneVerifiedPlayer,
+} from './auth.ts';
 import { getAdminDb } from './firebaseAdmin.ts';
 import { createFirestoreGameStore, PersistentGameAuthorityService } from './gamePersistence.ts';
 import {
@@ -67,6 +74,7 @@ export interface GameHandlerDeps {
   authDeps?: AuthBackendDeps;
   limiter?: BoundedRateLimiter;
   getCronSecret?: () => string | undefined;
+  getGeminiApiKey?: () => string | undefined;
 }
 
 export type StartGameHandlerDeps = GameHandlerDeps;
@@ -132,6 +140,10 @@ export function createStartGameHandler(deps: StartGameHandlerDeps = {}) {
         'firebase_admin_unavailable',
         'Server persistence service is unavailable.'
       );
+      return;
+    }
+
+    if (!(await requirePhoneVerifiedPlayer(db, caller, res))) {
       return;
     }
 
@@ -234,6 +246,10 @@ export function createDrawBallHandler(deps: DrawBallHandlerDeps = {}) {
         'firebase_admin_unavailable',
         'Server persistence service is unavailable.'
       );
+      return;
+    }
+
+    if (!(await requirePhoneVerifiedPlayer(db, caller, res))) {
       return;
     }
 
@@ -474,6 +490,10 @@ export function createVerifyWinnerHandler(deps: VerifyWinnerHandlerDeps = {}) {
       return;
     }
 
+    if (!(await requirePhoneVerifiedPlayer(db, caller, res))) {
+      return;
+    }
+
     const idempotencyKey = extractIdempotencyKey(req, body);
     const gameStore = createFirestoreGameStore(db);
     const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 3600);
@@ -530,6 +550,8 @@ export function createVerifyWinnerHandler(deps: VerifyWinnerHandlerDeps = {}) {
       cardId: verifyRes.cardId,
       winResult: verifyRes.winResult,
       demoPrizeEtb: verifyRes.demoPrizeEtb,
+      winners: verifyRes.winners ?? [],
+      winnersPrizePoolEtb: verifyRes.winnersPrizePoolEtb,
       demoMode: true,
       serverVerifiedAt: verifyRes.serverVerifiedAt,
     });
@@ -552,10 +574,63 @@ function extractHeaderString(req: VercelRequest, headerName: string): string | n
   return null;
 }
 
+async function authorizeSchedulerOrAdmin(
+  req: VercelRequest,
+  res: VercelResponse,
+  deps: GameHandlerDeps
+): Promise<'cron_secret' | 'admin_token' | null> {
+  const configuredCronSecret = (
+    deps.getCronSecret ? deps.getCronSecret() : process.env.CRON_SECRET
+  )?.trim();
+  const bearerToken = extractBearerToken(req);
+  const cronHeaderToken = extractHeaderString(req, 'x-cron-secret');
+  const providedCronToken = cronHeaderToken || bearerToken;
+
+  const looksLikeSignedToken = Boolean(
+    bearerToken &&
+      (bearerToken.split('.').length === 2 || bearerToken.split('.').length === 3)
+  );
+
+  if (
+    configuredCronSecret &&
+    configuredCronSecret.length >= 16 &&
+    providedCronToken &&
+    timingSafeEqualStrings(providedCronToken, configuredCronSecret)
+  ) {
+    return 'cron_secret';
+  }
+
+  if (!cronHeaderToken && looksLikeSignedToken) {
+    const caller = await authenticateRequest(req, res, deps.authDeps, {
+      requireAdmin: true,
+    });
+    if (!caller) return null;
+    return 'admin_token';
+  }
+
+  if (!configuredCronSecret || configuredCronSecret.length < 16) {
+    sendError(
+      res,
+      503,
+      'cron_secret_not_configured',
+      'Scheduler CRON_SECRET is not configured on the server.'
+    );
+    return null;
+  }
+
+  sendError(
+    res,
+    401,
+    'invalid_cron_secret',
+    'Valid CRON_SECRET or Administrator authorization is required.'
+  );
+  return null;
+}
+
 /**
  * GET / POST /api/game/tick
- * Persistent idempotent 24/7 scheduler tick endpoint (compatible with Vercel Cron GET
- * and external Cloud Scheduler / admin POST invocations).
+ * Persistent idempotent 24/7 scheduler tick endpoint (compatible with external 3-5s
+ * schedulers and admin POST invocations).
  * Requires either a valid CRON_SECRET (`Authorization: Bearer <CRON_SECRET>` or `x-cron-secret`)
  * OR a cryptographically verified Administrator token. Fails closed if unauthorized.
  */
@@ -563,51 +638,8 @@ export function createSchedulerTickHandler(deps: GameHandlerDeps = {}) {
   return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
     if (!enforceMethod(req, res, ['GET', 'POST'])) return;
 
-    const configuredCronSecret = (
-      deps.getCronSecret ? deps.getCronSecret() : process.env.CRON_SECRET
-    )?.trim();
-    const bearerToken = extractBearerToken(req);
-    const cronHeaderToken = extractHeaderString(req, 'x-cron-secret');
-    const providedCronToken = cronHeaderToken || bearerToken;
-
-    let authorizedVia: 'cron_secret' | 'admin_token' | null = null;
-
-    const looksLikeSignedToken = Boolean(
-      bearerToken &&
-        (bearerToken.split('.').length === 2 || bearerToken.split('.').length === 3)
-    );
-
-    if (
-      configuredCronSecret &&
-      configuredCronSecret.length >= 16 &&
-      providedCronToken &&
-      timingSafeEqualStrings(providedCronToken, configuredCronSecret)
-    ) {
-      authorizedVia = 'cron_secret';
-    } else if (!cronHeaderToken && looksLikeSignedToken) {
-      // Fall back to verified admin caller if a Firebase ID token or signed server session token was supplied
-      const caller = await authenticateRequest(req, res, deps.authDeps, {
-        requireAdmin: true,
-      });
-      if (!caller) return;
-      authorizedVia = 'admin_token';
-    } else if (!configuredCronSecret || configuredCronSecret.length < 16) {
-      sendError(
-        res,
-        503,
-        'cron_secret_not_configured',
-        'Scheduler CRON_SECRET is not configured on the server.'
-      );
-      return;
-    } else {
-      sendError(
-        res,
-        401,
-        'invalid_cron_secret',
-        'Valid CRON_SECRET authorization is required to invoke the scheduler tick.'
-      );
-      return;
-    }
+    const authorizedVia = await authorizeSchedulerOrAdmin(req, res, deps);
+    if (!authorizedVia) return;
 
     const isPost = (req.method || 'GET').toUpperCase() === 'POST';
     let body: Record<string, unknown> = {};
@@ -710,10 +742,14 @@ export function createSchedulerTickHandler(deps: GameHandlerDeps = {}) {
 
 /**
  * GET /api/game/scheduler-status
+ * Protected by CRON_SECRET or verified Administrator Bearer token.
  */
 export function createSchedulerStatusHandler(deps: GameHandlerDeps = {}) {
   return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
     if (!enforceMethod(req, res, ['GET'])) return;
+
+    const authorizedVia = await authorizeSchedulerOrAdmin(req, res, deps);
+    if (!authorizedVia) return;
 
     let db: Firestore;
     try {
@@ -740,8 +776,13 @@ export function createSchedulerStatusHandler(deps: GameHandlerDeps = {}) {
 
     sendJson(res, 200, {
       ok: true,
+      authorizedVia,
       serverNowMs: Date.now(),
       mode: '24_7_autonomous',
+      cronSecretConfigured: Boolean(
+        ((deps.getCronSecret ? deps.getCronSecret() : process.env.CRON_SECRET) || '').trim()
+          .length >= 16
+      ),
       minPlayersDefault: 3,
       maxCapacityPlayers: 600,
       rooms,
@@ -750,8 +791,145 @@ export function createSchedulerStatusHandler(deps: GameHandlerDeps = {}) {
   };
 }
 
+function pcm16ToWavBase64(pcmBase64: string, sampleRate = 24000, numChannels = 1): string {
+  const pcmBuf = Buffer.from(pcmBase64, 'base64');
+  const bytesPerSample = 2;
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcmBuf.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bytesPerSample * 8, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcmBuf.length, 40);
+  return Buffer.concat([header, pcmBuf]).toString('base64');
+}
+
+const ttsAudioCache = new Map<string, { audioBase64: string; mimeType: string }>();
+
 /**
- * Consolidated router for `/api/game/*` endpoints.
+ * GET /api/tts/bingo-call?number=1..75&lang=am|en
+ * Server-side Gemini TTS voice caller for Vercel production (rewritten via /api/game?route=tts/bingo-call).
+ * Returns 503 with reason `gemini_api_key_not_configured` when GEMINI_API_KEY is absent so clients fall back cleanly to Web Speech.
+ */
+export function createBingoCallTtsHandler(deps: GameHandlerDeps = {}) {
+  return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
+    if (!enforceMethod(req, res, ['GET'])) return;
+
+    if (
+      !enforceRateLimit(req, res, {
+        scope: 'tts_bingo_call',
+        limit: 120,
+        windowSeconds: 60,
+        limiter: deps.limiter,
+      })
+    ) {
+      return;
+    }
+
+    const rawNum = Array.isArray(req.query?.number) ? req.query.number[0] : req.query?.number;
+    const rawLang = Array.isArray(req.query?.lang) ? req.query.lang[0] : req.query?.lang;
+    const ballNumber = Number(rawNum);
+    const lang: 'am' | 'en' = rawLang === 'en' ? 'en' : 'am';
+
+    if (!Number.isInteger(ballNumber) || ballNumber < 1 || ballNumber > 75) {
+      sendError(res, 400, 'invalid_ball_number', 'number must be an integer between 1 and 75.');
+      return;
+    }
+
+    const script = getBingoVoiceCallScript(ballNumber, lang);
+    const cacheKey = `${lang}:${ballNumber}`;
+    const cached = ttsAudioCache.get(cacheKey);
+    if (cached) {
+      sendJson(res, 200, {
+        ok: true,
+        audioBase64: cached.audioBase64,
+        mimeType: cached.mimeType,
+        script,
+      });
+      return;
+    }
+
+    const apiKey = (
+      deps.getGeminiApiKey ? deps.getGeminiApiKey() : process.env.GEMINI_API_KEY
+    )?.trim();
+    if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+      sendJson(res, 503, {
+        ok: false,
+        audioBase64: null,
+        reason: 'gemini_api_key_not_configured',
+        script,
+      });
+      return;
+    }
+
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const prompt =
+        lang === 'am'
+          ? `Speak this Ethiopian Bingo ball call clearly in natural Amharic with a warm female host voice: "${script.amharicText}"`
+          : `Speak this Bingo ball call clearly in English with a warm female host voice: "${script.englishText}"`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-preview-tts',
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: 'Kore' },
+            },
+          },
+        },
+      });
+
+      const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+      if (!inlineData?.data) {
+        sendJson(res, 503, {
+          ok: false,
+          audioBase64: null,
+          reason: 'tts_generation_empty',
+          script,
+        });
+        return;
+      }
+
+      const rawMime = inlineData.mimeType || 'audio/pcm';
+      const isPcm = /pcm|L16/i.test(rawMime);
+      const audioBase64 = isPcm ? pcm16ToWavBase64(inlineData.data) : inlineData.data;
+      const mimeType = isPcm ? 'audio/wav' : rawMime;
+
+      if (ttsAudioCache.size < 200) {
+        ttsAudioCache.set(cacheKey, { audioBase64, mimeType });
+      }
+
+      sendJson(res, 200, {
+        ok: true,
+        audioBase64,
+        mimeType,
+        script,
+      });
+    } catch {
+      sendJson(res, 503, {
+        ok: false,
+        audioBase64: null,
+        reason: 'tts_generation_failed',
+        script,
+      });
+    }
+  };
+}
+
+/**
+ * Consolidated router for `/api/game/*` and `/api/tts/*` endpoints.
  */
 export function createGameRouterHandler(deps: GameHandlerDeps = {}) {
   const startHandler = createStartGameHandler(deps);
@@ -760,6 +938,7 @@ export function createGameRouterHandler(deps: GameHandlerDeps = {}) {
   const verifyWinnerHandler = createVerifyWinnerHandler(deps);
   const tickHandler = createSchedulerTickHandler(deps);
   const schedulerStatusHandler = createSchedulerStatusHandler(deps);
+  const ttsHandler = createBingoCallTtsHandler(deps);
 
   return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
     const subRoute = extractSubRoute(req, '/api/game');
@@ -777,6 +956,9 @@ export function createGameRouterHandler(deps: GameHandlerDeps = {}) {
         return await tickHandler(req, res);
       case 'scheduler-status':
         return await schedulerStatusHandler(req, res);
+      case 'tts/bingo-call':
+      case 'bingo-call':
+        return await ttsHandler(req, res);
       default:
         sendError(
           res,

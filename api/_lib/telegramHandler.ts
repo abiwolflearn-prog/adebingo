@@ -911,87 +911,159 @@ export function createTelegramWebhookHandler(deps: WebhookHandlerDeps = {}) {
         }
 
         const rawMarkup = botResponse.replyMarkup;
-        const shouldSendReplyKeyboard =
-          Boolean(rawMarkup?.keyboard?.length) &&
-          (botResponse.securityCode === 'start_welcome_delivered' ||
-            botResponse.securityCode === 'callback_main_menu' ||
-            botResponse.securityCode === 'language_updated' ||
-            botResponse.securityCode === 'contact_verified' ||
-            botResponse.securityCode === 'plain_text_phone_rejected' ||
-            botResponse.securityCode === 'contact_owner_mismatch' ||
-            botResponse.securityCode === 'missing_contact_user_id' ||
-            botResponse.securityCode === 'invalid_phone_format' ||
-            botResponse.securityCode === 'duplicate_phone_number' ||
-            botResponse.securityCode === 'verified_contact_locked');
-        const shouldSendSeparateInlineKeyboard =
-          shouldSendReplyKeyboard &&
-          Boolean(rawMarkup?.inline_keyboard?.length) &&
-          (botResponse.securityCode === 'start_welcome_delivered' ||
-            botResponse.securityCode === 'callback_main_menu' ||
-            botResponse.securityCode === 'language_updated' ||
-            botResponse.securityCode === 'contact_verified');
 
-        const primaryReplyMarkup = shouldSendReplyKeyboard
-          ? {
-              keyboard: rawMarkup!.keyboard,
-              resize_keyboard: rawMarkup!.resize_keyboard ?? true,
-              one_time_keyboard: rawMarkup!.one_time_keyboard ?? false,
-            }
-          : rawMarkup?.inline_keyboard?.length
-            ? { inline_keyboard: rawMarkup.inline_keyboard }
-            : rawMarkup?.keyboard?.length
-              ? {
-                  keyboard: rawMarkup.keyboard,
-                  resize_keyboard: rawMarkup.resize_keyboard ?? true,
-                  one_time_keyboard: rawMarkup.one_time_keyboard ?? false,
-                }
-              : undefined;
-
-        const tgResp = await fetchFn(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: botResponse.chatId,
-            text: botResponse.text,
-            parse_mode: botResponse.parseMode,
-            ...(primaryReplyMarkup ? { reply_markup: primaryReplyMarkup } : {}),
-          }),
-        });
-        const tgData = (await tgResp.json().catch(() => ({}))) as {
-          ok?: boolean;
-          description?: string;
-        };
-        const primaryDelivered = Boolean(tgResp.ok && tgData.ok);
-        deliveredToTelegramApi = primaryDelivered;
-        telegramDeliveryNote = primaryDelivered
-          ? 'delivered'
-          : tgData.description || 'send_failed';
-
-        // Telegram Bot API only supports one reply_markup per sendMessage.
-        // When both the persistent main reply keyboard and contextual inline buttons are required,
-        // send the contextual inline keyboard in a separate follow-up message.
-        if (primaryDelivered && shouldSendSeparateInlineKeyboard) {
-          const inlinePrompt =
-            botResponse.language === 'am' ? '👇 ፈጣን አማራጮች፦' : '👇 Quick Actions:';
-          const tgInlineResp = await fetchFn(
+        // Step 3: Contact verification succeeded ->
+        // 1) Send bilingual success message with { remove_keyboard: true } to explicitly clear the contact-request keyboard
+        // 2) Send the verified persistent 8-button bilingual Main Menu ReplyKeyboardMarkup
+        if (botResponse.removeContactKeyboard && rawMarkup?.keyboard?.length) {
+          const tgVerifyResp = await fetchFn(
             `https://api.telegram.org/bot${botToken}/sendMessage`,
             {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 chat_id: botResponse.chatId,
-                text: inlinePrompt,
-                reply_markup: { inline_keyboard: rawMarkup!.inline_keyboard },
+                text: botResponse.text,
+                parse_mode: botResponse.parseMode,
+                reply_markup: { remove_keyboard: true },
               }),
             }
           );
-          const tgInlineData = (await tgInlineResp.json().catch(() => ({}))) as {
+          const tgVerifyData = (await tgVerifyResp.json().catch(() => ({}))) as {
             ok?: boolean;
             description?: string;
           };
-          if (!tgInlineResp.ok || !tgInlineData.ok) {
-            deliveredToTelegramApi = false;
-            telegramDeliveryNote = tgInlineData.description || 'inline_send_failed';
+          const verifyDelivered = Boolean(tgVerifyResp.ok && tgVerifyData.ok);
+          deliveredToTelegramApi = verifyDelivered;
+          telegramDeliveryNote = verifyDelivered
+            ? 'delivered'
+            : tgVerifyData.description || 'send_failed';
+
+          if (verifyDelivered) {
+            const menuPromptText =
+              botResponse.followUpMainMenuText ||
+              (botResponse.language === 'am'
+                ? '🏠 *ዋና ምናሌ*'
+                : '🏠 *Main Menu*');
+            const tgMenuResp = await fetchFn(
+              `https://api.telegram.org/bot${botToken}/sendMessage`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: botResponse.chatId,
+                  text: menuPromptText,
+                  parse_mode: botResponse.parseMode,
+                  reply_markup: {
+                    keyboard: rawMarkup.keyboard,
+                    resize_keyboard: rawMarkup.resize_keyboard ?? true,
+                    one_time_keyboard: false,
+                  },
+                }),
+              }
+            );
+            const tgMenuData = (await tgMenuResp.json().catch(() => ({}))) as {
+              ok?: boolean;
+              description?: string;
+            };
+            if (!tgMenuResp.ok || !tgMenuData.ok) {
+              deliveredToTelegramApi = false;
+              telegramDeliveryNote = tgMenuData.description || 'menu_send_failed';
+            }
+          }
+        } else {
+          const isOnboardingWelcome = botResponse.securityCode === 'onboarding_welcome';
+          const shouldSendReplyKeyboard =
+            !isOnboardingWelcome &&
+            Boolean(rawMarkup?.keyboard?.length) &&
+            (botResponse.securityCode === 'onboarding_request_contact' ||
+              botResponse.securityCode === 'phone_verification_required' ||
+              botResponse.securityCode === 'start_welcome_delivered' ||
+              botResponse.securityCode === 'callback_main_menu' ||
+              botResponse.securityCode === 'language_updated' ||
+              botResponse.securityCode === 'contact_verified' ||
+              botResponse.securityCode === 'contact_already_verified' ||
+              botResponse.securityCode === 'plain_text_phone_rejected' ||
+              botResponse.securityCode === 'contact_owner_mismatch' ||
+              botResponse.securityCode === 'missing_contact_user_id' ||
+              botResponse.securityCode === 'invalid_phone_format' ||
+              botResponse.securityCode === 'duplicate_phone_number' ||
+              botResponse.securityCode === 'verified_contact_locked');
+
+          const shouldSendSeparateInlineKeyboard =
+            shouldSendReplyKeyboard &&
+            botResponse.registrationStatus === 'verified' &&
+            Boolean(rawMarkup?.inline_keyboard?.length) &&
+            (botResponse.securityCode === 'start_welcome_delivered' ||
+              botResponse.securityCode === 'callback_main_menu' ||
+              botResponse.securityCode === 'language_updated');
+
+          const primaryReplyMarkup = isOnboardingWelcome
+            ? rawMarkup?.inline_keyboard?.length
+              ? { inline_keyboard: rawMarkup.inline_keyboard }
+              : undefined
+            : shouldSendReplyKeyboard
+              ? {
+                  keyboard: rawMarkup!.keyboard,
+                  resize_keyboard: rawMarkup!.resize_keyboard ?? true,
+                  one_time_keyboard: rawMarkup!.one_time_keyboard ?? false,
+                }
+              : rawMarkup?.inline_keyboard?.length
+                ? { inline_keyboard: rawMarkup.inline_keyboard }
+                : rawMarkup?.keyboard?.length
+                  ? {
+                      keyboard: rawMarkup.keyboard,
+                      resize_keyboard: rawMarkup.resize_keyboard ?? true,
+                      one_time_keyboard: rawMarkup.one_time_keyboard ?? false,
+                    }
+                  : undefined;
+
+          const tgResp = await fetchFn(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: botResponse.chatId,
+              text: botResponse.text,
+              parse_mode: botResponse.parseMode,
+              ...(primaryReplyMarkup ? { reply_markup: primaryReplyMarkup } : {}),
+            }),
+          });
+          const tgData = (await tgResp.json().catch(() => ({}))) as {
+            ok?: boolean;
+            description?: string;
+          };
+          const primaryDelivered = Boolean(tgResp.ok && tgData.ok);
+          deliveredToTelegramApi = primaryDelivered;
+          telegramDeliveryNote = primaryDelivered
+            ? 'delivered'
+            : tgData.description || 'send_failed';
+
+          // Telegram Bot API only supports one reply_markup per sendMessage.
+          // When both the persistent main reply keyboard and contextual inline buttons are required
+          // for verified users, send the contextual inline keyboard in a separate follow-up message.
+          if (primaryDelivered && shouldSendSeparateInlineKeyboard) {
+            const inlinePrompt =
+              botResponse.language === 'am' ? '👇 ፈጣን አማራጮች፦' : '👇 Quick Actions:';
+            const tgInlineResp = await fetchFn(
+              `https://api.telegram.org/bot${botToken}/sendMessage`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: botResponse.chatId,
+                  text: inlinePrompt,
+                  reply_markup: { inline_keyboard: rawMarkup!.inline_keyboard },
+                }),
+              }
+            );
+            const tgInlineData = (await tgInlineResp.json().catch(() => ({}))) as {
+              ok?: boolean;
+              description?: string;
+            };
+            if (!tgInlineResp.ok || !tgInlineData.ok) {
+              deliveredToTelegramApi = false;
+              telegramDeliveryNote = tgInlineData.description || 'inline_send_failed';
+            }
           }
         }
 
@@ -1132,51 +1204,47 @@ export function createRegisterWebhookHandler(deps: RegisterWebhookHandlerDeps = 
             commands: [
               {
                 command: 'start',
-                description: 'ቦቱን ይጀምሩ እና ዋና ሜኑን ይክፈቱ (Start ADEYBINGO)',
+                description: 'ቦቱን ይጀምሩ እና መለያዎን ያረጋግጡ | Start AdeyBingo',
               },
               {
-                command: 'wallet',
-                description: 'የእኔ ቦርሳ እና ቀሪ ሂሳብ (My Wallet)',
+                command: 'menu',
+                description: 'ዋና ምናሌ | Main Menu',
+              },
+              {
+                command: 'play',
+                description: 'ጨዋታ ጀምር | Play AdeyBingo',
               },
               {
                 command: 'deposit',
-                description: 'ገንዘብ ያስገቡ (Demo Deposit)',
+                description: 'ገንዘብ አስገባ | Deposit',
               },
               {
                 command: 'withdraw',
-                description: 'ገንዘብ ያውጡ (Demo Withdraw)',
+                description: 'ገንዘብ አውጣ | Withdraw',
               },
               {
                 command: 'invite',
-                description: 'ጓደኞችን ይጋብዙ (Invite Friends)',
+                description: 'ጓደኛ ጋብዝ | Invite Friends',
               },
               {
-                command: 'leaderboard',
-                description: 'የደረጃ ሰንጠረዥ (Leaderboard)',
-              },
-              {
-                command: 'history',
-                description: 'የጨዋታ ታሪክ (Game History)',
-              },
-              {
-                command: 'profile',
-                description: 'የእኔ መገለጫ (My Profile)',
+                command: 'account',
+                description: 'መለያዬ | My Account',
               },
               {
                 command: 'language',
-                description: 'ቋንቋ ይምረጡ / Select Language (አማርኛ / English)',
+                description: 'ቋንቋ ቀይር | Change Language',
               },
               {
                 command: 'support',
-                description: 'እገዛ እና የደንበኞች ድጋፍ (Support)',
+                description: 'እገዛ | Support',
               },
               {
                 command: 'help',
-                description: 'የጨዋታ መመሪያ (Help & Guide)',
+                description: 'የጨዋታ መመሪያ | Help & Guide',
               },
               {
                 command: 'terms',
-                description: 'ህጎች እና የግላዊነት ጥበቃ (Terms & Privacy)',
+                description: 'ህጎች እና የግላዊነት ጥበቃ | Terms & Privacy',
               },
             ],
           }),

@@ -482,6 +482,11 @@ test('Multi-device 3-player flow: inviter + invited player + independent player 
     listC.map((r) => [r.roomId, r.cardPrice])
   );
 
+  // Mark players phone-verified (via Telegram contact) before reserving cards
+  for (const uid of ['tg_500001', 'tg_500002', 'tg_500003']) {
+    store.set(`users/${uid}`, { ...(store.get(`users/${uid}`) || {}), phoneVerified: true });
+  }
+
   // Concurrent race on Card #42 between Player A and Player B: only ONE succeeds
   const [raceA, raceB] = await Promise.all([
     invoke(reserveHandler, {
@@ -794,9 +799,10 @@ test('Admin dashboard real operations: RBAC, enriched player view, suspension en
   });
   const playerTok = String(authP.body.sessionToken);
 
-  // Give player 100 ETB balance to test card reserve & payout
+  // Give player 100 ETB balance and verified phone status to test card reserve & payout
   store.set('users/tg_700001', {
     ...store.get('users/tg_700001')!,
+    phoneVerified: true,
     demoBalanceEtb: 100,
   });
 
@@ -1039,6 +1045,10 @@ test('Countdown 00:00 never stalls: server-side due-deadline progression trigger
       },
     });
     assert.equal(authRes.statusCode, 200);
+    store.set(`users/tg_${810000 + i}`, {
+      ...(store.get(`users/tg_${810000 + i}`) || {}),
+      phoneVerified: true,
+    });
     playerTokens.push(String(authRes.body.sessionToken));
   }
 
@@ -1333,6 +1343,15 @@ test('Official @AdeyBingoGameBot referral link generation, /start deep-link attr
     text: '/start',
   });
   assert.equal(inviterStart.ok, true);
+  await botService.handleIncomingUpdate({
+    updateId: 990015,
+    senderTelegramId: 5152447113,
+    chatId: 5152447113,
+    chatType: 'private',
+    firstName: 'Yonas',
+    username: 'yonas_adey',
+    contact: { phone_number: '+251911515244', first_name: 'Yonas', user_id: 5152447113 },
+  });
 
   // 2. Inviter requests /invite and cb:referral_copy -> exact https://t.me/AdeyBingoGameBot?start=ADEY-5152447113
   const expectedInviteUrl = 'https://t.me/AdeyBingoGameBot?start=ADEY-5152447113';
@@ -1405,7 +1424,16 @@ test('Official @AdeyBingoGameBot referral link generation, /start deep-link attr
   assert.equal(store.get('users/tg_5152447113')?.demoBalanceEtb, 55);
   assert.equal(store.get('users/tg_5152447999')?.demoBalanceEtb, 15);
 
-  // 6. Friend's own /invite link dynamically uses friend's actual Telegram ID
+  // 6. Friend verifies phone contact and gets their own /invite link using friend's actual Telegram ID
+  await botService.handleIncomingUpdate({
+    updateId: 990065,
+    senderTelegramId: 5152447999,
+    chatId: 5152447999,
+    chatType: 'private',
+    firstName: 'Bethlehem',
+    username: 'beth_adey',
+    contact: { phone_number: '+251911515249', first_name: 'Bethlehem', user_id: 5152447999 },
+  });
   const friendInvite = await botService.handleIncomingUpdate({
     updateId: 99007,
     senderTelegramId: 5152447999,

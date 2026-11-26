@@ -21,6 +21,10 @@
       "destination": "/api/player?route=:route*"
     },
     {
+      "source": "/api/tts/:route*",
+      "destination": "/api/game?route=tts/:route*"
+    },
+    {
       "source": "/((?!api(?:/|$)).*)",
       "destination": "/index.html"
     }

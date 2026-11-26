@@ -1,7 +1,11 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
 import { FieldValue } from 'firebase-admin/firestore';
-import { type AuthBackendDeps, authenticateRequest } from './auth.ts';
+import {
+  type AuthBackendDeps,
+  authenticateRequest,
+  requirePhoneVerifiedPlayer,
+} from './auth.ts';
 import { getAdminDb } from './firebaseAdmin.ts';
 import {
   BoundedRateLimiter,
@@ -484,6 +488,12 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
       }
     }
 
+    if (action === 'deposit_request' || action === 'withdraw_request') {
+      if (!(await requirePhoneVerifiedPlayer(db, caller, res))) {
+        return;
+      }
+    }
+
     const idempotencyKey = extractIdempotencyKey(req, body);
     if (idempotencyKey) {
       const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 3600);
@@ -547,7 +557,7 @@ export function createPlayerWalletHandler(deps: PlayerWalletHandlerDeps = {}) {
           res,
           400,
           'invalid_promo_code',
-          'Please enter a valid promo or referral code (e.g. ADEY-8842109).'
+          'Please enter a valid promo or referral code (e.g. ADEY-123456).'
         );
         return;
       }

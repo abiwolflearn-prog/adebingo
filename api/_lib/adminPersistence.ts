@@ -23,7 +23,7 @@ import type {
 } from '../../src/utils/adminAuthority.ts';
 import {
   AUTHORIZED_ADMIN_EMAILS,
-  AUTHORIZED_ADMIN_TELEGRAM_IDS,
+  getAuthorizedAdminTelegramIds,
 } from '../../src/utils/adminAuthority.ts';
 import {
   type BotAdminConfig,
@@ -88,11 +88,103 @@ function mapAdminStatusToRoomStatus(
   return 'waiting';
 }
 
+export interface AdminPersistenceOptions {
+  fetchImpl?: typeof fetch;
+  getBotToken?: () => string | undefined;
+}
+
 export class PersistentAdminService {
   private readonly db: Firestore;
+  private readonly fetchImpl?: typeof fetch;
+  private readonly getBotToken?: () => string | undefined;
 
-  constructor(db: Firestore) {
+  constructor(db: Firestore, options?: AdminPersistenceOptions) {
     this.db = db;
+    this.fetchImpl = options?.fetchImpl;
+    this.getBotToken = options?.getBotToken;
+  }
+
+  private async dispatchTelegramOutboxMessage(
+    outboxId: string,
+    telegramUserId: number,
+    text: string
+  ): Promise<{ delivered: boolean; skippedReason?: string }> {
+    const outboxRef = this.db.collection(BOT_OUTBOX_COLLECTION).doc(outboxId);
+    const token = (
+      this.getBotToken ? this.getBotToken() : process.env.TELEGRAM_BOT_TOKEN
+    )?.trim();
+
+    if (
+      !token ||
+      token.length < 10 ||
+      token === 'MY_TELEGRAM_BOT_TOKEN' ||
+      !token.includes(':')
+    ) {
+      try {
+        await outboxRef.update({
+          deliveredViaBotApi: false,
+          skippedReason: 'missing_bot_token',
+        });
+      } catch {
+        // Ignore best-effort status update failure
+      }
+      return { delivered: false, skippedReason: 'missing_bot_token' };
+    }
+
+    const fetcher = this.fetchImpl ?? (typeof fetch === 'function' ? fetch : undefined);
+    if (!fetcher) {
+      return { delivered: false, skippedReason: 'fetch_unavailable' };
+    }
+
+    try {
+      const resp = await fetcher(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: telegramUserId,
+          text,
+        }),
+      });
+      const json = (await resp.json().catch(() => null)) as {
+        ok?: boolean;
+        description?: string;
+      } | null;
+      if (resp.ok && json?.ok === true) {
+        try {
+          await outboxRef.update({
+            deliveredViaBotApi: true,
+            deliveredAt: new Date().toISOString(),
+            skippedReason: '',
+          });
+        } catch {
+          // Ignore best-effort status update failure
+        }
+        return { delivered: true };
+      }
+      const errDesc = json?.description || `HTTP ${resp.status}`;
+      try {
+        await outboxRef.update({
+          deliveredViaBotApi: false,
+          skippedReason: 'telegram_api_error',
+          telegramError: errDesc.slice(0, 200),
+        });
+      } catch {
+        // Ignore
+      }
+      return { delivered: false, skippedReason: 'telegram_api_error' };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'network_error';
+      try {
+        await outboxRef.update({
+          deliveredViaBotApi: false,
+          skippedReason: 'telegram_network_error',
+          telegramError: errMsg.slice(0, 200),
+        });
+      } catch {
+        // Ignore
+      }
+      return { delivered: false, skippedReason: 'telegram_network_error' };
+    }
   }
 
   /**
@@ -103,7 +195,8 @@ export class PersistentAdminService {
   public async ensureSeedData(): Promise<void> {
     const roomsCol = this.db.collection('rooms');
     const botConfigRef = this.db.collection(BOT_CONFIG_COLLECTION).doc('default');
-    const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
 
     for (const def of AUTHORITATIVE_PRODUCTION_ROOMS) {
       const rRef = roomsCol.doc(def.id);
@@ -133,8 +226,8 @@ export class PersistentAdminService {
           adeyShareEtb: 0,
           winnersPrizePoolEtb: 0,
           roundNumber: 1,
-          roundStartedAtMs: 0,
-          registrationDeadlineMs: 0,
+          roundStartedAtMs: nowMs,
+          registrationDeadlineMs: nowMs + def.countdownSeconds * 1000,
           nextBallDrawAtMs: 0,
           intermissionEndsAtMs: 0,
           extendedRegistrationCount: 0,
@@ -449,7 +542,7 @@ export class PersistentAdminService {
         displayName: String(data.displayName || 'Adey Player'),
         username: cleanUsername,
         role:
-          data.role === 'admin' || AUTHORIZED_ADMIN_TELEGRAM_IDS.includes(telegramUserId)
+          data.role === 'admin' || getAuthorizedAdminTelegramIds().includes(telegramUserId)
             ? 'admin'
             : 'player',
         accountStatus: data.accountStatus === 'suspended' ? 'suspended' : 'active',
@@ -495,7 +588,7 @@ export class PersistentAdminService {
           telegramUserId: tgId,
           displayName: `${String(bp.firstName || 'Player')} ${String(bp.lastName || '')}`.trim(),
           username: String(bp.username || uid).replace(/^@/, ''),
-          role: AUTHORIZED_ADMIN_TELEGRAM_IDS.includes(tgId) ? 'admin' : 'player',
+          role: getAuthorizedAdminTelegramIds().includes(tgId) ? 'admin' : 'player',
           accountStatus: 'active',
           phoneVerified: Boolean(bp.phoneVerified),
           maskedPhone: String(bp.verifiedPhoneMasked || 'Unverified'),
@@ -1082,6 +1175,9 @@ export class PersistentAdminService {
       }
 
       // Queue player notification for both Approved and Rejected manual deposits
+      let queuedDepositNotif:
+        | { id: string; telegramUserId: number; text: string }
+        | null = null;
       if (depTgId > 0 && (params.nextStatus === 'Approved' || params.nextStatus === 'Rejected')) {
         const notifId = `notif_dep_${dep.depositId}_${params.nextStatus.toLowerCase()}`;
         const playerLang: Language =
@@ -1116,6 +1212,11 @@ export class PersistentAdminService {
           createdAtMs: Date.now(),
           deliveredViaBotApi: false,
         });
+        queuedDepositNotif = {
+          id: notifId,
+          telegramUserId: depTgId,
+          text: `${title}\n\n${body}`,
+        };
       }
 
       const builtAudit = this.buildAuditRecordFromChainSnap(chainSnap, {
@@ -1136,6 +1237,24 @@ export class PersistentAdminService {
         deposit: updatedDep,
         creditedBalanceEtb,
         auditRecord: builtAudit.auditRecord,
+        queuedDepositNotif,
+      };
+    }).then(async (txRes) => {
+      if (txRes.ok && 'queuedDepositNotif' in txRes && txRes.queuedDepositNotif) {
+        await this.dispatchTelegramOutboxMessage(
+          txRes.queuedDepositNotif.id,
+          txRes.queuedDepositNotif.telegramUserId,
+          txRes.queuedDepositNotif.text
+        );
+      }
+      if (!txRes.ok) {
+        return txRes;
+      }
+      return {
+        ok: true,
+        deposit: txRes.deposit,
+        creditedBalanceEtb: txRes.creditedBalanceEtb,
+        auditRecord: txRes.auditRecord,
       };
     });
   }
@@ -1521,6 +1640,8 @@ export class PersistentAdminService {
     const outboxCol = this.db.collection(BOT_OUTBOX_COLLECTION);
     const chainRef = this.db.collection(ADMIN_AUDIT_META_COLLECTION).doc('chain');
 
+    const queuedOutbox: Array<{ id: string; telegramUserId: number; text: string }> = [];
+
     const auditRecord = await this.db.runTransaction(async (tx) => {
       const chainSnap = await tx.get(chainRef);
       const builtAudit = this.buildAuditRecordFromChainSnap(chainSnap, {
@@ -1549,11 +1670,20 @@ export class PersistentAdminService {
           deliveredViaBotApi: false,
         };
         tx.set(outboxCol.doc(msgId), ntf);
+        queuedOutbox.push({
+          id: msgId,
+          telegramUserId: recipient.telegramUserId,
+          text: `${ntf.title}\n\n${ntf.body}`,
+        });
       }
 
       this.writeAuditRecordToTx(tx, builtAudit);
       return builtAudit.auditRecord;
     });
+
+    for (const item of queuedOutbox) {
+      await this.dispatchTelegramOutboxMessage(item.id, item.telegramUserId, item.text);
+    }
 
     return { ok: true, announcement, auditRecord };
   }
@@ -1648,6 +1778,13 @@ export class PersistentAdminService {
       this.writeAuditRecordToTx(tx, builtAudit);
       return builtAudit.auditRecord;
     });
+
+    const delivery = await this.dispatchTelegramOutboxMessage(
+      notification.id,
+      notification.telegramUserId,
+      `${notification.title}\n\n${notification.body}`
+    );
+    notification.deliveredViaBotApi = delivery.delivered;
 
     return { ok: true, notification, auditRecord };
   }
@@ -1842,7 +1979,7 @@ export class PersistentAdminService {
     ]);
 
     return {
-      authorizedAdminTelegramIds: [...AUTHORIZED_ADMIN_TELEGRAM_IDS],
+      authorizedAdminTelegramIds: getAuthorizedAdminTelegramIds(),
       authorizedAdminEmails: [...AUTHORIZED_ADMIN_EMAILS],
       securityPolicies: {
         requireServerSideRoleVerification: true,

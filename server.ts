@@ -211,6 +211,8 @@ async function startServer() {
       firestoreHealth,
       telegramBotTokenConfigured: hasBotToken,
       telegramWebhookSecretConfigured: hasWebhookSecret,
+      cronSecretConfigured: Boolean((process.env.CRON_SECRET || '').trim().length >= 16),
+      schedulerMode: 'external_cron_3_to_5s',
       miniAppUrl,
       webhookEndpointUrl: `${miniAppUrl}/api/telegram/webhook`,
       authProvider: 'telegram_init_data_hmac_sha256',
@@ -648,49 +650,41 @@ async function startServer() {
         }
 
         const rawMarkup = botResponse.replyMarkup;
-        const incomingText =
-          typeof update.message?.text === 'string'
-            ? update.message.text.trim()
-            : typeof update.text === 'string'
-            ? update.text.trim()
-            : '';
-        const isStartMsg = /^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(incomingText);
+        const shouldRemoveContactKeyboard = Boolean(botResponse.removeContactKeyboard);
         const shouldSendReplyKeyboard =
+          !shouldRemoveContactKeyboard &&
           Boolean(rawMarkup?.keyboard?.length) &&
-          (isStartMsg ||
+          (botResponse.securityCode === 'onboarding_request_contact' ||
             botResponse.securityCode === 'start_welcome_delivered' ||
             botResponse.securityCode === 'callback_main_menu' ||
             botResponse.securityCode === 'language_updated' ||
             botResponse.securityCode === 'contact_verified' ||
+            botResponse.securityCode === 'contact_already_verified' ||
+            botResponse.securityCode === 'phone_verification_required' ||
             botResponse.securityCode === 'plain_text_phone_rejected' ||
             botResponse.securityCode === 'contact_owner_mismatch' ||
             botResponse.securityCode === 'missing_contact_user_id' ||
             botResponse.securityCode === 'invalid_phone_format' ||
             botResponse.securityCode === 'duplicate_phone_number' ||
             botResponse.securityCode === 'verified_contact_locked');
-        const shouldSendSeparateInlineKeyboard =
-          shouldSendReplyKeyboard &&
-          Boolean(rawMarkup?.inline_keyboard?.length) &&
-          (isStartMsg ||
-            botResponse.securityCode === 'start_welcome_delivered' ||
-            botResponse.securityCode === 'callback_main_menu' ||
-            botResponse.securityCode === 'language_updated' ||
-            botResponse.securityCode === 'contact_verified');
-        const primaryReplyMarkup = shouldSendReplyKeyboard
-          ? {
-              keyboard: rawMarkup!.keyboard,
-              resize_keyboard: rawMarkup!.resize_keyboard ?? true,
-              one_time_keyboard: rawMarkup!.one_time_keyboard ?? false,
-            }
-          : rawMarkup?.inline_keyboard?.length
-            ? { inline_keyboard: rawMarkup.inline_keyboard }
-            : rawMarkup?.keyboard?.length
-              ? {
-                  keyboard: rawMarkup.keyboard,
-                  resize_keyboard: rawMarkup.resize_keyboard ?? true,
-                  one_time_keyboard: rawMarkup.one_time_keyboard ?? false,
-                }
-              : undefined;
+
+        const primaryReplyMarkup = shouldRemoveContactKeyboard
+          ? { remove_keyboard: true }
+          : shouldSendReplyKeyboard
+            ? {
+                keyboard: rawMarkup!.keyboard,
+                resize_keyboard: rawMarkup!.resize_keyboard ?? true,
+                one_time_keyboard: rawMarkup!.one_time_keyboard ?? false,
+              }
+            : rawMarkup?.inline_keyboard?.length
+              ? { inline_keyboard: rawMarkup.inline_keyboard }
+              : rawMarkup?.keyboard?.length
+                ? {
+                    keyboard: rawMarkup.keyboard,
+                    resize_keyboard: rawMarkup.resize_keyboard ?? true,
+                    one_time_keyboard: rawMarkup.one_time_keyboard ?? false,
+                  }
+                : undefined;
 
         const tgResp = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
           method: 'POST',
@@ -707,7 +701,36 @@ async function startServer() {
         deliveredToTelegramApi = primaryDelivered;
         telegramDeliveryNote = tgData.description || (primaryDelivered ? 'delivered' : 'send_failed');
 
-        if (primaryDelivered && shouldSendSeparateInlineKeyboard) {
+        if (primaryDelivered && shouldRemoveContactKeyboard && rawMarkup?.keyboard?.length) {
+          const menuPrompt =
+            botResponse.followUpMainMenuText ||
+            (botResponse.language === 'am'
+              ? '🏠 ዋና ምናሌ — ከታች ያሉትን ቁልፎች ይጠቀሙ፦'
+              : '🏠 Main Menu — choose an option below:');
+          await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: botResponse.chatId,
+              text: menuPrompt,
+              parse_mode: botResponse.parseMode,
+              reply_markup: {
+                keyboard: rawMarkup.keyboard,
+                resize_keyboard: rawMarkup.resize_keyboard ?? true,
+                one_time_keyboard: false,
+              },
+            }),
+          });
+        }
+
+        if (
+          primaryDelivered &&
+          Boolean(rawMarkup?.inline_keyboard?.length) &&
+          (shouldRemoveContactKeyboard || shouldSendReplyKeyboard) &&
+          botResponse.securityCode !== 'onboarding_welcome' &&
+          botResponse.securityCode !== 'onboarding_request_contact' &&
+          botResponse.securityCode !== 'phone_verification_required'
+        ) {
           const inlinePrompt =
             botResponse.language === 'am' ? '👇 ፈጣን አማራጮች፦' : '👇 Quick Actions:';
           const tgInlineResp = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
@@ -1151,12 +1174,12 @@ async function startServer() {
       return;
     }
 
-    const telegramUserId = Number(req.query.telegramUserId || 8842109);
-    const player = botEngine.getPlayerByTelegramId(telegramUserId);
+    const telegramUserId = Number(req.query.telegramUserId || 0);
+    const player = telegramUserId > 0 ? botEngine.getPlayerByTelegramId(telegramUserId) : null;
     res.json({
       ok: true,
       miniAppUrl,
-      language: botEngine.getLanguage(telegramUserId),
+      language: telegramUserId > 0 ? botEngine.getLanguage(telegramUserId) : 'am',
       player,
       outbox: botEngine.getNotificationOutbox().slice(0, 12),
     });
@@ -1175,7 +1198,7 @@ async function startServer() {
     }
     const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId : 'adey-main';
     const existingGame = localLiveGames.get(roomId);
-    const hostUid = existingGame?.hostUid || 'tg_8842109';
+    const hostUid = existingGame?.hostUid || 'system_scheduler';
     if (actor.role !== 'admin' && actor.uid !== hostUid) {
       res.status(403).json({
         ok: false,
@@ -1794,7 +1817,7 @@ async function startServer() {
         localLiveGames.set(roomId, {
           gameId: `game_${roomId}_live`,
           roomId,
-          hostUid: 'tg_8842109',
+          hostUid: 'system_scheduler',
           roundNumber: 1,
           status: 'countdown',
           calledNumbers: [],
@@ -1931,7 +1954,7 @@ async function startServer() {
     localLiveGames.set(roomId, {
       gameId: currentGame?.gameId || `game_${roomId}_live`,
       roomId,
-      hostUid: currentGame?.hostUid || 'tg_8842109',
+      hostUid: currentGame?.hostUid || 'system_scheduler',
       roundNumber: cycle.roundNumber,
       status: 'completed',
       calledNumbers,
@@ -1993,7 +2016,7 @@ async function startServer() {
         gameAuthority.resetRoomCalls(roomId, []);
         const openingDraw = gameAuthority.drawNextBallAuthoritative({
           roomId,
-          callerTelegramId: 8842109,
+          callerTelegramId: 0,
         });
         const called = openingDraw.calledNumbers || (openingDraw.ball ? [openingDraw.ball] : []);
         const latest = openingDraw.ball || 0;
@@ -2016,7 +2039,7 @@ async function startServer() {
         localLiveGames.set(roomId, {
           gameId: `game_${roomId}_live`,
           roomId,
-          hostUid: currentGame?.hostUid || 'tg_8842109',
+          hostUid: currentGame?.hostUid || 'system_scheduler',
           roundNumber: cycle.roundNumber,
           status: 'live',
           calledNumbers: called,
@@ -2040,7 +2063,7 @@ async function startServer() {
         }
         const drawRes = gameAuthority.drawNextBallAuthoritative({
           roomId,
-          callerTelegramId: 8842109,
+          callerTelegramId: 0,
         });
         cycle.lastDrawAtMs = now;
         if (drawRes.ok && drawRes.ball) {
@@ -2050,7 +2073,7 @@ async function startServer() {
           localLiveGames.set(roomId, {
             gameId: currentGame?.gameId || `game_${roomId}_live`,
             roomId,
-            hostUid: currentGame?.hostUid || 'tg_8842109',
+            hostUid: currentGame?.hostUid || 'system_scheduler',
             roundNumber: cycle.roundNumber,
             status: 'live',
             calledNumbers: called,
@@ -2099,7 +2122,7 @@ async function startServer() {
         localLiveGames.set(roomId, {
           gameId: `game_${roomId}_live`,
           roomId,
-          hostUid: currentGame?.hostUid || 'tg_8842109',
+          hostUid: currentGame?.hostUid || 'system_scheduler',
           roundNumber: cycle.roundNumber,
           status: 'countdown',
           calledNumbers: [],
@@ -2231,7 +2254,7 @@ async function startServer() {
       status: cycle.status,
       lifecycleStage,
       currentGameId: liveGame?.gameId || `game_${r.id}_live`,
-      hostUid: liveGame?.hostUid || 'tg_8842109',
+      hostUid: liveGame?.hostUid || 'system_scheduler',
     };
   };
 
@@ -3067,7 +3090,7 @@ async function startServer() {
     }
     const roomId = typeof req.body?.roomId === 'string' ? req.body.roomId.trim() : 'adey-main';
     const existingGame = localLiveGames.get(roomId);
-    const hostUid = existingGame?.hostUid || 'tg_8842109';
+    const hostUid = existingGame?.hostUid || 'system_scheduler';
     if (actor.role !== 'admin' && actor.uid !== hostUid) {
       res.status(403).json({
         ok: false,
@@ -3810,7 +3833,11 @@ async function startServer() {
 
   app.post('/api/admin/notifications/send', requireAdmin, (req, res) => {
     const event = (req.body?.event || 'support_response') as NotificationEventType;
-    const telegramUserId = Number(req.body?.telegramUserId || 8842109);
+    const telegramUserId = Number(req.body?.telegramUserId || 0);
+    if (!Number.isInteger(telegramUserId) || telegramUserId <= 0) {
+      res.status(400).json({ ok: false, error: 'invalid_telegram_user_id' });
+      return;
+    }
     const payload =
       typeof req.body?.payload === 'object' && req.body.payload ? req.body.payload : {};
     const notification = botEngine.queueNotification(event, telegramUserId, payload, false);

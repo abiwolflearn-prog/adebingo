@@ -2538,10 +2538,16 @@ export function AdminDashboardScreen({
                     </div>
                     <div
                       data-testid="admin-audit-integrity-badge"
-                      className="px-3 py-1.5 rounded-xl bg-[#E6F6EB] border border-[#159447]/40 text-[#08743A] text-xs font-extrabold flex items-center gap-1.5"
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-extrabold flex items-center gap-1.5 ${
+                        settingsData.auditChainIntegrity.valid
+                          ? 'bg-[#E6F6EB] border-[#159447]/40 text-[#08743A]'
+                          : 'bg-[#FDECEC] border-[#D94B4B]/40 text-[#B42318]'
+                      }`}
                     >
                       <FileCheck2 size={15} />
-                      SHA-256 Chain Valid ({settingsData.auditChainIntegrity.totalEntries} entries)
+                      {settingsData.auditChainIntegrity.valid
+                        ? `SHA-256 Chain Valid (${settingsData.auditChainIntegrity.totalEntries} entries)`
+                        : `SHA-256 Chain Invalid / Tampered (${settingsData.auditChainIntegrity.totalEntries} entries)`}
                     </div>
                   </div>
 
@@ -2551,7 +2557,9 @@ export function AdminDashboardScreen({
                         Authorized Admin Telegram IDs
                       </span>
                       <b className="font-mono text-[#183326]">
-                        {settingsData.authorizedAdminTelegramIds.join(', ')}
+                        {settingsData.authorizedAdminTelegramIds.length > 0
+                          ? settingsData.authorizedAdminTelegramIds.join(', ')
+                          : 'Configured via ADEY_ADMIN_TELEGRAM_IDS'}
                       </b>
                     </div>
                     <div className="p-3 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8]">

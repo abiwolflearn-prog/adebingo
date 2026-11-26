@@ -53,6 +53,8 @@ export function createStatusHandler(deps: StatusHandlerDeps = {}) {
       telegramWebhookSecretConfigured: isConfiguredWebhookSecret(
         process.env.TELEGRAM_WEBHOOK_SECRET
       ),
+      cronSecretConfigured: Boolean((process.env.CRON_SECRET || '').trim().length >= 16),
+      schedulerMode: 'external_cron_3_to_5s',
       miniAppUrl,
       webhookEndpointUrl: `${publicBase}/api/telegram/webhook`,
       mode: 'demo_sandbox',

@@ -93,7 +93,7 @@ export class PersistentReplayGuard {
   }
 
   public async consumeOnce(
-    scope: 'init_data' | 'tg_update' | 'tg_cb' | 'game_draw' | 'card_tx' | 'custom',
+    scope: 'init_data' | 'tg_update' | 'tg_cb' | 'game_draw' | 'card_tx' | 'bot_action_dedup' | 'custom',
     rawKey: string,
     options: {
       nowUnixSeconds?: number;

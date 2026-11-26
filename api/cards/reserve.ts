@@ -1,6 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
-import { type AuthBackendDeps, authenticateRequest } from '../_lib/auth.ts';
+import {
+  type AuthBackendDeps,
+  authenticateRequest,
+  requirePhoneVerifiedPlayer,
+} from '../_lib/auth.ts';
 import { getAdminDb } from '../_lib/firebaseAdmin.ts';
 import { createFirestoreGameStore, PersistentGameAuthorityService } from '../_lib/gamePersistence.ts';
 import {
@@ -110,6 +114,10 @@ export function createReserveCardHandler(deps: ReserveCardHandlerDeps = {}) {
         'firebase_admin_unavailable',
         'Server persistence service is unavailable.'
       );
+      return;
+    }
+
+    if (!(await requirePhoneVerifiedPlayer(db, caller, res))) {
       return;
     }
 

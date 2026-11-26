@@ -36,15 +36,26 @@ export interface AdminHandlerDeps {
   getDb?: () => Firestore;
   authDeps?: AuthBackendDeps;
   getBotToken?: () => string | undefined;
+  fetchImpl?: typeof fetch;
   nowUnixSeconds?: () => number;
   limiter?: BoundedRateLimiter;
+}
+
+function createPersistentAdminService(
+  db: Firestore,
+  deps: AdminHandlerDeps
+): PersistentAdminService {
+  return new PersistentAdminService(db, {
+    fetchImpl: deps.fetchImpl,
+    getBotToken: deps.getBotToken,
+  });
 }
 
 function callerToVerifiedActor(caller: AuthenticatedCaller): VerifiedSessionActor {
   const nowSec = Math.floor(Date.now() / 1000);
   return {
     uid: caller.uid,
-    telegramUserId: caller.telegramId || 8842109,
+    telegramUserId: caller.telegramId || 0,
     displayName: caller.displayName || 'Verified Admin',
     username: caller.uid.replace(/^tg_/, ''),
     email: caller.email,
@@ -329,7 +340,7 @@ export function createAdminSessionExchangeHandler(deps: AdminHandlerDeps = {}) {
     const minted = mintServerSessionToken(
       {
         uid: caller.uid,
-        telegramUserId: caller.telegramId || (caller.isAdmin ? 8842109 : 0),
+        telegramUserId: caller.telegramId || 0,
         displayName: caller.displayName || 'Verified User',
         username: caller.uid.replace(/^tg_/, ''),
         email: caller.email,
@@ -368,7 +379,7 @@ export function createAdminOverviewHandler(deps: AdminHandlerDeps = {}) {
     const db = resolveDbOrSend503(res, deps);
     if (!db) return;
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const overview = await service.getOverviewMetrics();
     sendJson(res, 200, { ok: true, overview });
   };
@@ -386,7 +397,7 @@ export function createAdminUsersHandler(deps: AdminHandlerDeps = {}) {
     if (!db) return;
 
     const q = typeof req.query?.q === 'string' ? req.query.q : '';
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const users = await service.searchUsers(q);
     sendJson(res, 200, { ok: true, users });
   };
@@ -415,7 +426,7 @@ export function createAdminUserStatusHandler(deps: AdminHandlerDeps = {}) {
       return;
     }
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
 
     if (body.role !== undefined || body.isAdmin !== undefined) {
       const blocked = await service.blockRoleEscalationAttempt({
@@ -496,7 +507,7 @@ export function createAdminUserWalletHandler(deps: AdminHandlerDeps = {}) {
         : Number(body.amountEtb);
     const reason = typeof body.reason === 'string' ? body.reason : '';
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const result = await service.adjustUserWallet({
       uid: targetUid,
       operation,
@@ -619,7 +630,7 @@ export function createAdminPayoutsHandler(deps: AdminHandlerDeps = {}) {
     if (!db) return;
 
     const status = typeof req.query?.status === 'string' ? req.query.status : 'ALL';
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const payouts = await service.getPayoutOrders(status);
     sendJson(res, 200, { ok: true, payouts });
   };
@@ -648,7 +659,7 @@ export function createAdminPayoutReviewHandler(deps: AdminHandlerDeps = {}) {
       return;
     }
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const result = await service.reviewPayoutOrder({
       requestId,
       nextStatus: body.nextStatus as PayoutOrderStatus,
@@ -687,7 +698,7 @@ export function createAdminDepositsHandler(deps: AdminHandlerDeps = {}) {
     const db = resolveDbOrSend503(res, deps);
     if (!db) return;
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const deposits = await service.getDepositRequests();
     sendJson(res, 200, { ok: true, deposits });
   };
@@ -716,7 +727,7 @@ export function createAdminDepositReviewHandler(deps: AdminHandlerDeps = {}) {
       return;
     }
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const result = await service.reviewDepositRequest({
       depositId,
       nextStatus: body.nextStatus as DepositRequestStatus,
@@ -755,7 +766,7 @@ export function createAdminRoomsHandler(deps: AdminHandlerDeps = {}) {
     const db = resolveDbOrSend503(res, deps);
     if (!db) return;
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const rooms = await service.getRooms();
     sendJson(res, 200, { ok: true, rooms });
   };
@@ -784,7 +795,7 @@ export function createAdminRoomUpdateHandler(deps: AdminHandlerDeps = {}) {
       return;
     }
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const result = await service.updateRoomConfig({
       roomId,
       cardPriceEtb:
@@ -824,7 +835,7 @@ export function createAdminReferralsHandler(deps: AdminHandlerDeps = {}) {
     const db = resolveDbOrSend503(res, deps);
     if (!db) return;
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const referrals = await service.getReferrals();
     sendJson(res, 200, { ok: true, referrals });
   };
@@ -841,7 +852,7 @@ export function createAdminBotConfigHandler(deps: AdminHandlerDeps = {}) {
     const db = resolveDbOrSend503(res, deps);
     if (!db) return;
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
 
     if ((req.method || 'GET').toUpperCase() === 'GET') {
       const config = await service.getBotManagementState();
@@ -887,7 +898,7 @@ export function createAdminBotAnnounceHandler(deps: AdminHandlerDeps = {}) {
     const body = await parseJsonBody(req, res, { maxBytes: 16 * 1024, required: true });
     if (!body) return;
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const result = await service.sendBotAnnouncement({
       titleAm: typeof body.titleAm === 'string' ? body.titleAm : '',
       titleEn: typeof body.titleEn === 'string' ? body.titleEn : '',
@@ -926,7 +937,7 @@ export function createAdminNotificationsHandler(deps: AdminHandlerDeps = {}) {
     if (!db) return;
 
     const limit = Number(req.query?.limit ?? 25);
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const notifications = await service.listNotifications(
       Number.isFinite(limit) ? limit : 25
     );
@@ -948,7 +959,7 @@ export function createAdminNotificationsSendHandler(deps: AdminHandlerDeps = {})
     const body = await parseJsonBody(req, res, { maxBytes: 16 * 1024, required: true });
     if (!body) return;
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const payloadObj =
       body.payload && typeof body.payload === 'object'
         ? (body.payload as { title?: string; customMessage?: string; responseMessage?: string })
@@ -1004,7 +1015,7 @@ export function createAdminSettingsHandler(deps: AdminHandlerDeps = {}) {
     const db = resolveDbOrSend503(res, deps);
     if (!db) return;
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const settings = await service.getAdminSettings();
     sendJson(res, 200, { ok: true, settings });
   };
@@ -1021,7 +1032,7 @@ export function createAdminAuditInitialCreditsHandler(deps: AdminHandlerDeps = {
     const db = resolveDbOrSend503(res, deps);
     if (!db) return;
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const accounts = await service.auditLegacyInitialCredits();
     const reconciledCount = accounts.filter((a) => a.alreadyReconciled).length;
     sendJson(res, 200, {
@@ -1055,7 +1066,7 @@ export function createAdminReconcileInitialCreditHandler(deps: AdminHandlerDeps 
       return;
     }
 
-    const service = new PersistentAdminService(db);
+    const service = createPersistentAdminService(db, deps);
     const result = await service.reconcileLegacyInitialCredit({
       uid: targetUid,
       adminActor: actor,
@@ -1114,6 +1125,9 @@ export function createAdminAuditRoomsHandler(deps: AdminHandlerDeps = {}) {
 /**
  * POST /api/admin/audit/rooms/reconcile
  * Safe, non-destructive reconciliation of room counts, deadlines, and financials from subcollections.
+ * Defaults to `dryRun: true` (preview only, zero Firestore writes).
+ * Applying changes requires explicit owner approval (`dryRun: false` AND `confirmApply: true`)
+ * and automatically writes a pre-change backup snapshot to `roomReconciliationBackups/{backupId}`.
  */
 export function createAdminReconcileRoomsHandler(deps: AdminHandlerDeps = {}) {
   return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
@@ -1126,13 +1140,33 @@ export function createAdminReconcileRoomsHandler(deps: AdminHandlerDeps = {}) {
     const body = await parseJsonBody(req, res, { maxBytes: 8 * 1024, required: false });
     if (!body) return;
     const targetRoomId = typeof body.roomId === 'string' ? body.roomId.trim() : '';
+    const dryRun = body.dryRun !== false;
+    const confirmApply = body.confirmApply === true;
+
+    if (!dryRun && !confirmApply) {
+      sendError(
+        res,
+        400,
+        'approval_required',
+        'Applying room reconciliation requires explicit owner approval (`dryRun: false` and `confirmApply: true`). Run with `dryRun: true` first to preview changes.'
+      );
+      return;
+    }
+
     const gameStore = createFirestoreGameStore(db);
     const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300);
     const gameService = new PersistentGameAuthorityService(gameStore, replayGuard);
 
+    const reconcileOptions = {
+      dryRun,
+      confirmApply,
+      requestedByUid: actor.uid,
+      requestedByName: actor.displayName,
+    };
+
     const results = targetRoomId
-      ? [await gameService.reconcileRoomState(targetRoomId)]
-      : await gameService.reconcileAllRooms();
+      ? [await gameService.reconcileRoomState(targetRoomId, Date.now(), reconcileOptions)]
+      : await gameService.reconcileAllRooms(Date.now(), reconcileOptions);
     const failed = results.filter((r) => !r.ok);
     if (failed.length > 0 && results.length === 1) {
       sendError(
@@ -1146,7 +1180,10 @@ export function createAdminReconcileRoomsHandler(deps: AdminHandlerDeps = {}) {
 
     sendJson(res, 200, {
       ok: true,
+      dryRun,
+      approvalRequired: dryRun,
       reconciledCount: results.filter((r) => r.reconciled).length,
+      backupIds: results.map((r) => r.backupId).filter(Boolean),
       results,
     });
   };

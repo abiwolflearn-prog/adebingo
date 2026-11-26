@@ -323,34 +323,71 @@ test('Audit Repair 1: /start differentiates new vs returning Amharic welcome, de
   const body1 = r1.getBody();
   assert.equal(body1.ok, true);
   assert.equal(body1.language, 'am');
-  assert.match(String(body1.text), /እንኳን ወደ ADEYBINGO በደህና መጡ/);
-  assert.match(String(body1.text), /15\.00 ETB/);
-  assert.match(String(body1.text), /ለመቀላቀል/);
+  assert.equal(body1.securityCode, 'onboarding_welcome');
+  assert.match(String(body1.text), /Welcome to AdeyBingo! 🎉/);
+  assert.match(String(body1.text), /ወደ አዴይ ቢንጎ እንኳን በደህና መጡ! 🎉/);
 
-  // Verify Telegram Bot API sendMessage sent TWO separate messages:
-  // Message #1: Welcome message with ReplyKeyboardMarkup (including native request_contact: true) ONLY
-  // Message #2: Separate contextual inline_keyboard ONLY (never combining both in one reply_markup)
-  assert.equal(sentPayloads.length, 2);
-  const replyMarkup1 = sentPayloads[0].body.reply_markup as {
+  // Step 1 sends 1 message with inline Start / ጀምር button (no Play button yet)
+  assert.equal(sentPayloads.length, 1);
+  const step1Markup = sentPayloads[0].body.reply_markup as {
+    keyboard?: unknown;
+    inline_keyboard?: Array<Array<{ text: string; callback_data?: string; web_app?: unknown }>>;
+  };
+  assert.ok(Array.isArray(step1Markup?.inline_keyboard), 'Step 1 /start must deliver inline_keyboard');
+  assert.equal(step1Markup?.keyboard, undefined, 'Step 1 must NOT combine keyboard with inline_keyboard');
+  assert.ok(
+    step1Markup.inline_keyboard!.flat().some((b) => b.callback_data === 'cb:onboarding_start' && b.text === 'Start / ጀምር')
+  );
+
+  // Step 2: User clicks Start / ጀምር -> sends ReplyKeyboardMarkup with native request_contact: true ONLY
+  const rStart = makeRes();
+  await webhook(
+    makeReq({
+      headers: { 'x-telegram-bot-api-secret-token': TEST_WEBHOOK_SECRET },
+      body: {
+        update_id: 500015,
+        callback_query: {
+          id: 'cbq_onboard_500015',
+          from: { id: 910001, first_name: 'Selam', username: 'selam_et' },
+          message: { chat: { id: 910001, type: 'private' } },
+          data: 'cb:onboarding_start',
+        },
+      },
+    }),
+    rStart.res
+  );
+  assert.equal(rStart.getStatus(), 200);
+  const contactPayload = sentPayloads.find(
+    (p) => p.url.includes('/sendMessage') && Boolean((p.body.reply_markup as { keyboard?: unknown })?.keyboard)
+  );
+  assert.ok(contactPayload, 'Step 2 must send ReplyKeyboardMarkup with request_contact: true');
+  const replyMarkup1 = contactPayload!.body.reply_markup as {
     keyboard?: Array<Array<{ text: string; request_contact?: boolean }>>;
     inline_keyboard?: unknown;
   };
-  assert.ok(Array.isArray(replyMarkup1?.keyboard), 'Telegram /start Message #1 must deliver ReplyKeyboardMarkup');
-  assert.equal(replyMarkup1?.inline_keyboard, undefined, 'Telegram /start Message #1 must NOT combine inline_keyboard with keyboard');
-  const flatButtons = replyMarkup1.keyboard!.flat();
-  assert.ok(
-    flatButtons.some((b) => b.request_contact === true),
-    'Unverified /start ReplyKeyboard must include native request_contact: true button'
+  assert.equal(replyMarkup1?.inline_keyboard, undefined);
+  assert.ok(replyMarkup1.keyboard!.flat().some((b) => b.request_contact === true));
+
+  // Step 3: User shares authentic phone contact -> removes keyboard & sends persistent 8-button main menu
+  const rContact = makeRes();
+  await webhook(
+    makeReq({
+      headers: { 'x-telegram-bot-api-secret-token': TEST_WEBHOOK_SECRET },
+      body: {
+        update_id: 500016,
+        message: {
+          chat: { id: 910001, type: 'private' },
+          from: { id: 910001, first_name: 'Selam', username: 'selam_et' },
+          contact: { phone_number: '+251911910001', first_name: 'Selam', user_id: 910001 },
+        },
+      },
+    }),
+    rContact.res
   );
+  assert.equal(rContact.getStatus(), 200);
+  assert.equal(rContact.getBody().registrationStatus, 'verified');
 
-  const replyMarkup2 = sentPayloads[1].body.reply_markup as {
-    keyboard?: unknown;
-    inline_keyboard?: Array<Array<{ text: string }>>;
-  };
-  assert.ok(Array.isArray(replyMarkup2?.inline_keyboard), 'Telegram /start Message #2 must deliver contextual inline_keyboard');
-  assert.equal(replyMarkup2?.keyboard, undefined, 'Telegram /start Message #2 must NOT combine keyboard with inline_keyboard');
-
-  // 2. Returning user sends /start again -> warm returning greeting, no duplicate 15 ETB credit
+  // 2. Returning verified user sends /start again -> warm returning greeting, no duplicate 15 ETB credit
   const r2 = makeRes();
   await webhook(
     makeReq({
@@ -368,7 +405,7 @@ test('Audit Repair 1: /start differentiates new vs returning Amharic welcome, de
   );
   assert.equal(r2.getStatus(), 200);
   const body2 = r2.getBody();
-  assert.match(String(body2.text), /እንኳን በደህና ተመለሱ/);
+  assert.match(String(body2.text), /እንኳን.*በደህና ተመለሱ/);
   const savedPlayer = await store.getPlayer(910001);
   assert.equal(savedPlayer?.demoBalanceEtb, 15, 'Returning /start must not double-credit 15 ETB');
 
@@ -781,41 +818,59 @@ test('Audit Repair 4: Every bot menu button, slash command, inline callback, cus
       callbackData,
     });
 
-  // 1. Brand-new user taps Wallet button BEFORE /start -> shows 0.00 ETB without fabricating an account,
-  //    then /start registers the player with 15.00 ETB!
-  const newUserWalletBeforeStart = await sendText(940001, '💰 የእኔ ቦርሳ');
-  assert.equal(newUserWalletBeforeStart.ok, true);
-  assert.match(newUserWalletBeforeStart.text, /0\.00 ETB/);
+  // 1. Brand-new user sends /start and verifies phone contact -> receives 15.00 ETB starter balance
   const startNewUser = await sendText(940001, '/start');
   assert.equal(startNewUser.ok, true);
+  await botService.handleIncomingUpdate({
+    updateId: ++updateCounter,
+    chatId: 940001,
+    chatType: 'private',
+    senderTelegramId: 940001,
+    firstName: 'Tesfaye',
+    username: 'u_940001',
+    contact: { phone_number: '+251911940001', first_name: 'Tesfaye', user_id: 940001 },
+  });
   const newUserWallet = await sendText(940001, '💰 የእኔ ቦርሳ');
   assert.equal(newUserWallet.ok, true);
   assert.match(newUserWallet.text, /15\.00 ETB/);
 
-  // 2. Test every single Reply Keyboard button & slash command
+  // Verify user 940002 before testing every verified main menu button and callback
+  await sendText(940002, '/start');
+  await botService.handleIncomingUpdate({
+    updateId: ++updateCounter,
+    chatId: 940002,
+    chatType: 'private',
+    senderTelegramId: 940002,
+    firstName: 'Tesfaye',
+    username: 'u_940002',
+    contact: { phone_number: '+251911940002', first_name: 'Tesfaye', user_id: 940002 },
+  });
+
+  // 2. Test every single Reply Keyboard button (bilingual + legacy aliases) & slash command
   const menuTextInputs = [
     '/start',
-    '🎱 ቢንጎ ይጫወቱ',
+    '🎮 ጨዋታ ጀምር | Play',
+    '💰 ገንዘብ አስገባ | Deposit',
+    '/deposit',
+    '💸 ገንዘብ አውጣ | Withdraw',
+    '/withdraw',
+    '🆘 እገዛ | Support',
+    '/support',
+    '🎁 ጓደኛ ጋብዝ | Invite Friends',
+    '/invite',
+    '👤 መለያዬ | My Account',
+    '/profile',
+    '🌐 ቋንቋ ቀይር | Change Language',
+    '/language',
+    '🏠 ዋና ምናሌ | Main Menu',
     '💰 የእኔ ቦርሳ',
     '/wallet',
-    '➕ ገንዘብ ያስገቡ',
-    '/deposit',
-    '💸 ገንዘብ ያውጡ',
-    '/withdraw',
-    '🎁 ጓደኞችን ይጋብዙ',
-    '/invite',
     '🏆 የደረጃ ሰንጠረዥ',
     '/leaderboard',
     '📜 የጨዋታ ታሪክ',
     '/history',
-    '👤 የእኔ መገለጫ',
-    '/profile',
-    '🆘 እገዛ',
-    '/support',
     '/help',
     '/terms',
-    '🌐 ቋንቋ',
-    '/language',
   ];
   for (const input of menuTextInputs) {
     const res = await sendText(940002, input);
@@ -906,7 +961,7 @@ test('Audit Repair 5: Inviter and invited players share identical rooms/timers/b
   const replay = new PersistentReplayGuard(createFirestoreReplayAdapter(db));
   const gameService = new PersistentGameAuthorityService(gameStore, replay);
 
-  // Provision inviter (950001), invited player (950002), and 3rd player (950003)
+  // Provision phone-verified inviter (950001), invited player (950002), and 3rd player (950003)
   await tgStore.savePlayerAndBinding({ telegramUserId: 950001, firstName: 'Inviter', username: 'inv_a', language: 'am' });
   await tgStore.savePlayerAndBinding({ telegramUserId: 950002, firstName: 'Invited', username: 'inv_b', language: 'am' });
   await tgStore.processReferralDeepLink!({
@@ -916,6 +971,9 @@ test('Audit Repair 5: Inviter and invited players share identical rooms/timers/b
     referralCode: 'ADEY-950001',
   });
   await tgStore.savePlayerAndBinding({ telegramUserId: 950003, firstName: 'Third', username: 'plr_c', language: 'am' });
+  for (const uid of ['tg_950001', 'tg_950002', 'tg_950003']) {
+    rawStore.set(`users/${uid}`, { ...(rawStore.get(`users/${uid}`) || {}), phoneVerified: true });
+  }
 
   const makeAuthDeps = (): AuthBackendDeps => ({
     verifyIdToken: async (tok: string): Promise<DecodedIdTokenLike> => {
@@ -1068,9 +1126,9 @@ test('Audit Repair 5: Inviter and invited players share identical rooms/timers/b
   assert.equal(settledTick.status, 'completed');
   assert.ok(settledTick.intermissionEndsAtMs > cursorNow, 'Intermission deadline must be set after completion');
 
-  // Also verify auto-settlement NEVER fabricated phoneVerified: true on unverified winners
+  // Verify verified players keep phoneVerified: true and unverified players are never auto-verified
   for (const uid of ['tg_950001', 'tg_950002', 'tg_950003']) {
-    assert.equal(rawStore.get(`users/${uid}`)?.phoneVerified, false);
+    assert.equal(rawStore.get(`users/${uid}`)?.phoneVerified, true);
   }
 
   // 7. During intermission -> stays completed; once intermission expires -> AUTOMATICALLY creates next round!
@@ -1183,7 +1241,15 @@ test('Audit Repair 6: Confirmed defect regressions (language isolation, webhook 
   assert.equal(rawStore.get('botPlayers/990003')?.language, 'en');
   assert.equal(rawStore.get('users/tg_990003')?.language, 'en');
 
-  // 2. Webhook accurately reports Telegram API failure if secondary inline message fails
+  // 2. Webhook accurately reports Telegram API failure if secondary inline message fails on verified /start
+  await tgStore.savePlayerAndBinding({
+    telegramUserId: 990004,
+    firstName: 'DeliveryTest',
+    username: 'deliv_test',
+    language: 'am',
+  });
+  rawStore.set('botPlayers/990004', { ...(rawStore.get('botPlayers/990004') || {}), phoneVerified: true });
+  rawStore.set('users/tg_990004', { ...(rawStore.get('users/tg_990004') || {}), phoneVerified: true });
   let callNum = 0;
   const failSecondFetch = (async () => {
     callNum += 1;

@@ -3,7 +3,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { verifyWebhookSecretHeader } from '../../src/utils/telegramBot.ts';
 import {
   AUTHORIZED_ADMIN_EMAILS,
-  AUTHORIZED_ADMIN_TELEGRAM_IDS,
+  getAuthorizedAdminTelegramIds,
   verifyServerSessionToken,
 } from '../../src/utils/adminAuthority.ts';
 import {
@@ -95,20 +95,14 @@ export function isServerAllowlistedAdmin(params: {
     return true;
   }
 
-  const envTgIds = (process.env.ADEY_ADMIN_TELEGRAM_IDS || '')
-    .split(',')
-    .map((s) => Number(s.trim()))
-    .filter((n) => Number.isInteger(n) && n > 0);
+  const envTgIds = getAuthorizedAdminTelegramIds();
 
   if (
     typeof params.telegramId === 'number' &&
     Number.isInteger(params.telegramId) &&
     params.telegramId > 0
   ) {
-    if (
-      AUTHORIZED_ADMIN_TELEGRAM_IDS.includes(params.telegramId) ||
-      envTgIds.includes(params.telegramId)
-    ) {
+    if (envTgIds.includes(params.telegramId)) {
       return true;
     }
   }
@@ -381,6 +375,70 @@ export function requireValidWebhookSecret(
       401,
       'invalid_webhook_secret_token',
       'Missing or invalid X-Telegram-Bot-Api-Secret-Token header.'
+    );
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Enforces that non-admin players have completed Telegram contact phone verification
+ * before reserving cards, participating in live rounds, or submitting wallet deposits/withdrawals.
+ * Fails closed with HTTP 403 `phone_verification_required`.
+ */
+export async function requirePhoneVerifiedPlayer(
+  db: {
+    collection: (name: string) => {
+      doc: (id: string) => {
+        get: () => Promise<{
+          exists: boolean;
+          get?: (field: string) => unknown;
+          data?: () => Record<string, unknown> | undefined;
+        }>;
+      };
+    };
+  },
+  caller: AuthenticatedCaller,
+  res: VercelResponse
+): Promise<boolean> {
+  if (caller.isAdmin) {
+    return true;
+  }
+
+  const tgMatch = /^tg_([1-9]\d*)$/.exec(caller.uid);
+  const resolvedTgId = caller.telegramId || (tgMatch ? Number(tgMatch[1]) : 0);
+
+  let verified = false;
+  try {
+    const userSnap = await db.collection('users').doc(caller.uid).get();
+    if (userSnap.exists) {
+      const val =
+        typeof userSnap.get === 'function'
+          ? userSnap.get('phoneVerified')
+          : userSnap.data?.()?.phoneVerified;
+      if (val === true) verified = true;
+    }
+    if (!verified && resolvedTgId > 0) {
+      const botSnap = await db.collection('botPlayers').doc(String(resolvedTgId)).get();
+      if (botSnap.exists) {
+        const val =
+          typeof botSnap.get === 'function'
+            ? botSnap.get('phoneVerified')
+            : botSnap.data?.()?.phoneVerified;
+        if (val === true) verified = true;
+      }
+    }
+  } catch {
+    verified = false;
+  }
+
+  if (!verified) {
+    sendError(
+      res,
+      403,
+      'phone_verification_required',
+      'Phone verification is required before playing. Please verify your phone number via @AdeyBingoGameBot first. / ከመጫወትዎ በፊት በ @AdeyBingoGameBot ስልክ ቁጥርዎን ያረጋግጡ።'
     );
     return false;
   }

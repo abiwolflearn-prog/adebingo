@@ -2084,6 +2084,71 @@ export default function App() {
     );
   }
 
+  const isAuthenticatedPlayer =
+    fbUser !== null || (serverVerifiedTelegramId !== null && serverVerifiedTelegramId > 0);
+  const mustVerifyPhoneBeforePlaying =
+    isAuthenticatedPlayer && !isVerifiedAdmin && !phoneVerified;
+
+  if (mustVerifyPhoneBeforePlaying) {
+    return (
+      <div className="app min-h-screen flex flex-col items-center justify-center p-4 bg-[#FFFDF7]">
+        <div
+          data-testid="phone-verification-gate"
+          className="w-full max-w-md rounded-2xl bg-white border border-[#E7EDE8] p-5 shadow-[0_8px_28px_rgba(24,51,38,0.08)] space-y-4 text-center"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-extrabold uppercase tracking-wider text-[#159447]">
+              🌼 ADEYBINGO
+            </span>
+            <button
+              type="button"
+              onClick={() => handleChangeLanguage((l) => (l === 'am' ? 'en' : 'am'))}
+              className="px-2.5 py-1 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-xs font-extrabold text-[#183326]"
+            >
+              {lang === 'am' ? '🌐 English' : '🌐 አማርኛ'}
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            <h1 className="font-['Outfit'] text-xl font-extrabold text-[#183326]">
+              {lang === 'am'
+                ? '📱 የስልክ ቁጥር ማረጋገጫ ያስፈልጋል'
+                : '📱 Phone Verification Required'}
+            </h1>
+            <p className="text-xs text-[#4B5E52] leading-relaxed">
+              {lang === 'am'
+                ? 'ከመጫወትዎ በፊት መለያዎን ለማረጋገጥ የቴሌግራም ስልክ ቁጥርዎን በ @AdeyBingoGameBot በኩል ያጋሩ።'
+                : 'Please share your Telegram phone number via @AdeyBingoGameBot to verify your account before playing.'}
+            </p>
+            <p className="text-[11px] text-[#68776D] leading-relaxed">
+              {lang === 'am'
+                ? 'Please share your Telegram phone number via @AdeyBingoGameBot to verify your account before playing.'
+                : 'ከመጫወትዎ በፊት መለያዎን ለማረጋገጥ የቴሌግራም ስልክ ቁጥርዎን በ @AdeyBingoGameBot በኩል ያጋሩ።'}
+            </p>
+          </div>
+
+          <div className="space-y-2 pt-1">
+            <a
+              href="https://t.me/AdeyBingoGameBot?start=verify"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-sm font-extrabold shadow-sm"
+            >
+              📱 {lang === 'am' ? 'በ @AdeyBingoGameBot ያረጋግጡ' : 'Verify on @AdeyBingoGameBot'}
+            </a>
+            <button
+              type="button"
+              onClick={() => void hydratePlayerState()}
+              className="w-full px-4 py-2.5 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] text-[#183326] text-xs font-extrabold hover:border-[#159447]/40"
+            >
+              🔄 {lang === 'am' ? 'ማረጋገጫዬን ፈትሽ' : 'Check Verification Status'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const countdownLabel =
     countdown > 0 ? `00:${String(countdown).padStart(2, '0')}` : '00:00';
   const timerPercent =
@@ -2536,6 +2601,7 @@ export default function App() {
             telegramBackendStatus={telegramBackendStatus}
             onValidateTelegramInitData={handleValidateTelegramInitData}
             referralCode={referralCode}
+            referredByCode={referredByCode}
             referrals={referrals}
             leaderboard={leaderboard}
             onApplyPromoCode={handleApplyPromoCode}

@@ -253,7 +253,23 @@ export interface AdminReferralRecord {
   inviteeBonusEtb: number;
 }
 
-export const AUTHORIZED_ADMIN_TELEGRAM_IDS: readonly number[] = Object.freeze([8842109]);
+/**
+ * Resolves server-configured admin Telegram IDs strictly from `ADEY_ADMIN_TELEGRAM_IDS`.
+ * Never falls back to a hardcoded Telegram ID in production runtime code.
+ */
+export function getAuthorizedAdminTelegramIds(
+  env: Record<string, string | undefined> | undefined = typeof process !== 'undefined'
+    ? process.env
+    : undefined
+): number[] {
+  const raw = env?.ADEY_ADMIN_TELEGRAM_IDS || '';
+  return raw
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
+export const AUTHORIZED_ADMIN_TELEGRAM_IDS: readonly number[] = Object.freeze([]);
 export const AUTHORIZED_ADMIN_EMAILS: readonly string[] = Object.freeze([
   'abelbimrew868@gmail.com',
   'abiwolfcode@gmail.com',
@@ -280,7 +296,7 @@ export function mintServerSessionToken(
   const ttlSec = Math.max(60, Math.min(86400, params.expiresInSeconds ?? 3600));
   const isAdmin =
     Boolean(params.isAdminOverride) ||
-    AUTHORIZED_ADMIN_TELEGRAM_IDS.includes(params.telegramUserId) ||
+    getAuthorizedAdminTelegramIds().includes(params.telegramUserId) ||
     (params.email ? AUTHORIZED_ADMIN_EMAILS.includes(params.email.toLowerCase()) : false);
 
   const actor: VerifiedSessionActor = {
@@ -360,7 +376,7 @@ export function verifyServerSessionToken(
 
     // Re-evaluate admin authorization from the server allowlist (never trust serialized role alone)
     const isServerAuthorizedAdmin =
-      AUTHORIZED_ADMIN_TELEGRAM_IDS.includes(parsed.telegramUserId) ||
+      getAuthorizedAdminTelegramIds().includes(parsed.telegramUserId) ||
       (parsed.email ? AUTHORIZED_ADMIN_EMAILS.includes(parsed.email.toLowerCase()) : false);
 
     return {
@@ -435,7 +451,7 @@ export function authorizeAdminRequest(params: {
       };
     }
     const tgUser = initCheck.telegramUser;
-    const isAdmin = AUTHORIZED_ADMIN_TELEGRAM_IDS.includes(tgUser.id);
+    const isAdmin = getAuthorizedAdminTelegramIds().includes(tgUser.id);
     const actor: VerifiedSessionActor = {
       uid: `tg_${tgUser.id}`,
       telegramUserId: tgUser.id,
@@ -958,7 +974,7 @@ export class ServerAdminAuthority {
           telegramUserId: bp.telegramUserId,
           displayName: `${bp.firstName} ${bp.lastName || ''}`.trim(),
           username: bp.username,
-          role: AUTHORIZED_ADMIN_TELEGRAM_IDS.includes(bp.telegramUserId) ? 'admin' : 'player',
+          role: getAuthorizedAdminTelegramIds().includes(bp.telegramUserId) ? 'admin' : 'player',
           accountStatus: 'active',
           phoneVerified: bp.phoneVerified,
           maskedPhone: bp.verifiedPhoneMasked || 'Unverified',
@@ -1896,7 +1912,7 @@ export class ServerAdminAuthority {
 
   public getAdminSettings() {
     return {
-      authorizedAdminTelegramIds: [...AUTHORIZED_ADMIN_TELEGRAM_IDS],
+      authorizedAdminTelegramIds: getAuthorizedAdminTelegramIds(),
       authorizedAdminEmails: [...AUTHORIZED_ADMIN_EMAILS],
       securityPolicies: {
         requireServerSideRoleVerification: true,

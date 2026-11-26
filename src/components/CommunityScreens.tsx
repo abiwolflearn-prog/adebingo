@@ -15,7 +15,6 @@ import {
   Database,
   Lock,
   Trophy,
-  TicketPercent,
   Sparkles,
   ChevronDown,
   ChevronUp,
@@ -56,6 +55,7 @@ interface CommunityScreensProps {
   telegramBackendStatus: string;
   onValidateTelegramInitData: () => Promise<void>;
   referralCode?: string;
+  referredByCode?: string;
   referrals: ReferralRecord[];
   leaderboard: LeaderboardEntry[];
   onApplyPromoCode?: (code: string) => Promise<{ ok: boolean; message: string }>;
@@ -105,9 +105,9 @@ export function CommunityScreens({
   telegramBackendStatus,
   onValidateTelegramInitData,
   referralCode,
+  referredByCode,
   referrals,
   leaderboard,
-  onApplyPromoCode,
   gameHistory,
   tickets,
   onSubmitSupportTicket,
@@ -118,9 +118,6 @@ export function CommunityScreens({
   const copy = t(lang);
   const [copied, setCopied] = useState(false);
   const [copiedTelegramId, setCopiedTelegramId] = useState(false);
-  const [promoCodeInput, setPromoCodeInput] = useState('');
-  const [promoFeedback, setPromoFeedback] = useState<{ ok: boolean; text: string } | null>(null);
-  const [promoBusy, setPromoBusy] = useState(false);
 
   const [phoneInput, setPhoneInput] = useState(phoneNumber || '');
   const [phoneError, setPhoneError] = useState('');
@@ -182,22 +179,6 @@ export function CommunityScreens({
     void copyTextSafely(String(serverVerifiedTelegramId));
     setCopiedTelegramId(true);
     setTimeout(() => setCopiedTelegramId(false), 2000);
-  };
-
-  const handleApplyReferralSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!onApplyPromoCode) return;
-    const trimmed = promoCodeInput.trim();
-    if (!trimmed) return;
-    setPromoBusy(true);
-    setPromoFeedback(null);
-    try {
-      const res = await onApplyPromoCode(trimmed);
-      setPromoFeedback({ ok: res.ok, text: res.message });
-      if (res.ok) setPromoCodeInput('');
-    } finally {
-      setPromoBusy(false);
-    }
   };
 
   const handleNativeTelegramContact = async () => {
@@ -491,43 +472,30 @@ export function CommunityScreens({
               </div>
             </div>
 
-            {onApplyPromoCode && (
-              <form
-                onSubmit={handleApplyReferralSubmit}
-                className="bg-white/95 text-[#183326] rounded-xl p-2 sm:p-2.5 space-y-1.5 shadow-2xs"
-              >
-                <small className="text-[10.5px] font-extrabold text-[#08743A] flex items-center gap-1">
-                  <TicketPercent size={12} className="text-[#D99B20]" />
-                  {copy.promoSectionTitle}
-                </small>
-                <div className="flex gap-1.5">
-                  <input
-                    type="text"
-                    value={promoCodeInput}
-                    onChange={(e) => setPromoCodeInput(e.target.value)}
-                    placeholder={copy.promoPlaceholder}
-                    aria-label={copy.promoSectionTitle}
-                    className="flex-1 min-w-0 px-2 py-1 rounded-lg bg-[#FFF9ED] border border-[#E7EDE8] text-[#183326] text-[11px] font-mono font-bold placeholder:text-[#68776D] min-h-[32px] focus:outline-none focus:border-[#159447]"
-                  />
-                  <button
-                    type="submit"
-                    disabled={promoBusy || !promoCodeInput.trim()}
-                    className="px-2.5 py-1 rounded-lg bg-[#159447] text-white text-[11px] font-extrabold shrink-0 min-h-[32px] disabled:opacity-50"
-                  >
-                    {promoBusy ? '...' : copy.applyPromoBtn}
-                  </button>
-                </div>
-                {promoFeedback && (
-                  <p
-                    className={`text-[10.5px] font-bold ${
-                      promoFeedback.ok ? 'text-[#168A49]' : 'text-[#D94B4B]'
-                    }`}
-                  >
-                    {promoFeedback.text}
-                  </p>
-                )}
-              </form>
-            )}
+            <div className="bg-white/95 text-[#183326] rounded-xl p-2 sm:p-2.5 space-y-1 shadow-2xs text-[10.5px]">
+              <p className="font-extrabold text-[#08743A] flex items-center gap-1">
+                <ShieldCheck size={12} className="text-[#159447]" />
+                {lang === 'am' ? 'የግብዣ ሽልማት ህግ' : 'How Referral Rewards Work'}
+              </p>
+              <p className="text-[#4B5E52] leading-snug">
+                {lang === 'am'
+                  ? 'አዲስ ጓደኛ በግብዣ ሊንክዎ ሲመዘገብ ለእርስዎ +20 ETB ቦነስ ወዲያውኑ ይጨመራል። አዲስ ተጫዋች መደበኛ 15 ETB መነሻ ሂሳብ ያገኛል (ተጨማሪ 0 ETB)።'
+                  : 'You earn +20 ETB immediately when a brand-new player registers through your Telegram invite link. New accounts receive the standard 15 ETB starter balance (0 ETB extra invitee bonus).'}
+              </p>
+              {referredByCode ? (
+                <p className="font-bold text-[#08743A] pt-0.5">
+                  {lang === 'am'
+                    ? `የተጋበዙበት ኮድ፦ ${referredByCode}`
+                    : `Invited via referral code: ${referredByCode}`}
+                </p>
+              ) : (
+                <p className="text-[10px] text-[#68776D] pt-0.5">
+                  {lang === 'am'
+                    ? 'የግብዣ ሊንኮች በመጀመሪያ ምዝገባ ጊዜ ብቻ በራስ-ሰር ይመዘገባሉ።'
+                    : 'Referrals are attributed automatically on first-time signup only.'}
+                </p>
+              )}
+            </div>
           </section>
 
           <section className="lg:col-span-7 bg-white border border-[#E7EDE8] rounded-xl p-2.5 sm:p-3 space-y-2 shadow-[0_2px_8px_rgba(24,51,38,0.04)]">

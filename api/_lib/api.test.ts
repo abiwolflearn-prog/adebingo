@@ -660,7 +660,8 @@ test('Telegram webhook & secret-protected endpoints enforce fail-closed secret, 
   });
   assert.equal(validStart.statusCode, 200);
   assert.equal(validStart.body.ok, true);
-  assert.equal(telegramSendCalls, 2);
+  // Step 1 onboarding sends 1 message with exact bilingual welcome + inline Start / ጀምር button
+  assert.equal(telegramSendCalls, 1);
   assert.equal(store.get('telegramBindings/tg_778899')?.uid, 'tg_778899');
 
   // Duplicate webhook update_id -> 409 and does NOT call Telegram API again
@@ -678,7 +679,7 @@ test('Telegram webhook & secret-protected endpoints enforce fail-closed secret, 
   });
   assert.equal(duplicateUpdate.statusCode, 409);
   assert.equal(duplicateUpdate.body.reason, 'replay_detected');
-  assert.equal(telegramSendCalls, 2);
+  assert.equal(telegramSendCalls, 1);
 
   // Other secret-protected endpoints reject missing/bad secret
   const infoHandler = createWebhookInfoHandler({
@@ -1064,7 +1065,7 @@ test('Game & room API endpoints enforce authentication, host/admin authorization
     totalCalled = Number(d.body.totalCalled);
   }
 
-  // Missing winner user profile (tg_5005) -> 404 winner_profile_not_found WITHOUT completing game
+  // Missing/unverified user profile (tg_5005) -> 403 phone_verification_required WITHOUT completing game
   store.set('rooms/vip-room/players/tg_5005', {
     playerId: 'tg_5005',
     roomId: 'vip-room',
@@ -1085,11 +1086,11 @@ test('Game & room API endpoints enforce authentication, host/admin authorization
     headers: { authorization: 'Bearer tok-ghost' },
     body: { roomId: 'vip-room', cardId: 19, markedNumbers: card19TopRow },
   });
-  assert.equal(missingProfileClaim.statusCode, 404);
-  assert.equal(missingProfileClaim.body.reason, 'winner_profile_not_found');
+  assert.equal(missingProfileClaim.statusCode, 403);
+  assert.equal(missingProfileClaim.body.reason, 'phone_verification_required');
   assert.equal(store.get('games/game_vip-room_live')?.status, 'live');
 
-  // Legitimate winner claim by tg_2002 on card 11 -> 200, credits balance once
+  // Legitimate winner claim by tg_2002 on card 11 -> 200, splits 80% prize pool across simultaneous co-winners
   const balBeforeWin = Number(store.get('users/tg_2002')?.demoBalanceEtb);
   assert.equal(checkCardWin(generateDeterministicCard(11), card11TopRow, store.get('games/game_vip-room_live')?.calledNumbers as number[], true).won, true);
 
@@ -1104,9 +1105,13 @@ test('Game & room API endpoints enforce authentication, host/admin authorization
   assert.equal(validWin.statusCode, 200);
   assert.equal(validWin.body.verified, true);
   const prize = Number(validWin.body.demoPrizeEtb);
-  // Strict 80% prize pool cap: 3 confirmed players * 10 ETB = 30 ETB collected -> 80% = 24 ETB (never exceeds prize pool)
-  assert.equal(prize, 24);
-  assert.equal(store.get('users/tg_2002')?.demoBalanceEtb, balBeforeWin + prize);
+  // Strict 80% prize pool cap: 24 ETB total pool split fairly across simultaneous co-winners
+  assert.equal(validWin.body.winnersPrizePoolEtb, 24);
+  assert.ok(prize > 0 && prize <= 24);
+  const winners = (validWin.body.winners as Array<{ prizeEtb: number }>) || [];
+  assert.ok(winners.length >= 2);
+  assert.equal(Number(winners.reduce((s, w) => s + w.prizeEtb, 0).toFixed(2)), 24);
+  assert.equal(store.get('users/tg_2002')?.demoBalanceEtb, Number((balBeforeWin + prize).toFixed(2)));
   assert.equal(store.get('games/game_vip-room_live')?.status, 'completed');
 
   // Duplicate payout attempts (with same key OR different key on completed game) -> 409, no double credit
@@ -1328,22 +1333,30 @@ test('Milestone 4.2: Admin Serverless API blocks preset identityMode bypass (403
   assert.equal(adminOverview.body.ok, true);
   assert.ok(adminOverview.body.overview);
 
-  // Also verify signed Telegram initData exchange for allowlisted admin TG #8842109
-  const adminInitData = buildSignedInitData(botToken, nowUnix - 5, {
-    id: 8842109,
-    first_name: 'Abebe',
-    last_name: 'Bikila',
-    username: 'abebe_adey',
-    language_code: 'am',
-  });
-  const exchangeAdminRes = await invokeHandler(sessionExchangeHandler, {
-    method: 'POST',
-    body: { initData: adminInitData },
-  });
-  assert.equal(exchangeAdminRes.statusCode, 200);
-  assert.equal(exchangeAdminRes.body.authorized, true);
-  const mintedAdminToken = String(exchangeAdminRes.body.token);
-  assert.ok(mintedAdminToken.length > 20);
+  // Also verify signed Telegram initData exchange for env-allowlisted admin TG #8842109
+  const prevAdminEnv = process.env.ADEY_ADMIN_TELEGRAM_IDS;
+  process.env.ADEY_ADMIN_TELEGRAM_IDS = '8842109';
+  let mintedAdminToken = '';
+  try {
+    const adminInitData = buildSignedInitData(botToken, nowUnix - 5, {
+      id: 8842109,
+      first_name: 'Abebe',
+      last_name: 'Bikila',
+      username: 'abebe_adey',
+      language_code: 'am',
+    });
+    const exchangeAdminRes = await invokeHandler(sessionExchangeHandler, {
+      method: 'POST',
+      body: { initData: adminInitData },
+    });
+    assert.equal(exchangeAdminRes.statusCode, 200);
+    assert.equal(exchangeAdminRes.body.authorized, true);
+    mintedAdminToken = String(exchangeAdminRes.body.token);
+    assert.ok(mintedAdminToken.length > 20);
+  } finally {
+    if (prevAdminEnv === undefined) delete process.env.ADEY_ADMIN_TELEGRAM_IDS;
+    else process.env.ADEY_ADMIN_TELEGRAM_IDS = prevAdminEnv;
+  }
 
   // 5. Admin deposit approval updates user balance transactionally in Firestore
   const listDeps = await invokeHandler(depositsHandler, {
@@ -1652,6 +1665,21 @@ test('Milestone 5: /api/telegram/auth defaults new users to Amharic even when la
   assert.equal(authRes2.statusCode, 200);
   assert.equal((authRes2.body.profile as { language?: string }).language, 'en');
 
+  // Verify phone contact before deposit/withdraw bot flows
+  const verifyContactRes = await invokeHandler(webhookHandler, {
+    method: 'POST',
+    headers: { 'x-telegram-bot-api-secret-token': webhookSecret },
+    body: {
+      update_id: 95015,
+      message: {
+        from: { id: 665544, first_name: 'Biniyam', username: 'biniyam_et' },
+        chat: { id: 665544, type: 'private' },
+        contact: { phone_number: '+251911665544', first_name: 'Biniyam', user_id: 665544 },
+      },
+    },
+  });
+  assert.equal(verifyContactRes.statusCode, 200);
+
   // 4. Bot deposit & withdraw requests submitted via webhook are persisted for admin review
   const depCb = await invokeHandler(webhookHandler, {
     method: 'POST',
@@ -1824,7 +1852,27 @@ test('Milestone 5 Player API: /api/player/state returns 0 ETB on fresh users, co
   assert.equal(spoofRes.statusCode, 403);
   assert.equal(spoofRes.body.reason, 'client_override_rejected');
 
-  // 5. Fresh user cannot withdraw 50 ETB when balance is 0 ETB -> 400 insufficient_balance
+  // 5a. Unverified fresh user is blocked from withdraw_request with 403 phone_verification_required
+  const unverifiedWithdraw = await invokeHandler(walletHandler, {
+    method: 'POST',
+    headers: { authorization: 'Bearer tok-fresh' },
+    body: { action: 'withdraw_request', amountEtb: 50, method: 'Telebirr (Demo)' },
+  });
+  assert.equal(unverifiedWithdraw.statusCode, 403);
+  assert.equal(unverifiedWithdraw.body.reason, 'phone_verification_required');
+
+  // Mark fresh user phone-verified (still 0 ETB) to verify balance/promo/deposit/withdrawal rules
+  store.set('users/tg_910001', {
+    uid: 'tg_910001',
+    telegramUserId: 'tg_910001',
+    displayName: 'Fresh Player',
+    username: 'fresh_player',
+    language: 'am',
+    phoneVerified: true,
+    demoBalanceEtb: 0,
+  });
+
+  // 5b. Verified fresh user cannot withdraw 50 ETB when balance is 0 ETB -> 400 insufficient_balance
   const emptyWithdraw = await invokeHandler(walletHandler, {
     method: 'POST',
     headers: { authorization: 'Bearer tok-fresh' },
