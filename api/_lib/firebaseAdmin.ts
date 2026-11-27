@@ -340,6 +340,8 @@ export function getAdminAuth(): Auth {
   return getAuth(getFirebaseAdminApp());
 }
 
+const configuredFirestoreInstances = new WeakSet<Firestore>();
+
 /**
  * Returns the singleton Firestore instance bound to the named ADEYBINGO database:
  * `ai-studio-adeybingotelegra-e167ea3c-c285-4e91-8373-d40b1718c6cc`.
@@ -350,7 +352,16 @@ export function getAdminDb(): Firestore {
     process.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID ||
     FIREBASE_DATABASE_ID
   ).trim();
-  return getFirestore(getFirebaseAdminApp(), databaseId);
+  const db = getFirestore(getFirebaseAdminApp(), databaseId);
+  if (!configuredFirestoreInstances.has(db)) {
+    try {
+      db.settings({ ignoreUndefinedProperties: true });
+    } catch {
+      // Firestore settings may already be locked in a warm serverless instance
+    }
+    configuredFirestoreInstances.add(db);
+  }
+  return db;
 }
 
 /**

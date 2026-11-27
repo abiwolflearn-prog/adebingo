@@ -198,6 +198,46 @@ function buildSafeAuthDiagnostics(
   };
 }
 
+function classifyProfilePersistenceError(err: unknown): {
+  code: string;
+  retryable: boolean;
+} {
+  const rawCode =
+    err && typeof err === 'object' && 'code' in err
+      ? String((err as { code?: unknown }).code ?? '').trim()
+      : '';
+  const msg = err instanceof Error ? err.message : String(err || '');
+  const lower = msg.toLowerCase();
+
+  if (
+    lower.includes('cannot use "undefined" as a firestore value') ||
+    lower.includes('not a valid firestore document') ||
+    rawCode === '3' ||
+    lower.includes('invalid_argument')
+  ) {
+    return { code: 'invalid_firestore_document', retryable: false };
+  }
+  if (rawCode === '10' || lower.includes('aborted') || lower.includes('contention')) {
+    return { code: 'transaction_aborted', retryable: true };
+  }
+  if (rawCode === '14' || lower.includes('unavailable')) {
+    return { code: 'service_unavailable', retryable: true };
+  }
+  if (rawCode === '4' || lower.includes('deadline_exceeded') || lower.includes('timeout')) {
+    return { code: 'deadline_exceeded', retryable: true };
+  }
+  if (rawCode === '7' || lower.includes('permission_denied')) {
+    return { code: 'firestore_permission_denied', retryable: false };
+  }
+  if (rawCode === '5' || lower.includes('not_found')) {
+    return { code: 'database_not_found', retryable: false };
+  }
+  if (rawCode === '16' || lower.includes('unauthenticated') || lower.includes('invalid_grant')) {
+    return { code: 'invalid_credentials', retryable: false };
+  }
+  return { code: 'firestore_write_error', retryable: false };
+}
+
 /**
  * POST /api/telegram/auth
  */
@@ -444,37 +484,57 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
     const canonicalUid = getTelegramFirebaseUid(tgUser.id);
     const store = createFirestoreTelegramStore(db);
 
-    let persisted: Awaited<ReturnType<typeof store.savePlayerAndBinding>>;
+    let persisted: Awaited<ReturnType<typeof store.savePlayerAndBinding>> | null = null;
+    const profilePayload = {
+      telegramUserId: tgUser.id,
+      uid: canonicalUid,
+      firstName: tgUser.first_name || 'Adey Player',
+      lastName: tgUser.last_name || '',
+      username: tgUser.username || canonicalUid,
+      language: 'am' as const,
+    };
     try {
-      persisted = await store.savePlayerAndBinding({
-        telegramUserId: tgUser.id,
-        uid: canonicalUid,
-        firstName: tgUser.first_name || 'Adey Player',
-        lastName: tgUser.last_name || '',
-        username: tgUser.username || canonicalUid,
-        language: 'am',
-      });
-    } catch {
-      const authDiagnostics = buildSafeAuthDiagnostics({
-        botTokenConfigured: true,
-        initDataPresent: true,
-        telegramHashValid: true,
-        telegramUserIdExtracted: true,
-        errorCode: 'profile_persistence_failed',
-      });
-      console.warn('[api/telegram/auth] profile persistence failed', authDiagnostics);
-      sendError(
-        res,
-        503,
-        'profile_persistence_failed',
-        'Unable to save verified Telegram player profile right now. Please retry.',
-        { authDiagnostics }
-      );
-      return;
+      persisted = await store.savePlayerAndBinding(profilePayload);
+    } catch (firstPersistErr) {
+      const firstClassified = classifyProfilePersistenceError(firstPersistErr);
+      let finalPersistErr: unknown = firstPersistErr;
+      if (firstClassified.retryable) {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        try {
+          persisted = await store.savePlayerAndBinding(profilePayload);
+        } catch (retryErr) {
+          finalPersistErr = retryErr;
+        }
+      }
+      if (!persisted) {
+        const finalClassified = classifyProfilePersistenceError(finalPersistErr);
+        const authDiagnostics = buildSafeAuthDiagnostics({
+          botTokenConfigured: true,
+          initDataPresent: true,
+          telegramHashValid: true,
+          telegramUserIdExtracted: true,
+          errorCode: 'profile_persistence_failed',
+        });
+        console.warn('[api/telegram/auth] profile persistence failed', {
+          ...authDiagnostics,
+          persistenceErrorCode: finalClassified.code,
+        });
+        sendError(
+          res,
+          503,
+          'profile_persistence_failed',
+          'Unable to save verified Telegram player profile right now. Please retry.',
+          {
+            authDiagnostics,
+            persistenceErrorCode: finalClassified.code,
+          }
+        );
+        return;
+      }
     }
 
-    if (!persisted.ok || !persisted.player) {
-      const errCode = persisted.reason || 'duplicate_telegram_account';
+    if (!persisted || !persisted.ok || !persisted.player) {
+      const errCode = persisted?.reason || 'duplicate_telegram_account';
       const authDiagnostics = buildSafeAuthDiagnostics({
         botTokenConfigured: true,
         initDataPresent: true,
@@ -526,74 +586,81 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
           code: normalizedRefCode,
         };
       } else {
-        const refRes = await store.processReferralDeepLink({
-          inviteeTelegramId: tgUser.id,
-          inviteeName: `${persisted.player.firstName} ${persisted.player.lastName || ''}`.trim(),
-          inviteeUsername: persisted.player.username,
-          referralCode: normalizedRefCode,
-        });
-        referralApplied = {
-          applied: refRes.applied,
-          reason: refRes.reason,
-          code: normalizedRefCode,
-          inviterTelegramId: refRes.inviterTelegramId,
-          inviterBonusEtb: refRes.inviterBonusEtb,
-          inviteeBonusEtb: refRes.inviteeBonusEtb,
-        };
-        if (refRes.applied && typeof refRes.inviteeBalanceEtb === 'number') {
-          finalBalanceEtb = refRes.inviteeBalanceEtb;
-        }
-        if (refRes.applied && refRes.inviterTelegramId) {
-          const inviterProfile = await store.getPlayer(refRes.inviterTelegramId).catch(() => null);
-          const inviterLang = inviterProfile?.language === 'en' ? 'en' : 'am';
-          const formattedNtf = formatTelegramNotification('referral_confirmation', inviterLang, {
-            friendName: persisted.player.firstName,
-            inviterBonusEtb: refRes.inviterBonusEtb ?? 20,
+        try {
+          const refRes = await store.processReferralDeepLink({
+            inviteeTelegramId: tgUser.id,
+            inviteeName: `${persisted.player.firstName} ${persisted.player.lastName || ''}`.trim(),
+            inviteeUsername: persisted.player.username,
+            referralCode: normalizedRefCode,
           });
-          let deliveredViaBotApi = false;
-          const canSendTelegram =
-            botTokenConfigured &&
-            botToken &&
-            refRes.inviterTelegramId !== tgUser.id &&
-            (Boolean(deps.fetchImpl) || !deps.getDb);
-          if (canSendTelegram) {
-            const fetchFn = deps.fetchImpl ?? fetch;
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3500);
-            try {
-              const tgResp = await fetchFn(
-                `https://api.telegram.org/bot${botToken}/sendMessage`,
-                {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    chat_id: refRes.inviterTelegramId,
-                    text: `${formattedNtf.title}\n\n${formattedNtf.body}`,
-                    parse_mode: 'Markdown',
-                  }),
-                  signal: controller.signal,
-                }
-              );
-              const tgData = (await tgResp.json().catch(() => ({}))) as { ok?: boolean };
-              deliveredViaBotApi = Boolean(tgResp.ok && tgData.ok);
-            } catch {
-              deliveredViaBotApi = false;
-            } finally {
-              clearTimeout(timeoutId);
-            }
+          referralApplied = {
+            applied: refRes.applied,
+            reason: refRes.reason,
+            code: normalizedRefCode,
+            inviterTelegramId: refRes.inviterTelegramId,
+            inviterBonusEtb: refRes.inviterBonusEtb,
+            inviteeBonusEtb: refRes.inviteeBonusEtb,
+          };
+          if (refRes.applied && typeof refRes.inviteeBalanceEtb === 'number') {
+            finalBalanceEtb = refRes.inviteeBalanceEtb;
           }
-          await store
-            .appendNotification({
-              id: `ntf_ref_${tgUser.id}_${Date.now()}`,
-              event: 'referral_confirmation',
-              telegramUserId: refRes.inviterTelegramId,
-              language: inviterLang,
-              title: formattedNtf.title,
-              body: formattedNtf.body,
-              createdAt: new Date().toISOString(),
-              deliveredViaBotApi,
-            })
-            .catch(() => undefined);
+          if (refRes.applied && refRes.inviterTelegramId) {
+            const inviterProfile = await store.getPlayer(refRes.inviterTelegramId).catch(() => null);
+            const inviterLang = inviterProfile?.language === 'en' ? 'en' : 'am';
+            const formattedNtf = formatTelegramNotification('referral_confirmation', inviterLang, {
+              friendName: persisted.player.firstName,
+              inviterBonusEtb: refRes.inviterBonusEtb ?? 20,
+            });
+            let deliveredViaBotApi = false;
+            const canSendTelegram =
+              botTokenConfigured &&
+              botToken &&
+              refRes.inviterTelegramId !== tgUser.id &&
+              (Boolean(deps.fetchImpl) || !deps.getDb);
+            if (canSendTelegram) {
+              const fetchFn = deps.fetchImpl ?? fetch;
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 3500);
+              try {
+                const tgResp = await fetchFn(
+                  `https://api.telegram.org/bot${botToken}/sendMessage`,
+                  {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      chat_id: refRes.inviterTelegramId,
+                      text: `${formattedNtf.title}\n\n${formattedNtf.body}`,
+                      parse_mode: 'Markdown',
+                    }),
+                    signal: controller.signal,
+                  }
+                );
+                const tgData = (await tgResp.json().catch(() => ({}))) as { ok?: boolean };
+                deliveredViaBotApi = Boolean(tgResp.ok && tgData.ok);
+              } catch {
+                deliveredViaBotApi = false;
+              } finally {
+                clearTimeout(timeoutId);
+              }
+            }
+            await store
+              .appendNotification({
+                id: `ntf_ref_${tgUser.id}_${Date.now()}`,
+                event: 'referral_confirmation',
+                telegramUserId: refRes.inviterTelegramId,
+                language: inviterLang,
+                title: formattedNtf.title,
+                body: formattedNtf.body,
+                createdAt: new Date().toISOString(),
+                deliveredViaBotApi,
+              })
+              .catch(() => undefined);
+          }
+        } catch (refErr) {
+          const refClassified = classifyProfilePersistenceError(refErr);
+          console.warn('[api/telegram/auth] referral processing skipped after transient error', {
+            persistenceErrorCode: refClassified.code,
+          });
         }
       }
     }

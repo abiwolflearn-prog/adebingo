@@ -62,9 +62,34 @@ interface MockQuery {
   get: () => Promise<{ docs: MockDoc[]; size: number; empty: boolean }>;
 }
 
-function createInMemoryFirestore() {
+function createInMemoryFirestore(options: { strictUndefined?: boolean } = {}) {
   const store = new Map<string, Record<string, unknown>>();
   let autoId = 1;
+
+  const assertNoUndefinedFields = (value: unknown, path = ''): void => {
+    if (!options.strictUndefined) return;
+    if (value === undefined) {
+      throw new Error(
+        `Value for argument "data" is not a valid Firestore document. Cannot use "undefined" as a Firestore value (found in field "${path}").`
+      );
+    }
+    if (value === null || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      value.forEach((item, idx) => assertNoUndefinedFields(item, `${path}[${idx}]`));
+      return;
+    }
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const nextPath = path ? `${path}.${k}` : k;
+      if (v === undefined) {
+        throw new Error(
+          `Value for argument "data" is not a valid Firestore document. Cannot use "undefined" as a Firestore value (found in field "${nextPath}").`
+        );
+      }
+      if (v && typeof v === 'object') {
+        assertNoUndefinedFields(v, nextPath);
+      }
+    }
+  };
 
   const clone = <T,>(v: T): T =>
     v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T);
@@ -91,6 +116,7 @@ function createInMemoryFirestore() {
         return makeSnap(path, ref);
       },
       async set(data: Record<string, unknown>, opts?: { merge?: boolean }) {
+        assertNoUndefinedFields(data);
         if (opts?.merge && store.has(path)) {
           store.set(path, { ...store.get(path)!, ...clone(data) });
         } else {
@@ -98,6 +124,7 @@ function createInMemoryFirestore() {
         }
       },
       async update(data: Record<string, unknown>) {
+        assertNoUndefinedFields(data);
         if (!store.has(path)) throw new Error(`NOT_FOUND: ${path}`);
         store.set(path, { ...store.get(path)!, ...clone(data) });
       },
@@ -193,6 +220,7 @@ function createInMemoryFirestore() {
       const tx = {
         get: async (target: MockDocRef | MockQuery) => target.get(),
         create: (ref: MockDocRef, data: Record<string, unknown>) => {
+          assertNoUndefinedFields(data);
           if (store.has(ref.path)) {
             const err = new Error(`ALREADY_EXISTS: ${ref.path}`) as Error & { code: number };
             err.code = 6;
@@ -201,6 +229,7 @@ function createInMemoryFirestore() {
           store.set(ref.path, clone(data));
         },
         set: (ref: MockDocRef, data: Record<string, unknown>, opts?: { merge?: boolean }) => {
+          assertNoUndefinedFields(data);
           if (opts?.merge && store.has(ref.path)) {
             store.set(ref.path, { ...store.get(ref.path)!, ...clone(data) });
           } else {
@@ -208,6 +237,7 @@ function createInMemoryFirestore() {
           }
         },
         update: (ref: MockDocRef, data: Record<string, unknown>) => {
+          assertNoUndefinedFields(data);
           if (!store.has(ref.path)) throw new Error(`NOT_FOUND: ${ref.path}`);
           store.set(ref.path, { ...store.get(ref.path)!, ...clone(data) });
         },
@@ -913,3 +943,118 @@ test('Scenario 7: New player account gets 15 ETB initial balance & binding, whil
   assert.equal(existingRes.body.profile.phoneVerified, true);
   assert.equal(existingRes.body.authDiagnostics.phoneVerificationPending, false);
 });
+
+test('Scenario 8: Strict Firestore (rejecting undefined properties) persists brand-new unverified Telegram profiles cleanly, retries transient ABORTED contention, and classifies permanent persistence errors', async () => {
+  const { db, store } = createInMemoryFirestore({ strictUndefined: true });
+  const nowUnix = 1770006000;
+
+  // 8a. Brand-new unverified user (no phoneNumberMasked / no username) MUST NOT write undefined fields
+  const strictAuthHandler = createTelegramAuthHandler({
+    getDb: () => db,
+    getBotToken: () => TEST_BOT_TOKEN,
+    isAdminReady: () => true,
+    nowUnixSeconds: () => nowUnix,
+    limiter: new BoundedRateLimiter(),
+    mintCustomToken: async ({ telegramUserId }) => ({
+      uid: `tg_${telegramUserId}`,
+      customToken: `strict-token-${telegramUserId}`,
+    }),
+  });
+
+  const brandNewPayload = buildSignedInitData({
+    botToken: TEST_BOT_TOKEN,
+    user: { id: 5008001, first_name: 'Hanna' },
+    authDate: nowUnix - 4,
+  });
+
+  const strictRes = await invokeHandler(strictAuthHandler, {
+    method: 'POST',
+    body: { initData: brandNewPayload.rawInitData },
+  });
+
+  assert.equal(strictRes.statusCode, 200);
+  assert.equal(strictRes.body.ok, true);
+  assert.equal(strictRes.body.uid, 'tg_5008001');
+  assert.equal(strictRes.body.profile.demoBalanceEtb, 15);
+  assert.equal(strictRes.body.profile.phoneVerified, false);
+  assert.equal('verifiedPhoneMasked' in (store.get('botPlayers/5008001') || {}), false);
+
+  // 8b. Transient Firestore transaction ABORTED contention on first savePlayerAndBinding attempt retries once and succeeds
+  let txAttempts = 0;
+  const origRunTx = db.runTransaction.bind(db);
+  const contendedDb = Object.create(db) as Firestore;
+  contendedDb.runTransaction = (async (fn: Parameters<Firestore['runTransaction']>[0]) => {
+    txAttempts += 1;
+    if (txAttempts === 1) {
+      const err = new Error('10 ABORTED: Too much contention on these documents.') as Error & { code: number };
+      err.code = 10;
+      throw err;
+    }
+    return origRunTx(fn);
+  }) as Firestore['runTransaction'];
+
+  const retryAuthHandler = createTelegramAuthHandler({
+    getDb: () => contendedDb,
+    getBotToken: () => TEST_BOT_TOKEN,
+    isAdminReady: () => true,
+    nowUnixSeconds: () => nowUnix,
+    limiter: new BoundedRateLimiter(),
+    mintCustomToken: async ({ telegramUserId }) => ({
+      uid: `tg_${telegramUserId}`,
+      customToken: `retry-token-${telegramUserId}`,
+    }),
+  });
+
+  const retryPayload = buildSignedInitData({
+    botToken: TEST_BOT_TOKEN,
+    user: { id: 5008002, first_name: 'Bereket' },
+    authDate: nowUnix - 3,
+  });
+
+  const retryRes = await invokeHandler(retryAuthHandler, {
+    method: 'POST',
+    body: { initData: retryPayload.rawInitData },
+  });
+  assert.equal(retryRes.statusCode, 200);
+  assert.equal(retryRes.body.ok, true);
+  // 1 aborted profile write + 1 retried profile write + 1 replay-guard commit
+  assert.equal(txAttempts, 3);
+
+  // 8c. Permanent Firestore PERMISSION_DENIED returns 503 profile_persistence_failed with safe persistenceErrorCode
+  const deniedDb = Object.create(db) as Firestore;
+  deniedDb.runTransaction = (async () => {
+    const err = new Error('7 PERMISSION_DENIED: Missing or insufficient permissions.') as Error & { code: number };
+    err.code = 7;
+    throw err;
+  }) as Firestore['runTransaction'];
+
+  const deniedAuthHandler = createTelegramAuthHandler({
+    getDb: () => deniedDb,
+    getBotToken: () => TEST_BOT_TOKEN,
+    isAdminReady: () => true,
+    nowUnixSeconds: () => nowUnix,
+    limiter: new BoundedRateLimiter(),
+    mintCustomToken: async ({ telegramUserId }) => ({
+      uid: `tg_${telegramUserId}`,
+      customToken: `denied-token-${telegramUserId}`,
+    }),
+  });
+
+  const deniedPayload = buildSignedInitData({
+    botToken: TEST_BOT_TOKEN,
+    user: { id: 5008003, first_name: 'BlockedWrite' },
+    authDate: nowUnix - 2,
+  });
+
+  const { result: deniedRes, logs } = await captureConsoleLogs(() =>
+    invokeHandler(deniedAuthHandler, {
+      method: 'POST',
+      body: { initData: deniedPayload.rawInitData },
+    })
+  );
+  assert.equal(deniedRes.statusCode, 503);
+  assert.equal(deniedRes.body.error, 'profile_persistence_failed');
+  assert.equal(deniedRes.body.persistenceErrorCode, 'firestore_permission_denied');
+  assert.equal(logs.includes(TEST_BOT_TOKEN), false);
+});
+

@@ -266,29 +266,44 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
           userLangRaw === 'en' || userLangRaw === 'am' ? userLangRaw : undefined;
         const resolvedLang: Language = existingPlayer?.language || userLang || language || 'am';
 
-        const cleanUsername = username.startsWith('@')
-          ? username.slice(1)
-          : username || canonicalUid;
+        const safeFirstName = String(firstName ?? '').trim().slice(0, 80) || 'Adey Player';
+        const safeLastName = String(lastName ?? '').trim().slice(0, 80);
+        const rawUsername = String(username ?? '').trim();
+        const cleanUsername = rawUsername.startsWith('@')
+          ? rawUsername.slice(1)
+          : rawUsername || canonicalUid;
+
+        const resolvedVerifiedPhoneMasked =
+          (typeof existingPlayer?.verifiedPhoneMasked === 'string' &&
+          existingPlayer.verifiedPhoneMasked.trim() !== ''
+            ? existingPlayer.verifiedPhoneMasked.trim()
+            : undefined) ||
+          (userSnap.exists &&
+          typeof userSnap.get('phoneNumberMasked') === 'string' &&
+          String(userSnap.get('phoneNumberMasked')).trim() !== ''
+            ? String(userSnap.get('phoneNumberMasked')).trim()
+            : undefined);
+
+        const rawBalance = userSnap.exists
+          ? Number(userSnap.get('demoBalanceEtb'))
+          : Number(existingPlayer?.demoBalanceEtb);
+        const resolvedBalance = Number.isFinite(rawBalance) ? rawBalance : 15;
 
         const player: RegisteredTelegramPlayer = {
           uid,
           telegramUserId,
           telegramKey,
-          firstName: firstName.slice(0, 80) || 'Adey Player',
-          lastName: lastName.slice(0, 80),
+          firstName: safeFirstName,
+          lastName: safeLastName,
           username: cleanUsername.slice(0, 64),
           language: resolvedLang,
           phoneVerified: Boolean(
             existingPlayer?.phoneVerified || (userSnap.exists && userSnap.get('phoneVerified') === true)
           ),
-          verifiedPhoneMasked:
-            existingPlayer?.verifiedPhoneMasked ||
-            (userSnap.exists && typeof userSnap.get('phoneNumberMasked') === 'string'
-              ? String(userSnap.get('phoneNumberMasked'))
-              : undefined),
-          demoBalanceEtb: userSnap.exists
-            ? Number(userSnap.get('demoBalanceEtb') ?? 0)
-            : existingPlayer?.demoBalanceEtb ?? 15,
+          ...(resolvedVerifiedPhoneMasked
+            ? { verifiedPhoneMasked: resolvedVerifiedPhoneMasked }
+            : {}),
+          demoBalanceEtb: resolvedBalance,
           referralCode:
             existingPlayer?.referralCode ||
             (userSnap.exists && typeof userSnap.get('referralCode') === 'string'
@@ -987,23 +1002,32 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
           ? (playerSnap.data() as RegisteredTelegramPlayer)
           : undefined;
         const resolvedLang: Language = existingPlayer?.language || 'am';
-        const cleanUsername = username.startsWith('@')
-          ? username.slice(1)
-          : username || `tg_${telegramUserId}`;
+        const safeFirstName = String(firstName ?? '').trim().slice(0, 80) || 'Adey Player';
+        const safeLastName = String(lastName ?? '').trim().slice(0, 80);
+        const rawUsername = String(username ?? '').trim();
+        const cleanUsername = rawUsername.startsWith('@')
+          ? rawUsername.slice(1)
+          : rawUsername || `tg_${telegramUserId}`;
+        const rawBalance = userSnap.exists
+          ? Number(userSnap.get('demoBalanceEtb'))
+          : Number(existingPlayer?.demoBalanceEtb);
+        const resolvedBalance = Number.isFinite(rawBalance) ? rawBalance : 15;
+        const safeMaskedPhone =
+          typeof maskedPhone === 'string' && maskedPhone.trim() !== ''
+            ? maskedPhone.trim()
+            : undefined;
 
         const player: RegisteredTelegramPlayer = {
           uid,
           telegramUserId,
           telegramKey,
-          firstName: firstName.slice(0, 80) || 'Adey Player',
-          lastName: lastName.slice(0, 80),
+          firstName: safeFirstName,
+          lastName: safeLastName,
           username: cleanUsername.slice(0, 64),
           language: resolvedLang,
           phoneVerified: true,
-          verifiedPhoneMasked: maskedPhone,
-          demoBalanceEtb: userSnap.exists
-            ? Number(userSnap.get('demoBalanceEtb') ?? 0)
-            : existingPlayer?.demoBalanceEtb ?? 15,
+          ...(safeMaskedPhone ? { verifiedPhoneMasked: safeMaskedPhone } : {}),
+          demoBalanceEtb: resolvedBalance,
           referralCode: existingPlayer?.referralCode || `ADEY-${telegramUserId}`,
           registeredAt: existingPlayer?.registeredAt || nowIso,
           updatedAt: nowIso,
@@ -1079,7 +1103,14 @@ export function createFirestoreTelegramStore(db: Firestore): TelegramBotStore {
 
     async appendNotification(msg: BotNotificationMessage): Promise<void> {
       await outboxCol.doc(msg.id).set({
-        ...msg,
+        id: String(msg.id),
+        event: msg.event,
+        telegramUserId: Number(msg.telegramUserId),
+        language: msg.language === 'en' ? 'en' : 'am',
+        title: String(msg.title ?? ''),
+        body: String(msg.body ?? ''),
+        createdAt: String(msg.createdAt || new Date().toISOString()),
+        deliveredViaBotApi: Boolean(msg.deliveredViaBotApi),
         createdAtMs: Date.now(),
       });
     },
