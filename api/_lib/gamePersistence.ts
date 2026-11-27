@@ -533,17 +533,21 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
       }
 
       const room = mapRoomDoc(roomSnap.id, (roomSnap.data() || {}) as Record<string, unknown>);
+      const cleanViewerUid = typeof viewerUid === 'string' ? viewerUid.trim() : '';
       const [playerSnap, cardsSnap, gameSnap] = await Promise.all([
-        roomRef.collection('players').doc(viewerUid).get(),
+        cleanViewerUid
+          ? roomRef.collection('players').doc(cleanViewerUid).get()
+          : Promise.resolve(null),
         roomRef.collection('cards').get(),
         room.currentGameId ? gamesCol.doc(room.currentGameId).get() : Promise.resolve(null),
       ]);
 
-      const myCardIds: number[] = playerSnap.exists
-        ? Array.isArray(playerSnap.get('cardIds'))
-          ? (playerSnap.get('cardIds') as unknown[]).map(Number).filter(Number.isInteger)
-          : []
-        : [];
+      const myCardIds: number[] =
+        playerSnap && playerSnap.exists
+          ? Array.isArray(playerSnap.get('cardIds'))
+            ? (playerSnap.get('cardIds') as unknown[]).map(Number).filter(Number.isInteger)
+            : []
+          : [];
       const takenCardIds: number[] = cardsSnap.docs
         .map((d) => Number(d.get('cardId') ?? d.id))
         .filter((n) => Number.isInteger(n) && n >= 1 && n <= 600)
@@ -1724,7 +1728,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
         // without ever blocking a genuinely expired phase deadline.
         const isCurrentPhaseDue =
           status === 'waiting' || status === 'countdown'
-            ? registrationDeadlineMs > 0 && nowMs >= registrationDeadlineMs
+            ? registrationDeadlineMs <= 0 || nowMs >= registrationDeadlineMs
             : status === 'live'
               ? nextBallDrawAtMs <= 0 || nowMs >= nextBallDrawAtMs
               : intermissionEndsAtMs <= 0 || nowMs >= intermissionEndsAtMs;
@@ -2543,6 +2547,7 @@ export function createFirestoreGameStore(db: Firestore): GamePersistenceStore {
           winnerName: '',
           winningCardId: 0,
           winningPattern: '',
+          winners: [],
           confirmedPlayersCount: 0,
           availableSpaces: 600,
           totalCardsSold: 0,

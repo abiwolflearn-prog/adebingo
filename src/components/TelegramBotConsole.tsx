@@ -164,7 +164,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
         payload.senderTelegramId = user.id;
         payload.firstName = user.firstName;
         payload.lastName = user.lastName || '';
-        payload.username = user.username.replace(/^@/, '');
+        payload.username = (user.username || '').replace(/^@/, '');
         payload.firebaseUid = extra.overrideUid || firebaseUid || `tg_${user.id}`;
       }
 
@@ -173,8 +173,33 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
         headers,
         body: JSON.stringify(payload),
       });
-      const data = await resp.json();
-      setBotReply(data);
+      const data = await resp.json().catch(() => ({}));
+      const normalizedLanguage: Language =
+        data?.language === 'en' ? 'en' : data?.language === 'am' ? 'am' : lang;
+      if (!resp.ok || typeof data?.text !== 'string') {
+        setBotReply({
+          ok: false,
+          chatId: typeof data?.chatId === 'number' ? data.chatId : user.id,
+          language: normalizedLanguage,
+          text:
+            typeof data?.message === 'string' && data.message.trim()
+              ? data.message
+              : lang === 'am'
+                ? 'የቴሌግራም ቦት መልስ ለማየት በቴሌግራም መለያዎ ይግቡ።'
+                : 'Sign in with Telegram to inspect live bot command responses.',
+          parseMode: 'Markdown',
+          replyMarkup: {},
+          registrationStatus: 'unregistered',
+          securityCode: typeof data?.error === 'string' ? data.error : `http_${resp.status}`,
+        });
+        setCallbackToast('');
+        return;
+      }
+      setBotReply({
+        ...data,
+        chatId: typeof data.chatId === 'number' ? data.chatId : user.id,
+        language: normalizedLanguage,
+      });
       if (data.callbackAnswerText) {
         setCallbackToast(data.callbackAnswerText);
       } else {
@@ -410,7 +435,7 @@ export const TelegramBotConsole: React.FC<TelegramBotConsoleProps> = ({
           <div className="p-2.5 rounded-xl bg-[#FFF9ED] border border-[#159447]/30 text-[#183326] space-y-1.5 font-sans">
             <div className="flex items-center justify-between text-[10.5px] text-[#08743A]">
               <span className="font-mono font-bold">
-                @AdeyBingoGameBot · Chat #{botReply.chatId} ({botReply.language.toUpperCase()})
+                @AdeyBingoGameBot · Chat #{botReply.chatId ?? user.id} ({(botReply.language || lang).toUpperCase()})
               </span>
               {botReply.securityCode && (
                 <span className="px-1.5 py-0.5 rounded bg-[#FEF5DC] border border-[#F5BD42] font-mono text-[9.5px] font-bold text-[#9A6B0B]">

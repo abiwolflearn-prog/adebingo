@@ -799,20 +799,49 @@ test('Game & room API endpoints enforce authentication, host/admin authorization
   assert.equal(statusRes.body.mode, 'demo_sandbox');
   assert.equal('FIREBASE_SERVICE_ACCOUNT_KEY' in statusRes.body, false);
 
-  // 1. Unauthenticated & unverified requests rejected across protected endpoints
+  // 1. Unauthenticated & unverified requests rejected across all protected/write endpoints
   for (const h of [roomsHandler, reserveHandler, startHandler, drawHandler, resetHandler, verifyHandler, botCmdHandler, notifyHandler]) {
     const unauth = await invokeHandler(h, {
-      method: h === roomsHandler ? 'GET' : 'POST',
-      body: h === roomsHandler ? undefined : {},
+      method: 'POST',
+      body: {},
     });
     assert.equal(unauth.statusCode, 401);
   }
   const unverifiedCall = await invokeHandler(roomsHandler, {
-    method: 'GET',
+    method: 'POST',
     headers: { authorization: 'Bearer tok-unverified' },
+    body: { action: 'initialize_defaults' },
   });
   assert.equal(unverifiedCall.statusCode, 403);
   assert.equal(unverifiedCall.body.reason, 'unverified_identity');
+
+  // 1b. Public read-only GET /api/rooms starts shared countdown immediately without waiting for auth
+  const publicRoomsRes = await invokeHandler(roomsHandler, { method: 'GET' });
+  assert.equal(publicRoomsRes.statusCode, 200);
+  assert.equal(publicRoomsRes.body.ok, true);
+  assert.equal(typeof publicRoomsRes.body.serverNowMs, 'number');
+  const publicRooms = publicRoomsRes.body.rooms as Array<Record<string, unknown>>;
+  assert.ok(Array.isArray(publicRooms) && publicRooms.length > 0);
+  assert.ok(Number(publicRooms[0].registrationDeadlineMs) > 0);
+
+  const firstRoomId = String(publicRooms[0].roomId);
+  const publicDetailRes = await invokeHandler(roomsHandler, {
+    method: 'GET',
+    query: { roomId: firstRoomId },
+  });
+  assert.equal(publicDetailRes.statusCode, 200);
+  assert.equal(publicDetailRes.body.ok, true);
+  assert.deepEqual(publicDetailRes.body.myCardIds, []);
+  assert.ok(Number((publicDetailRes.body.room as Record<string, unknown>).registrationDeadlineMs) > 0);
+
+  // Stale/invalid Bearer token on GET /api/rooms falls back safely to public viewer (never freezes timer)
+  const staleTokenDetailRes = await invokeHandler(roomsHandler, {
+    method: 'GET',
+    query: { roomId: firstRoomId },
+    headers: { authorization: 'Bearer expired-or-invalid-token' },
+  });
+  assert.equal(staleTokenDetailRes.statusCode, 200);
+  assert.deepEqual(staleTokenDetailRes.body.myCardIds, []);
 
   // Bot command rejects spoofed senderTelegramId
   const spoofBotCmd = await invokeHandler(botCmdHandler, {

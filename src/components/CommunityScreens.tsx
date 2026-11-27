@@ -4,7 +4,6 @@ import {
   Copy,
   Check,
   User,
-  History,
   Headphones,
   FileText,
   Send,
@@ -14,17 +13,13 @@ import {
   LogOut,
   Database,
   Lock,
-  Trophy,
-  Sparkles,
   ChevronDown,
   ChevronUp,
   CircleHelp,
   ExternalLink,
 } from 'lucide-react';
 import {
-  GameHistoryItem,
   Language,
-  LeaderboardEntry,
   ReferralRecord,
   ScreenId,
   SupportTicket,
@@ -33,13 +28,15 @@ import { t } from '../utils/i18n';
 import {
   buildTelegramInviteLink,
   buildTelegramReferralCode,
+  buildTelegramShareUrl,
+  openTelegramShareLink,
   requestTelegramContact,
   TelegramUserProfile,
 } from '../utils/telegram';
 import { TelegramBotConsole } from './TelegramBotConsole';
 
 interface CommunityScreensProps {
-  mode: 'leaderboard' | 'referral' | 'profile' | 'support' | 'terms';
+  mode: 'referral' | 'profile' | 'support' | 'terms';
   lang: Language;
   onChangeLang: (lang: Language) => void;
   user: TelegramUserProfile;
@@ -57,9 +54,7 @@ interface CommunityScreensProps {
   referralCode?: string;
   referredByCode?: string;
   referrals: ReferralRecord[];
-  leaderboard: LeaderboardEntry[];
   onApplyPromoCode?: (code: string) => Promise<{ ok: boolean; message: string }>;
-  gameHistory: GameHistoryItem[];
   tickets: SupportTicket[];
   onSubmitSupportTicket: (category: string, subject: string, message: string) => void;
   reducedMotion: boolean;
@@ -107,8 +102,6 @@ export function CommunityScreens({
   referralCode,
   referredByCode,
   referrals,
-  leaderboard,
-  gameHistory,
   tickets,
   onSubmitSupportTicket,
   reducedMotion,
@@ -144,6 +137,11 @@ export function CommunityScreens({
   const inviteLink = effectiveRefCode
     ? buildTelegramInviteLink(effectiveRefCode)
     : 'https://t.me/AdeyBingoGameBot';
+  const shareInviteText =
+    lang === 'am'
+      ? '🌼 ADEYBINGO ይቀላቀሉ! በ60 ሰከንድ ዙር ቢንጎ ይጫወቱ እና በ15 ETB መነሻ ሂሳብ ይጀምሩ!'
+      : '🌼 Join ADEYBINGO! Play live 60-second Bingo rounds and start with 15 ETB starter balance!';
+  const telegramShareUrl = buildTelegramShareUrl(inviteLink, shareInviteText);
 
   const copyTextSafely = async (value: string) => {
     try {
@@ -239,197 +237,35 @@ export function CommunityScreens({
   return (
     <div className="space-y-2">
       {/* Compact Icon-First Sub-Navigation Bar for Profile, Referral, Support, and Terms */}
-      {mode !== 'leaderboard' && (
-        <div className="grid grid-cols-4 items-center gap-1 bg-white border border-[#E7EDE8] rounded-xl p-1 shadow-[0_2px_8px_rgba(24,51,38,0.04)]">
-          {(
-            [
-              { id: 'profile', icon: User, am: 'መገለጫ', en: 'Profile' },
-              { id: 'referral', icon: Gift, am: 'ግብዣ +20', en: 'Invite +20' },
-              { id: 'support', icon: Headphones, am: 'እገዛ', en: 'Help' },
-              { id: 'terms', icon: FileText, am: 'ደንቦች', en: 'Terms' },
-            ] as const
-          ).map((tab) => {
-            const Icon = tab.icon;
-            const active = mode === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => onNavigate(tab.id)}
-                title={lang === 'am' ? tab.am : tab.en}
-                className={`px-2 py-1.5 rounded-lg text-[10.5px] font-extrabold flex items-center justify-center gap-1 transition-all min-h-[32px] whitespace-nowrap ${
-                  active
-                    ? 'bg-gradient-to-r from-[#159447] to-[#08743A] text-white shadow-[0_2px_6px_rgba(21,148,71,0.2)]'
-                    : 'text-[#68776D] hover:text-[#183326] hover:bg-[#FFF9ED]'
-                }`}
-              >
-                <Icon size={13} className="shrink-0" />
-                <span className="truncate">{lang === 'am' ? tab.am : tab.en}</span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* 0. LEADERBOARD & GAME HISTORY SCREEN */}
-      {mode === 'leaderboard' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-2 items-start">
-          <section className="lg:col-span-7 bg-white border border-[#E7EDE8] rounded-xl p-2.5 sm:p-3 space-y-2 shadow-[0_2px_8px_rgba(24,51,38,0.04)]">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2" title={copy.leaderboardSub}>
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#F5BD42] to-[#D99B20] flex items-center justify-center text-[#183326] shadow-[0_2px_6px_rgba(245,189,66,0.22)]">
-                  <Trophy size={15} />
-                </div>
-                <h2 className="font-['Outfit'] text-sm sm:text-base font-extrabold text-[#183326]">
-                  {copy.leaderboardTitle}
-                </h2>
-              </div>
-              <span className="px-2 py-0.5 rounded-md bg-[#E6F6EB] border border-[#159447]/30 text-[10.5px] font-extrabold text-[#08743A] tabular-nums">
-                {leaderboard.length}
-              </span>
-            </div>
-
-            {leaderboard.length === 0 ? (
-              <div
-                data-testid="leaderboard-empty-state"
-                className="p-3.5 rounded-xl bg-[#FFF9ED] border border-dashed border-[#159447]/30 text-center space-y-1"
-              >
-                <div className="w-8 h-8 rounded-lg bg-[#E6F6EB] mx-auto flex items-center justify-center text-[#159447]">
-                  <Trophy size={16} />
-                </div>
-                <p className="text-xs font-extrabold text-[#183326]">
-                  {copy.emptyLeaderboardTitle}
-                </p>
-                <p className="text-[10.5px] text-[#68776D] max-w-xs mx-auto">
-                  {copy.emptyLeaderboardDesc}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                {leaderboard.map((entry, idx) => {
-                  const isGold = idx === 0;
-                  const isSilver = idx === 1;
-                  const isBronze = idx === 2;
-
-                  const rankCardClasses = isGold
-                    ? 'bg-gradient-to-r from-[#FEF5DC] via-[#FFF9ED] to-white border-2 border-[#F5BD42] shadow-[0_2px_8px_rgba(245,189,66,0.12)]'
-                    : isSilver
-                    ? 'bg-gradient-to-r from-slate-100 via-white to-white border border-slate-300'
-                    : isBronze
-                    ? 'bg-gradient-to-r from-amber-50 via-white to-white border border-amber-300'
-                    : 'bg-[#FFF9ED]/70 border border-[#E7EDE8]';
-
-                  const badgeClasses = isGold
-                    ? 'bg-gradient-to-br from-[#F5BD42] to-[#D99B20] text-[#183326] border-[#D99B20]'
-                    : isSilver
-                    ? 'bg-gradient-to-br from-slate-200 to-slate-300 text-slate-800 border-slate-400'
-                    : isBronze
-                    ? 'bg-gradient-to-br from-amber-200 to-amber-400 text-amber-950 border-amber-500'
-                    : 'bg-[#E6F6EB] text-[#08743A] border-[#159447]/25';
-
-                  const medal = isGold ? '🥇' : isSilver ? '🥈' : isBronze ? '🥉' : `#${idx + 1}`;
-
-                  return (
-                    <div
-                      key={entry.uid}
-                      className={`p-2 rounded-xl flex items-center justify-between gap-2 transition-all ${rankCardClasses}`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span
-                          className={`w-7 h-7 rounded-lg border flex items-center justify-center text-xs font-extrabold shrink-0 shadow-2xs ${badgeClasses}`}
-                        >
-                          {medal}
-                        </span>
-                        <div className="min-w-0">
-                          <b className="text-xs font-extrabold text-[#183326] block truncate">
-                            {entry.displayName}
-                          </b>
-                          <small className="text-[10px] font-bold text-[#159447]">
-                            {entry.wins} {lang === 'am' ? 'ድሎች' : 'wins'}
-                          </small>
-                        </div>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <b className="font-['Outfit'] text-xs sm:text-sm font-extrabold text-[#08743A] tabular-nums block">
-                          {entry.winningsEtb.toFixed(2)} ETB
-                        </b>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-
-          <section className="lg:col-span-5 bg-white border border-[#E7EDE8] rounded-xl p-2.5 sm:p-3 space-y-2 shadow-[0_2px_8px_rgba(24,51,38,0.04)]">
-            <div className="flex items-center justify-between">
-              <h3 className="font-['Outfit'] text-xs sm:text-sm font-extrabold text-[#183326] flex items-center gap-1.5">
-                <History size={14} className="text-[#159447]" />
-                {lang === 'am' ? 'የጨዋታ ታሪክ' : 'Game History'}
-              </h3>
-              <span className="text-[10px] font-extrabold text-[#08743A] bg-[#E6F6EB] px-2 py-0.5 rounded tabular-nums">
-                {gameHistory.length}
-              </span>
-            </div>
-
-            {gameHistory.length === 0 ? (
-              <div className="p-3.5 rounded-xl bg-[#FFF9ED] border border-dashed border-[#159447]/30 text-center space-y-1">
-                <Sparkles size={16} className="mx-auto text-[#159447]" />
-                <p className="text-xs font-extrabold text-[#183326]">
-                  {lang === 'am' ? 'ምንም ታሪክ የለም' : 'No history yet'}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                {gameHistory.map((item) => (
-                  <div
-                    key={item.id}
-                    className="p-2 rounded-xl bg-[#FFF9ED] border border-[#E7EDE8] flex items-center justify-between gap-2"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            item.outcome === 'won' ? 'bg-[#168A49]' : 'bg-[#68776D]'
-                          }`}
-                        />
-                        <b className="text-[11px] font-extrabold text-[#183326] block truncate">
-                          {lang === 'am' ? item.roomNameAm : item.roomNameEn}
-                        </b>
-                      </div>
-                      <div className="text-[10px] text-[#68776D] mt-0.5 font-medium">
-                        <span>{item.playedAt}</span>
-                        {item.cardIds.length > 0 && (
-                          <>
-                            <span aria-hidden="true"> · </span>
-                            <span className="text-[#08743A] font-bold">
-                              {item.cardIds.map((c) => `#${c}`).join(', ')}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <b
-                        className={`font-['Outfit'] text-xs font-extrabold tabular-nums block ${
-                          item.outcome === 'won' ? 'text-[#168A49]' : 'text-[#68776D]'
-                        }`}
-                      >
-                        {item.outcome === 'won'
-                          ? `+${item.prizeDemo.toFixed(2)} ETB`
-                          : `${item.entryFeeDemo.toFixed(2)} ETB`}
-                      </b>
-                      <small className="text-[9px] font-bold text-[#68776D] tabular-nums">
-                        {item.callsCount}/75
-                      </small>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-      )}
+      <div className="grid grid-cols-4 items-center gap-1 bg-white border border-[#E7EDE8] rounded-xl p-1 shadow-[0_2px_8px_rgba(24,51,38,0.04)]">
+        {(
+          [
+            { id: 'profile', icon: User, am: 'መገለጫ', en: 'Profile' },
+            { id: 'referral', icon: Gift, am: 'ግብዣ +20', en: 'Invite +20' },
+            { id: 'support', icon: Headphones, am: 'እገዛ', en: 'Help' },
+            { id: 'terms', icon: FileText, am: 'ደንቦች', en: 'Terms' },
+          ] as const
+        ).map((tab) => {
+          const Icon = tab.icon;
+          const active = mode === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => onNavigate(tab.id)}
+              title={lang === 'am' ? tab.am : tab.en}
+              className={`px-2 py-1.5 rounded-lg text-[10.5px] font-extrabold flex items-center justify-center gap-1 transition-all min-h-[32px] whitespace-nowrap ${
+                active
+                  ? 'bg-gradient-to-r from-[#159447] to-[#08743A] text-white shadow-[0_2px_6px_rgba(21,148,71,0.2)]'
+                  : 'text-[#68776D] hover:text-[#183326] hover:bg-[#FFF9ED]'
+              }`}
+            >
+              <Icon size={13} className="shrink-0" />
+              <span className="truncate">{lang === 'am' ? tab.am : tab.en}</span>
+            </button>
+          );
+        })}
+      </div>
 
       {/* 1. REFERRAL SYSTEM SCREEN (Compact & Icon-First) */}
       {mode === 'referral' && (
@@ -470,6 +306,22 @@ export function CommunityScreens({
                     : 'Copy'}
                 </button>
               </div>
+              <a
+                href={telegramShareUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => {
+                  if (openTelegramShareLink(telegramShareUrl)) {
+                    e.preventDefault();
+                  }
+                }}
+                className="w-full py-2 px-3 rounded-lg bg-gradient-to-r from-[#159447] to-[#08743A] text-white text-[11.5px] font-extrabold flex items-center justify-center gap-1.5 shadow-2xs hover:brightness-105"
+              >
+                <Send size={13} />
+                {lang === 'am'
+                  ? 'በቴሌግራም ለጓደኛ ላክ (+20 ብር)'
+                  : 'Share in Telegram (+20 ETB)'}
+              </a>
             </div>
 
             <div className="bg-white/95 text-[#183326] rounded-xl p-2 sm:p-2.5 space-y-1 shadow-2xs text-[10.5px]">

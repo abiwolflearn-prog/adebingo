@@ -214,9 +214,14 @@ function applyTelegramBrandTheme(tg: NonNullable<TelegramWebAppWindow['Telegram'
 export function getTelegramStartParam(): string {
   if (typeof window === 'undefined') return '';
   try {
-    const tgStart =
-      (window as unknown as TelegramWebAppWindow).Telegram?.WebApp?.initDataUnsafe?.start_param || '';
+    const tgWebApp = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp;
+    const tgStart = tgWebApp?.initDataUnsafe?.start_param || '';
     if (tgStart.trim()) return tgStart.trim();
+    const rawWebAppInitData = typeof tgWebApp?.initData === 'string' ? tgWebApp.initData.trim() : '';
+    if (rawWebAppInitData) {
+      const fromInitData = new URLSearchParams(rawWebAppInitData).get('start_param')?.trim() || '';
+      if (fromInitData) return fromInitData;
+    }
     const params = new URLSearchParams(window.location.search);
     const fromQuery =
       params.get('start')?.trim() ||
@@ -240,6 +245,11 @@ export function getTelegramStartParam(): string {
         const inner = new URLSearchParams(hashInitData).get('start_param')?.trim() || '';
         if (inner) return inner;
       }
+    }
+    const sdkCache = extractInitDataFromTelegramSdkCache();
+    if (sdkCache.initData) {
+      const fromCache = new URLSearchParams(sdkCache.initData).get('start_param')?.trim() || '';
+      if (fromCache) return fromCache;
     }
     return '';
   } catch {
@@ -504,6 +514,24 @@ export function buildTelegramInviteLink(referralCodeOrTelegramId: string | numbe
       ? buildTelegramReferralCode(referralCodeOrTelegramId)
       : referralCodeOrTelegramId.trim().toUpperCase();
   return `https://t.me/${OFFICIAL_TELEGRAM_BOT_USERNAME}?start=${encodeURIComponent(code)}`;
+}
+
+export function buildTelegramShareUrl(inviteLink: string, message: string): string {
+  return `https://t.me/share/url?url=${encodeURIComponent(inviteLink)}&text=${encodeURIComponent(message)}`;
+}
+
+export function openTelegramShareLink(shareUrl: string): boolean {
+  if (typeof window === 'undefined') return false;
+  const tg = (window as unknown as TelegramWebAppWindow).Telegram?.WebApp;
+  if (tg && typeof tg.openTelegramLink === 'function') {
+    try {
+      tg.openTelegramLink(shareUrl);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 /**

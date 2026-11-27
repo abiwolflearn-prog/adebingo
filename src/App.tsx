@@ -21,9 +21,7 @@ import type { RoundWinnerShare } from './game/roundSettlement';
 import { INITIAL_ROOMS } from './data/demoData';
 import {
   DepositRequestSummary,
-  GameHistoryItem,
   Language,
-  LeaderboardEntry,
   PayoutRequestSummary,
   ReferralRecord,
   RoomConfig,
@@ -35,6 +33,7 @@ import {
 import { soundFX } from './utils/sound';
 import {
   getLiveTelegramWebAppUserId,
+  getTelegramStartParam,
   initTelegramMiniApp,
   requestTelegramContact,
   syncTelegramBackButton,
@@ -347,6 +346,7 @@ export default function App() {
   const lastRoundNumberRef = useRef<number>(0);
   const lastExtendedCountRef = useRef<Record<string, number>>({});
   const localWinnerSettledRoundRef = useRef<boolean>(false);
+  const roomHydrateInFlightRef = useRef<boolean>(false);
   const langRef = useRef<Language>(lang);
   langRef.current = lang;
 
@@ -383,8 +383,6 @@ export default function App() {
   const [depositRequests, setDepositRequests] = useState<DepositRequestSummary[]>([]);
   const [payoutRequests, setPayoutRequests] = useState<PayoutRequestSummary[]>([]);
   const [referrals, setReferrals] = useState<ReferralRecord[]>([]);
-  const [gameHistory, setGameHistory] = useState<GameHistoryItem[]>([]);
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [tickets, setTickets] = useState<SupportTicket[]>([]);
 
   // Audio, Voice, Motion & Toast state
@@ -461,8 +459,6 @@ export default function App() {
       setDepositRequests(Array.isArray(state.depositRequests) ? state.depositRequests : []);
       setPayoutRequests(Array.isArray(state.payoutRequests) ? state.payoutRequests : []);
       setReferrals(Array.isArray(state.referrals) ? state.referrals : []);
-      setGameHistory(Array.isArray(state.gameHistory) ? state.gameHistory : []);
-      setLeaderboard(Array.isArray(state.leaderboard) ? state.leaderboard : []);
       if (Array.isArray(state.supportTickets)) {
         setTickets(state.supportTickets);
       }
@@ -499,14 +495,16 @@ export default function App() {
   }, [syncUserIdentityFromServer]);
 
   const hydrateRoomState = useCallback(async (roomIdToLoad: string) => {
+    if (roomHydrateInFlightRef.current) return;
+    roomHydrateInFlightRef.current = true;
     try {
       const token = await getActiveBearerToken();
-      const [serverRooms, detail] = await Promise.all([
-        fetchRoomsFromServerApi((serverNowMs) => {
-          serverClockOffsetMsRef.current = serverNowMs - Date.now();
-        }).catch(() => []),
-        fetchRoomDetailFromServerApi(roomIdToLoad).catch(() => null),
-      ]);
+      // Fetch active room detail first so a single client never fires two concurrent
+      // Firestore scheduler transactions on the same room at the exact same millisecond.
+      const detail = await fetchRoomDetailFromServerApi(roomIdToLoad).catch(() => null);
+      const serverRooms = await fetchRoomsFromServerApi((serverNowMs) => {
+        serverClockOffsetMsRef.current = serverNowMs - Date.now();
+      }).catch(() => []);
 
       if (serverRooms.length > 0) {
         hasServerRoomSyncRef.current = true;
@@ -549,6 +547,44 @@ export default function App() {
             };
           })
         );
+
+        if (!detail && activeRoomIdRef.current === roomIdToLoad) {
+          const matchedActive = serverRooms.find((sr) => sr.roomId === roomIdToLoad);
+          if (matchedActive) {
+            const matchedStatus = matchedActive.status || 'countdown';
+            const fallbackDeadline =
+              typeof matchedActive.registrationDeadlineMs === 'number' &&
+              Number.isFinite(matchedActive.registrationDeadlineMs) &&
+              matchedActive.registrationDeadlineMs > 0
+                ? matchedActive.registrationDeadlineMs
+                : 0;
+            const fallbackIntermission =
+              typeof matchedActive.intermissionEndsAtMs === 'number' &&
+              Number.isFinite(matchedActive.intermissionEndsAtMs) &&
+              matchedActive.intermissionEndsAtMs > 0
+                ? matchedActive.intermissionEndsAtMs
+                : 0;
+            if ((matchedStatus === 'countdown' || matchedStatus === 'waiting') && fallbackDeadline > 0) {
+              roomDeadlineMsRef.current = fallbackDeadline;
+              setCountdown(
+                Math.max(
+                  0,
+                  Math.ceil((fallbackDeadline - (Date.now() + serverClockOffsetMsRef.current)) / 1000)
+                )
+              );
+            } else if (matchedStatus === 'completed' && fallbackIntermission > 0) {
+              roomDeadlineMsRef.current = fallbackIntermission;
+              setCountdown(
+                Math.max(
+                  0,
+                  Math.ceil(
+                    (fallbackIntermission - (Date.now() + serverClockOffsetMsRef.current)) / 1000
+                  )
+                )
+              );
+            }
+          }
+        }
       }
 
       if (detail) {
@@ -562,12 +598,12 @@ export default function App() {
         const prevStatus = isSameHydratedRoom ? prevRoomStatusRef.current : rawNextStatus;
 
         const serverRoundNumber = Number(detail.room.roundNumber ?? detail.game?.roundNumber ?? 0);
-        if (
+        const isNewRoundNumber =
           isSameHydratedRoom &&
           serverRoundNumber > 0 &&
           lastRoundNumberRef.current > 0 &&
-          serverRoundNumber > lastRoundNumberRef.current
-        ) {
+          serverRoundNumber > lastRoundNumberRef.current;
+        if (isNewRoundNumber) {
           localWinnerSettledRoundRef.current = false;
         }
         if (serverRoundNumber > 0) {
@@ -661,11 +697,12 @@ export default function App() {
           void hydratePlayerState();
         }
 
-        // New round started -> reset board & unlock 60s card selection
+        // New round started -> reset board, unlock 60s card selection, and return from live board for continuous play
         if (
           isSameHydratedRoom &&
-          (prevStatus === 'live' || prevStatus === 'completed' || localWinnerSettledRoundRef.current) &&
-          nextStatus === 'countdown'
+          (isNewRoundNumber ||
+            ((prevStatus === 'live' || prevStatus === 'completed' || localWinnerSettledRoundRef.current) &&
+              (nextStatus === 'countdown' || nextStatus === 'waiting')))
         ) {
           localWinnerSettledRoundRef.current = false;
           setMarked([]);
@@ -678,6 +715,9 @@ export default function App() {
           setAutoCallerActive(false);
           soundFX.stopVoice();
           setSelectedCardIds([]);
+          if (screenRef.current === 'game' && (nextStatus === 'countdown' || nextStatus === 'waiting')) {
+            setScreen('cards');
+          }
           setToast(
             langRef.current === 'am'
               ? 'አዲስ የ60 ሰከንድ ዙር ተጀምሯል — ካርድ ይምረጡ!'
@@ -805,6 +845,8 @@ export default function App() {
       }
     } catch {
       // Ignore transient API polling failures
+    } finally {
+      roomHydrateInFlightRef.current = false;
     }
   }, [hydratePlayerState]);
 
@@ -965,12 +1007,13 @@ export default function App() {
       }
 
       try {
+        const freshStartParam = getTelegramStartParam() || user.startParam;
         const r = await fetch('/api/telegram/auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             initData: rawInitData,
-            ...(user.startParam ? { startParam: user.startParam } : {}),
+            ...(freshStartParam ? { startParam: freshStartParam } : {}),
           }),
         });
         const d = await r.json().catch(() => ({}));
@@ -1386,11 +1429,9 @@ export default function App() {
     const timer = window.setInterval(() => {
       const syncedNowMs = Date.now() + serverClockOffsetMsRef.current;
       if (activeRoom.status === 'live') {
-        if (
-          nextBallDrawAtMsRef.current > 0 &&
-          syncedNowMs >= nextBallDrawAtMsRef.current &&
-          Date.now() - lastZeroHydrateAt >= 900
-        ) {
+        const ballDue =
+          nextBallDrawAtMsRef.current <= 0 || syncedNowMs >= nextBallDrawAtMsRef.current;
+        if (ballDue && Date.now() - lastZeroHydrateAt >= 900) {
           lastZeroHydrateAt = Date.now();
           void hydrateRoomState(activeRoomId);
         }
@@ -1417,6 +1458,13 @@ export default function App() {
     }, 500);
     return () => window.clearInterval(timer);
   }, [activeRoom.status, activeRoomId, hydrateRoomState]);
+
+  // Refresh player wallet & referral rewards immediately whenever opening Referral or Wallet tabs
+  useEffect(() => {
+    if (screen === 'referral' || screen === 'wallet' || screen === 'deposit' || screen === 'withdraw') {
+      void hydratePlayerState();
+    }
+  }, [screen, hydratePlayerState]);
 
   // Auto-dismiss toast notifications after 3.2 seconds
   useEffect(() => {
@@ -1671,7 +1719,6 @@ export default function App() {
     setDepositRequests([]);
     setPayoutRequests([]);
     setReferrals([]);
-    setGameHistory([]);
     setTickets([]);
     setToast(lang === 'am' ? 'ከFirebase ወጥተዋል' : 'Signed out from Firebase');
   }
@@ -2499,11 +2546,13 @@ export default function App() {
   const countdownLabel =
     countdown > 0 ? `00:${String(countdown).padStart(2, '0')}` : '00:00';
   const timerPercent =
-    activeRoom.status === 'countdown'
+    activeRoom.status === 'countdown' || activeRoom.status === 'waiting'
       ? Math.max(0, Math.min(100, Math.round((countdown / 60) * 100)))
       : 0;
   const isUrgentCountdown =
-    activeRoom.status === 'countdown' && countdown > 0 && countdown <= 10;
+    (activeRoom.status === 'countdown' || activeRoom.status === 'waiting') &&
+    countdown > 0 &&
+    countdown <= 10;
 
   return (
     <div className="app">
@@ -2926,8 +2975,7 @@ export default function App() {
           />
         )}
 
-        {(screen === 'leaderboard' ||
-          screen === 'referral' ||
+        {(screen === 'referral' ||
           screen === 'profile' ||
           screen === 'support' ||
           screen === 'terms') && (
@@ -2950,9 +2998,7 @@ export default function App() {
             referralCode={referralCode}
             referredByCode={referredByCode}
             referrals={referrals}
-            leaderboard={leaderboard}
             onApplyPromoCode={handleApplyPromoCode}
-            gameHistory={gameHistory}
             tickets={tickets}
             onSubmitSupportTicket={handleSubmitSupportTicket}
             reducedMotion={reducedMotion}

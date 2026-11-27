@@ -1,6 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { Firestore } from 'firebase-admin/firestore';
-import { type AuthBackendDeps, authenticateRequest } from '../_lib/auth.ts';
+import {
+  type AuthBackendDeps,
+  authenticateRequest,
+  tryAuthenticateOptional,
+} from '../_lib/auth.ts';
 import { getAdminDb } from '../_lib/firebaseAdmin.ts';
 import {
   createFirestoreGameStore,
@@ -28,18 +32,149 @@ export function createRoomsHandler(deps: RoomsHandlerDeps = {}) {
   return async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
     if (!enforceMethod(req, res, ['GET', 'POST'])) return;
 
+    if (req.method === 'GET') {
+      const optionalCaller = await tryAuthenticateOptional(req, deps.authDeps);
+      const viewerUid = optionalCaller?.uid ?? '';
+
+      if (
+        !enforceRateLimit(req, res, {
+          scope: 'rooms_read',
+          subject: viewerUid || undefined,
+          limit: 60,
+          windowSeconds: 60,
+          limiter: deps.limiter,
+        })
+      ) {
+        return;
+      }
+
+      let db: Firestore;
+      try {
+        db = deps.getDb ? deps.getDb() : getAdminDb();
+      } catch {
+        sendError(
+          res,
+          503,
+          'firebase_admin_unavailable',
+          'Server persistence service is unavailable.'
+        );
+        return;
+      }
+
+      const gameStore = createFirestoreGameStore(db);
+      const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300);
+      const service = new PersistentGameAuthorityService(gameStore, replayGuard);
+
+      const rawRoomId = Array.isArray(req.query?.roomId)
+        ? req.query.roomId[0]
+        : req.query?.roomId;
+
+      if (rawRoomId !== undefined && rawRoomId !== '') {
+        if (!isValidRoomId(rawRoomId)) {
+          sendError(res, 400, 'invalid_room_id', 'Invalid roomId query parameter.');
+          return;
+        }
+        let detail = await service.getRoomDetail(rawRoomId, viewerUid);
+        if (!detail.ok || !detail.room) {
+          sendError(res, 404, 'room_not_found', 'Requested room does not exist.');
+          return;
+        }
+        const nowMs = Date.now();
+        if (
+          (detail.room.status === 'countdown' || detail.room.status === 'waiting') &&
+          Number(detail.room.registrationDeadlineMs ?? 0) <= 0
+        ) {
+          try {
+            await service.ensureSharedRegistrationDeadline(rawRoomId, nowMs);
+          } catch (schedErr) {
+            console.warn('[api/rooms] deadline init contention', {
+              roomId: rawRoomId,
+              error: schedErr instanceof Error ? schedErr.name : 'unknown',
+            });
+          }
+          detail = await service.getRoomDetail(rawRoomId, viewerUid);
+        } else if (isRoomDueForSchedulerTick(detail.room, nowMs)) {
+          try {
+            await service.advanceRoomIfDue({
+              roomId: rawRoomId,
+              room: detail.room,
+              nowMs,
+              maxSteps: 4,
+            });
+          } catch (schedErr) {
+            console.warn('[api/rooms] scheduler advance contention', {
+              roomId: rawRoomId,
+              error: schedErr instanceof Error ? schedErr.name : 'unknown',
+            });
+          }
+          detail = await service.getRoomDetail(rawRoomId, viewerUid);
+        }
+        sendJson(res, 200, {
+          ok: true,
+          serverNowMs: Date.now(),
+          room: detail.room,
+          myCardIds: viewerUid ? (detail.myCardIds ?? []) : [],
+          takenCardIds: detail.takenCardIds ?? [],
+          game: detail.game ?? null,
+        });
+        return;
+      }
+
+      let rooms = await service.listAvailableRooms();
+      const nowMs = Date.now();
+      const missingDeadlineRooms = rooms.filter(
+        (r) =>
+          (r.status === 'countdown' || r.status === 'waiting') &&
+          Number(r.registrationDeadlineMs ?? 0) <= 0
+      );
+      const dueRooms = rooms.filter((r) => isRoomDueForSchedulerTick(r, nowMs));
+      if (missingDeadlineRooms.length > 0 || dueRooms.length > 0) {
+        await Promise.allSettled([
+          ...missingDeadlineRooms.map((r) =>
+            service.ensureSharedRegistrationDeadline(r.roomId, nowMs)
+          ),
+          ...dueRooms.map((r) =>
+            service.advanceRoomIfDue({
+              roomId: r.roomId,
+              room: r,
+              nowMs,
+              maxSteps: 4,
+            })
+          ),
+        ]);
+        rooms = await service.listAvailableRooms();
+      }
+      sendJson(res, 200, {
+        ok: true,
+        serverNowMs: Date.now(),
+        rooms,
+      });
+      return;
+    }
+
+    // POST /api/rooms — Strictly authenticated, admin-only room creation or initialization
     const caller = await authenticateRequest(req, res, deps.authDeps);
     if (!caller) return;
 
     if (
       !enforceRateLimit(req, res, {
-        scope: req.method === 'POST' ? 'rooms_write' : 'rooms_read',
+        scope: 'rooms_write',
         subject: caller.uid,
-        limit: req.method === 'POST' ? 15 : 60,
+        limit: 15,
         windowSeconds: 60,
         limiter: deps.limiter,
       })
     ) {
+      return;
+    }
+
+    if (!caller.isAdmin) {
+      sendError(
+        res,
+        403,
+        'admin_required',
+        'Only administrators may create or initialize game rooms.'
+      );
       return;
     }
 
@@ -59,89 +194,6 @@ export function createRoomsHandler(deps: RoomsHandlerDeps = {}) {
     const gameStore = createFirestoreGameStore(db);
     const replayGuard = new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300);
     const service = new PersistentGameAuthorityService(gameStore, replayGuard);
-
-    if (req.method === 'GET') {
-      const rawRoomId = Array.isArray(req.query?.roomId)
-        ? req.query.roomId[0]
-        : req.query?.roomId;
-
-      if (rawRoomId !== undefined && rawRoomId !== '') {
-        if (!isValidRoomId(rawRoomId)) {
-          sendError(res, 400, 'invalid_room_id', 'Invalid roomId query parameter.');
-          return;
-        }
-        let detail = await service.getRoomDetail(rawRoomId, caller.uid);
-        if (!detail.ok || !detail.room) {
-          sendError(res, 404, 'room_not_found', 'Requested room does not exist.');
-          return;
-        }
-        const nowMs = Date.now();
-        if (
-          (detail.room.status === 'countdown' || detail.room.status === 'waiting') &&
-          Number(detail.room.registrationDeadlineMs ?? 0) <= 0
-        ) {
-          await service.ensureSharedRegistrationDeadline(rawRoomId, nowMs);
-          detail = await service.getRoomDetail(rawRoomId, caller.uid);
-        } else if (isRoomDueForSchedulerTick(detail.room, nowMs)) {
-          await service.advanceRoomIfDue({
-            roomId: rawRoomId,
-            room: detail.room,
-            nowMs,
-          });
-          detail = await service.getRoomDetail(rawRoomId, caller.uid);
-        }
-        sendJson(res, 200, {
-          ok: true,
-          serverNowMs: Date.now(),
-          room: detail.room,
-          myCardIds: detail.myCardIds ?? [],
-          takenCardIds: detail.takenCardIds ?? [],
-          game: detail.game ?? null,
-        });
-        return;
-      }
-
-      let rooms = await service.listAvailableRooms();
-      const nowMs = Date.now();
-      const missingDeadlineRooms = rooms.filter(
-        (r) =>
-          (r.status === 'countdown' || r.status === 'waiting') &&
-          Number(r.registrationDeadlineMs ?? 0) <= 0
-      );
-      const dueRooms = rooms.filter((r) => isRoomDueForSchedulerTick(r, nowMs));
-      if (missingDeadlineRooms.length > 0 || dueRooms.length > 0) {
-        await Promise.all([
-          ...missingDeadlineRooms.map((r) =>
-            service.ensureSharedRegistrationDeadline(r.roomId, nowMs)
-          ),
-          ...dueRooms.map((r) =>
-            service.advanceRoomIfDue({
-              roomId: r.roomId,
-              room: r,
-              nowMs,
-            })
-          ),
-        ]);
-        rooms = await service.listAvailableRooms();
-      }
-      sendJson(res, 200, {
-        ok: true,
-        serverNowMs: Date.now(),
-        rooms,
-      });
-      return;
-    }
-
-    // POST /api/rooms — Admin-only room creation or default-room initialization
-    if (!caller.isAdmin) {
-      sendError(
-        res,
-        403,
-        'admin_required',
-        'Only administrators may create or initialize game rooms.'
-      );
-      return;
-    }
 
     const body = await parseJsonBody(req, res, { maxBytes: 8 * 1024, required: true });
     if (!body) return;

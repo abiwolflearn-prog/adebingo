@@ -1810,7 +1810,6 @@ export class PersistentTelegramBotService {
         };
       }
 
-      const isNewUser = !existingPlayer;
       const saved = await this.store.savePlayerAndBinding({
         telegramUserId: senderTelegramId,
         uid,
@@ -1819,6 +1818,7 @@ export class PersistentTelegramBotService {
         username,
         language: currentLang,
       });
+      const isNewUser = typeof saved.isNew === 'boolean' ? saved.isNew : !existingPlayer;
 
       if (!saved.ok || !saved.player) {
         return {
@@ -1879,6 +1879,11 @@ export class PersistentTelegramBotService {
           } else if (refRes.reason === 'self_referral') {
             referralNoticeAm = '\n\n⚠️ _የራስዎን የግብዣ ሊንክ መጠቀም አይችሉም።_';
             referralNoticeEn = '\n\n⚠️ _Self-referrals are not permitted._';
+          } else if (refRes.reason === 'inviter_not_found') {
+            referralNoticeAm =
+              '\n\nℹ️ _የግብዣ ኮዱ አልተገኘም — የመጀመሪያ 15.00 ETB ሂሳብዎ ግን ዝግጁ ነው።_';
+            referralNoticeEn =
+              '\n\nℹ️ _Referral code not found — your standard 15.00 ETB starter balance is ready._';
           }
         }
       }

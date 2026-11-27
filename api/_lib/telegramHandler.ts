@@ -98,6 +98,7 @@ export interface TelegramAuthHandlerDeps {
   getBotToken?: () => string | undefined;
   isAdminReady?: () => boolean;
   mintCustomToken?: typeof createTelegramCustomToken;
+  fetchImpl?: typeof fetch;
   nowUnixSeconds?: () => number;
   limiter?: BoundedRateLimiter;
 }
@@ -549,6 +550,38 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
             friendName: persisted.player.firstName,
             inviterBonusEtb: refRes.inviterBonusEtb ?? 20,
           });
+          let deliveredViaBotApi = false;
+          const canSendTelegram =
+            botTokenConfigured &&
+            botToken &&
+            refRes.inviterTelegramId !== tgUser.id &&
+            (Boolean(deps.fetchImpl) || !deps.getDb);
+          if (canSendTelegram) {
+            const fetchFn = deps.fetchImpl ?? fetch;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3500);
+            try {
+              const tgResp = await fetchFn(
+                `https://api.telegram.org/bot${botToken}/sendMessage`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    chat_id: refRes.inviterTelegramId,
+                    text: `${formattedNtf.title}\n\n${formattedNtf.body}`,
+                    parse_mode: 'Markdown',
+                  }),
+                  signal: controller.signal,
+                }
+              );
+              const tgData = (await tgResp.json().catch(() => ({}))) as { ok?: boolean };
+              deliveredViaBotApi = Boolean(tgResp.ok && tgData.ok);
+            } catch {
+              deliveredViaBotApi = false;
+            } finally {
+              clearTimeout(timeoutId);
+            }
+          }
           await store
             .appendNotification({
               id: `ntf_ref_${tgUser.id}_${Date.now()}`,
@@ -558,7 +591,7 @@ export function createTelegramAuthHandler(deps: TelegramAuthHandlerDeps = {}) {
               title: formattedNtf.title,
               body: formattedNtf.body,
               createdAt: new Date().toISOString(),
-              deliveredViaBotApi: false,
+              deliveredViaBotApi,
             })
             .catch(() => undefined);
         }

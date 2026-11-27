@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createTelegramWebhookHandler } from './telegramHandler.ts';
+import { createTelegramAuthHandler, createTelegramWebhookHandler } from './telegramHandler.ts';
+import { createRoomsHandler } from '../rooms/index.ts';
 import {
   createBingoCallTtsHandler,
   createDrawBallHandler,
@@ -813,4 +815,171 @@ test('Phase 3 & 4: Manual co-winner splitting, /api/tts/bingo-call, real Telegra
   });
   assert.equal(annRes.ok, true);
   assert.ok(outboxCalls.some((c) => c.chat_id === 111 && c.text.includes('አዲስ ዙር ተጀምሯል')));
+});
+
+test('Continuous repeating game loop (public GET /api/rooms) + Mini App invitation reward live Telegram delivery', async () => {
+  const { db, store } = createInMemoryFirestore();
+  const gameStore = createFirestoreGameStore(db);
+  const gameService = new PersistentGameAuthorityService(
+    gameStore,
+    new PersistentReplayGuard(createFirestoreReplayAdapter(db), 300)
+  );
+  const roomsHandler = createRoomsHandler({
+    getDb: () => db,
+    limiter: new BoundedRateLimiter(),
+  });
+
+  // 1. Public GET /api/rooms starts countdown immediately without requiring authentication
+  const initialRooms = await invokeHandler(roomsHandler, { method: 'GET' });
+  assert.equal(initialRooms.statusCode, 200);
+  const roomsList = initialRooms.body.rooms as Array<Record<string, unknown>>;
+  assert.ok(roomsList.length >= 1);
+  assert.ok(Number(roomsList[0].registrationDeadlineMs) > 0);
+
+  // 2. Seed 3 phone-verified players and reserve 1 card each in adey-main (Round #1)
+  for (const [uid, cardId] of [
+    ['tg_701', 10],
+    ['tg_702', 20],
+    ['tg_703', 30],
+  ] as const) {
+    store.set(`users/${uid}`, {
+      uid,
+      telegramUserId: uid,
+      displayName: uid,
+      username: uid,
+      language: 'am',
+      phoneVerified: true,
+      demoBalanceEtb: 100,
+    });
+    const rsv = await gameService.reserveOrReleaseCard({
+      roomId: 'adey-main',
+      cardId,
+      uid,
+      displayName: uid,
+      telegramUserId: uid,
+    });
+    assert.equal(rsv.ok, true);
+  }
+
+  // Expire registration deadline -> public GET /api/rooms?roomId=adey-main auto-starts Round #1
+  store.set('rooms/adey-main', {
+    ...(store.get('rooms/adey-main') || {}),
+    registrationDeadlineMs: Date.now() - 1000,
+  });
+  const startedRes = await invokeHandler(roomsHandler, {
+    method: 'GET',
+    query: { roomId: 'adey-main' },
+  });
+  assert.equal(startedRes.statusCode, 200);
+  assert.equal((startedRes.body.room as Record<string, unknown>).status, 'live');
+  assert.deepEqual(startedRes.body.myCardIds, []);
+
+  // Drive live ball draws via public GET /api/rooms until a winner auto-settles
+  let settled = false;
+  for (let i = 0; i < 80; i++) {
+    const curRoom = store.get('rooms/adey-main') || {};
+    if (curRoom.status === 'completed') {
+      settled = true;
+      break;
+    }
+    store.set('rooms/adey-main', { ...curRoom, nextBallDrawAtMs: Date.now() - 1000 });
+    const tick = await invokeHandler(roomsHandler, {
+      method: 'GET',
+      query: { roomId: 'adey-main' },
+    });
+    assert.equal(tick.statusCode, 200);
+    if ((tick.body.room as Record<string, unknown>).status === 'completed') {
+      settled = true;
+      break;
+    }
+  }
+  assert.equal(settled, true, 'Round #1 must auto-settle via live ball draws');
+
+  // Expire intermission -> public GET /api/rooms?roomId=adey-main auto-creates Round #2 cleanly
+  store.set('rooms/adey-main', {
+    ...(store.get('rooms/adey-main') || {}),
+    intermissionEndsAtMs: Date.now() - 1000,
+  });
+  const round2Res = await invokeHandler(roomsHandler, {
+    method: 'GET',
+    query: { roomId: 'adey-main' },
+  });
+  assert.equal(round2Res.statusCode, 200);
+  const round2Room = round2Res.body.room as Record<string, unknown>;
+  const round2Game = round2Res.body.game as Record<string, unknown>;
+  assert.equal(round2Room.status, 'countdown');
+  assert.equal(round2Room.roundNumber, 2);
+  assert.ok(Number(round2Room.registrationDeadlineMs) > Date.now());
+  assert.deepEqual(round2Game.calledNumbers, []);
+  assert.deepEqual(round2Game.winners, []);
+  assert.deepEqual(round2Res.body.takenCardIds, []);
+
+  // 3. Invitation reward via Mini App /api/telegram/auth credits inviter +20 ETB AND sends live Telegram DM
+  store.set('users/tg_801', {
+    uid: 'tg_801',
+    telegramUserId: 'tg_801',
+    displayName: 'Inviter Abel',
+    username: '@abel',
+    language: 'en',
+    phoneVerified: true,
+    demoBalanceEtb: 15,
+    referralCode: 'ADEY-801',
+    referralsCount: 0,
+  });
+  store.set('botPlayers/801', {
+    uid: 'tg_801',
+    telegramUserId: 801,
+    firstName: 'Abel',
+    username: 'abel',
+    language: 'en',
+    phoneVerified: true,
+    demoBalanceEtb: 15,
+    referralCode: 'ADEY-801',
+  });
+
+  const sentTelegramMsgs: Array<{ chat_id: number; text: string }> = [];
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const params = new URLSearchParams();
+  params.set('auth_date', String(nowUnix));
+  params.set('start_param', 'ADEY-801');
+  params.set('user', JSON.stringify({ id: 802, first_name: 'Selam', username: 'selam_new' }));
+  const dataCheckString = Array.from(params.entries())
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(TEST_BOT_TOKEN).digest();
+  const hash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+  params.set('hash', hash);
+
+  const authHandler = createTelegramAuthHandler({
+    getDb: () => db,
+    getBotToken: () => TEST_BOT_TOKEN,
+    isAdminReady: () => true,
+    mintCustomToken: async ({ telegramUserId }) => ({
+      uid: `tg_${telegramUserId}`,
+      customToken: `custom_tok_${telegramUserId}`,
+    }),
+    fetchImpl: (async (_url: string, init?: { body?: string }) => {
+      if (init?.body) {
+        sentTelegramMsgs.push(JSON.parse(init.body) as { chat_id: number; text: string });
+      }
+      return { ok: true, json: async () => ({ ok: true }) };
+    }) as unknown as typeof fetch,
+    nowUnixSeconds: () => nowUnix,
+    limiter: new BoundedRateLimiter(),
+  });
+
+  const inviteeAuth = await invokeHandler(authHandler, {
+    method: 'POST',
+    body: { initData: params.toString() },
+  });
+  assert.equal(inviteeAuth.statusCode, 200);
+  assert.equal((inviteeAuth.body.referralApplied as { applied?: boolean })?.applied, true);
+  assert.equal(store.get('users/tg_801')?.demoBalanceEtb, 35);
+  assert.equal(store.get('botPlayers/801')?.demoBalanceEtb, 35);
+  assert.equal(store.get('users/tg_802')?.demoBalanceEtb, 15);
+  assert.ok(
+    sentTelegramMsgs.some((m) => m.chat_id === 801 && m.text.includes('20')),
+    'Inviter should receive real-time Telegram notification for +20 ETB reward'
+  );
 });

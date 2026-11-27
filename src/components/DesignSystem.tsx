@@ -12,7 +12,6 @@ import {
   Loader2,
   ShieldCheck,
   Sparkles,
-  Trophy,
   User,
   Volume2,
   VolumeX,
@@ -606,7 +605,7 @@ export function GameStatusBadge({ status, label, pulse = false, tooltip }: GameS
 }
 
 /* ============================================================================
- * 9. BottomNavigation (Icon-First 5-Tab Bar: Home, Wallet, Play, Ranks, Profile)
+ * 9. BottomNavigation (Icon-First 4-Tab Bar: Home, Wallet, Play, Profile)
  * ========================================================================== */
 export interface BottomNavigationProps {
   screen: ScreenId;
@@ -618,7 +617,6 @@ export function BottomNavigation({ screen, lang, onNavigate }: BottomNavigationP
   const isHomeActive = screen === 'home' || screen === 'lobby' || screen === 'cards';
   const isWalletActive = screen === 'wallet' || screen === 'deposit' || screen === 'withdraw';
   const isPlayActive = screen === 'game';
-  const isRankActive = screen === 'leaderboard';
   const isProfileActive =
     screen === 'profile' ||
     screen === 'referral' ||
@@ -661,18 +659,6 @@ export function BottomNavigation({ screen, lang, onNavigate }: BottomNavigationP
       >
         <Gamepad2 className="w-4 h-4 shrink-0" />
         <span>{lang === 'am' ? 'ጨዋታ' : 'Play'}</span>
-      </button>
-
-      <button
-        type="button"
-        data-testid="nav-leaderboard"
-        title={lang === 'am' ? 'ደረጃ ሰንጠረዥ' : 'Leaderboard'}
-        aria-label={lang === 'am' ? 'ደረጃ' : 'Ranks'}
-        className={isRankActive ? 'selected' : ''}
-        onClick={() => onNavigate('leaderboard')}
-      >
-        <Trophy className="w-4 h-4 shrink-0" />
-        <span>{lang === 'am' ? 'ደረጃ' : 'Ranks'}</span>
       </button>
 
       <button

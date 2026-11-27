@@ -350,6 +350,142 @@ export async function authenticateRequest(
 }
 
 /**
+ * Best-effort optional authentication for public read-only endpoints (such as `GET /api/rooms`).
+ * Never writes an HTTP error response when no token is provided or when a token is expired/invalid;
+ * returns `null` so public lobby state and shared countdown timers can load immediately without
+ * waiting for Telegram/Firebase authentication to complete.
+ */
+export async function tryAuthenticateOptional(
+  req: VercelRequest,
+  deps?: AuthBackendDeps
+): Promise<AuthenticatedCaller | null> {
+  const token = extractBearerToken(req);
+  if (!token) {
+    return null;
+  }
+
+  const nowUnixSeconds = deps?.nowUnixSeconds
+    ? deps.nowUnixSeconds()
+    : Math.floor(Date.now() / 1000);
+
+  const sessionSecret = resolveAdminSessionSecret(deps);
+  if (sessionSecret && token.includes('.') && token.split('.').length === 2) {
+    const verifiedSession = verifyServerSessionToken(
+      token,
+      sessionSecret,
+      3600,
+      nowUnixSeconds
+    );
+    if (verifiedSession) {
+      let isAdmin = isServerAllowlistedAdmin({
+        uid: verifiedSession.uid,
+        telegramId: verifiedSession.telegramUserId,
+        email: verifiedSession.email,
+        isEmailVerified: Boolean(verifiedSession.email),
+      });
+      if (!isAdmin && deps?.isAdminUid) {
+        try {
+          isAdmin = await deps.isAdminUid(verifiedSession.uid);
+        } catch {
+          isAdmin = false;
+        }
+      }
+      return {
+        uid: verifiedSession.uid,
+        telegramId: verifiedSession.telegramUserId || undefined,
+        email: verifiedSession.email,
+        displayName: verifiedSession.displayName || `Player ${verifiedSession.uid}`,
+        isTelegramVerified: Boolean(verifiedSession.telegramUserId),
+        isEmailVerified: Boolean(verifiedSession.email),
+        isAdmin,
+        authMethod: 'admin_session_token',
+        issuedAt: verifiedSession.issuedAt,
+        expiresAt: verifiedSession.expiresAt,
+      };
+    }
+  }
+
+  let resolvedDeps: AuthBackendDeps;
+  try {
+    resolvedDeps = deps?.verifyIdToken ? deps : { ...createDefaultAuthDeps(), ...deps };
+  } catch {
+    if (deps?.verifyIdToken) {
+      resolvedDeps = deps;
+    } else {
+      return null;
+    }
+  }
+
+  if (!resolvedDeps.verifyIdToken) {
+    return null;
+  }
+
+  let decoded: DecodedIdTokenLike;
+  try {
+    decoded = await resolvedDeps.verifyIdToken(token, true);
+  } catch {
+    return null;
+  }
+
+  const uid = typeof decoded.uid === 'string' ? decoded.uid.trim() : '';
+  if (!uid || !/^[a-zA-Z0-9_-]{1,128}$/.test(uid)) {
+    return null;
+  }
+
+  const rawTgId = decoded.telegram_id;
+  const tgIdNum = typeof rawTgId === 'number' ? rawTgId : Number.NaN;
+  const isTelegramVerified =
+    decoded.telegram_verified === true &&
+    Number.isInteger(tgIdNum) &&
+    tgIdNum > 0 &&
+    uid === getTelegramFirebaseUid(tgIdNum);
+  const isEmailVerified = decoded.email_verified === true;
+  if (!isTelegramVerified && !isEmailVerified) {
+    return null;
+  }
+
+  let isAdmin = isServerAllowlistedAdmin({
+    uid,
+    telegramId: isTelegramVerified ? tgIdNum : undefined,
+    email: decoded.email,
+    isEmailVerified,
+  });
+  if (!isAdmin && resolvedDeps.isAdminUid) {
+    try {
+      isAdmin = await resolvedDeps.isAdminUid(uid);
+    } catch {
+      isAdmin = false;
+    }
+  }
+
+  let displayName =
+    typeof decoded.name === 'string' && decoded.name.trim()
+      ? decoded.name.trim().slice(0, 80)
+      : '';
+  if (!displayName && resolvedDeps.getUserDisplayName) {
+    try {
+      displayName = (await resolvedDeps.getUserDisplayName(uid)) || '';
+    } catch {
+      displayName = '';
+    }
+  }
+  if (!displayName) {
+    displayName = isTelegramVerified ? `Player ${tgIdNum}` : 'Adey Player';
+  }
+
+  return {
+    uid,
+    telegramId: isTelegramVerified ? tgIdNum : undefined,
+    email: decoded.email,
+    displayName,
+    isTelegramVerified,
+    isEmailVerified,
+    isAdmin,
+    authMethod: 'firebase_id_token',
+  };
+}
+
+/**
  * Fail-closed verification of X-Telegram-Bot-Api-Secret-Token.
  * Rejects with 503 if server secret is unconfigured, and 401 if header is missing/incorrect.
  */

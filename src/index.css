@@ -261,7 +261,7 @@ body {
   font-weight: 800;
 }
 
-/* 5-Tab Icon-First Bottom Navigation (Home, Wallet, Play, Leaderboard, Profile) */
+/* 4-Tab Icon-First Bottom Navigation (Home, Wallet, Play, Profile) */
 nav.bottom-nav {
   position: fixed;
   bottom: calc(4px + env(safe-area-inset-bottom, 0px));
@@ -275,7 +275,7 @@ nav.bottom-nav {
   border: 1.5px solid var(--color-border);
   box-shadow: 0 6px 20px rgba(24, 51, 38, 0.11);
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   align-items: center;
   gap: 2px;
   z-index: 40;
